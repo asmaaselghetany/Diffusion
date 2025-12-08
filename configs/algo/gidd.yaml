@@ -1,0 +1,20 @@
+_target_: discrete_diffusion.algorithms.gidd.GIDD
+name: gidd
+backbone: dit  # reuse DiT backbone
+parameterization: subs
+time_conditioning: True
+T: 0  # 0 (continuous-time training)
+causal_attention: False
+
+# GIDD-specific knobs (wired in later milestones)
+loss_type: gidd
+p_uniform: 0.0
+t_eps: 1e-4
+low_discrepancy_sampling: True
+loss_weighting: dynamic  # dynamic | clip | none
+min_loss_weight: 0.0
+max_loss_weight: 2.0
+
+# Keep model dims in configs/model/*.yaml (e.g., small.yaml)
+sampler:
+  _target_: discrete_diffusion.sampling.gidd.GIDDSampler
