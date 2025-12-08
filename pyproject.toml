@@ -81,7 +81,7 @@ flash-attn = [
 ]
 
 [project.scripts]
-uni-d2 = "discrete_diffusion.__main__:main"
+text-diffusion-jepa = "discrete_diffusion.__main__:main"
 
 [project.urls]
 Homepage = "https://github.com/nkalyanv99/text-diffusion-jepa"

@@ -22,8 +22,8 @@ pip install -e .
 
 If you want to isolate dependencies in a Conda env, create/activate it before running the editable install:
 ```bash
-conda create -n uni-d2 python=3.11
-conda activate uni-d2
+conda create -n text-diffusion-jepa python=3.11
+conda activate text-diffusion-jepa
 pip install -e .
 ```
 
