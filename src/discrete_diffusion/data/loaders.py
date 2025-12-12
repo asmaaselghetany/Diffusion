@@ -335,12 +335,14 @@ def get_tokenizer(config):
 
 def get_dataloaders(config, tokenizer, skip_train=False,
                     skip_valid=False, valid_seed=None):
-  num_gpus = torch.cuda.device_count()
+  # Use config.trainer.devices instead of device_count() for DDP compatibility
+  num_gpus = config.trainer.devices if isinstance(config.trainer.devices, int) else len(config.trainer.devices)
   assert (config.loader.global_batch_size
           == (config.loader.batch_size
               * config.trainer.num_nodes
               * num_gpus
-              * config.trainer.accumulate_grad_batches))
+              * config.trainer.accumulate_grad_batches)), \
+    f"global_batch_size={config.loader.global_batch_size} != batch_size={config.loader.batch_size} * nodes={config.trainer.num_nodes} * gpus={num_gpus} * accum={config.trainer.accumulate_grad_batches}"
   if config.loader.global_batch_size % (
     num_gpus * config.trainer.accumulate_grad_batches) != 0:
     raise ValueError(
@@ -349,8 +351,8 @@ def get_dataloaders(config, tokenizer, skip_train=False,
       f"{config.trainer.accumulate_grad_batches}.")
   if config.loader.eval_global_batch_size % num_gpus != 0:
     raise ValueError(
-      f"Eval Batch Size for {config.eval.batch_size} "
-      f"not divisible by {num_gpus}.")
+      f"Eval Batch Size {config.loader.eval_global_batch_size} "
+      f"not divisible by {num_gpus} gpus.")
   default_chunking = config.data.get("chunking", "none")
   train_chunking = config.data.get("train_chunking", default_chunking)
   valid_chunking = config.data.get("valid_chunking", default_chunking)

@@ -1,0 +1,6 @@
+latent_eval:
+  _target_: discrete_diffusion.callbacks.latent_eval.LatentEvalCallback
+  eval_frequency: 1000
+  num_batches: 10
+  sampling_eps: 1e-3
+

@@ -12,10 +12,19 @@ ENV/
 dist/
 build/
 
-slurm_scripts/
+# Local caches
+.cache/
+data_cache/
 
+# Shell scripts: ignore by default, but keep examples + latent-JEPA entrypoints
 *.sh
 !examples/**/*.sh
+!slurm_scripts/latent_jepa_owt.sh
+!Diffusion-Jepa/discrete_diffusion_latent_jepa_stage1.sh
+!Diffusion-Jepa/discrete_diffusion_latent_jepa_stage2.sh
+
+# Slurm batch scripts
+*.sbatch
 
 
 gifs/
@@ -37,6 +46,20 @@ outputs/
 *.safetensors
 wandb/
 *.wandb
+
+# Generated artifacts
+generated_samples/
+
+# Plans / notes (keep core docs, drop WIP plans)
+docs/JEPA_PORT_PLAN.md
+Diffusion-Jepa/hyperparameter_tuning_research_plan.md
+
+# Tests / verification scripts
+tests/
+test_*.py
+verify_*.py
+Diffusion-Jepa/test_*.py
+Diffusion-Jepa/verify_*.py
 
 # Temporary files
 tmp*/

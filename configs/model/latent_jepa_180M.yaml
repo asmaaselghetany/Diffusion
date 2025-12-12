@@ -1,0 +1,39 @@
+# Latent JEPA 180M config (matches Diffusion-Jepa original)
+_target_: discrete_diffusion.models.latent_jepa.LatentJEPA
+
+name: latent_jepa_180M
+type: latent_jepa
+
+# Encoder: tokens → latents
+latent_dim: 512
+hidden_size: 512
+n_heads: 8
+n_blocks: 12
+dropout: 0.0
+
+# Time conditioning
+time_conditioning: true
+time_embed_dim: 128
+
+# Predictor: noisy → clean latents
+predictor_type: transformer
+predictor_depth: 6
+predictor_hidden_size: 384
+predictor_n_heads: 6
+predictor_use_projections: true
+
+# Readout decoder: latents → token logits
+readout_type: tiny_transformer
+readout_hidden_size: 512
+readout_depth: 2
+tie_readout_to_embedding: false
+
+# EMA teacher
+ema_decay: 0.996
+ema_warmup_steps: 200000
+ema_final_decay: 0.9999
+copy_on_init: true
+
+# Sequence params (injected by train.py)
+length: 1024
+max_tokens: 1024

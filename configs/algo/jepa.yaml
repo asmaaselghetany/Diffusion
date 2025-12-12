@@ -1,0 +1,45 @@
+defaults:
+  - /forward_process: absorbing
+
+_target_: discrete_diffusion.algorithms.jepa.LatentJEPATrainer
+name: jepa
+backbone: latent_jepa
+
+# Required base params
+parameterization: subs
+T: 0  # Not used for JEPA but required by base
+time_conditioning: true
+
+# Training stage: 1 = full JEPA, 2 = decoder only
+stage: 1
+
+# JEPA objective params
+sampling_eps: 1e-3
+lambda_var: 0.1
+lambda_cov: 0.04
+redundancy: vicreg  # vicreg, barlow, none
+loss_norm: l2  # l2, cosine
+mask_only: true
+normalize_targets: true
+vicreg_eps: 0.001  # bf16 stability (increased from 1e-4)
+
+# Noise warmup (optional curriculum)
+noise_warmup_start_step: 0
+noise_warmup_end_step: 0
+noise_warmup_range: [0.15, 0.3]
+
+# Stage 2 specific
+latent_source: predicted  # predicted, teacher, mixed
+mixed_schedule: linear  # linear, constant
+mixed_warmup_steps: 10000
+weight_by_hazard: true
+
+# Noise schedule
+noise_schedule:
+  name: log_linear
+  eps: ${noise.eps}
+
+# Sampler for generation
+sampler:
+  _target_: discrete_diffusion.sampling.latent_jepa.LatentJEPASampler
+

@@ -180,16 +180,19 @@ def split_and_apply_rotary_pos_emb(qkv: torch.Tensor, rotary_cos_sin: typing.Tup
   Expects qkv shaped (B, S, 3, H, D). Returns (q, k, v) with shapes
   (B, S, H, D), (B, S, H, D), (B, S, H, D).
   """
-  if flash_attn is None:
-    raise RuntimeError("flash_attn is required for rotary split helpers")
+  cos, sin = rotary_cos_sin
   with torch.amp.autocast('cuda', enabled=False):
-    cos, sin = rotary_cos_sin
     cos = cos.to(qkv.dtype)
     sin = sin.to(qkv.dtype)
-    # Align cached length/batch with qkv if needed
     if qkv.shape[1] < cos.shape[1]:
       cos = cos[:, :qkv.shape[1]]
       sin = sin[:, :qkv.shape[1]]
+
+    if flash_attn is None:
+      qkv = apply_rotary_pos_emb_torchscript(qkv, cos, sin)
+      q, k, v = [x.squeeze(2) for x in qkv.chunk(3, dim=2)]
+      return q, k, v
+
     if cos.shape[0] == 1:
       cos_in = cos[0, :, 0, 0, :cos.shape[-1] // 2]
       sin_in = sin[0, :, 0, 0, :sin.shape[-1] // 2]
@@ -200,7 +203,7 @@ def split_and_apply_rotary_pos_emb(qkv: torch.Tensor, rotary_cos_sin: typing.Tup
     q = flash_attn.layers.rotary.apply_rotary_emb_torch(q.squeeze(dim=2), cos_in, sin_in)
     k = flash_attn.layers.rotary.apply_rotary_emb_torch(k.squeeze(dim=2), cos_in, sin_in)
     v = v.squeeze(dim=2)
-  return q, k, v
+    return q, k, v
 
 
 def apply_rotary_pos_emb_torchscript(qkv: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor):

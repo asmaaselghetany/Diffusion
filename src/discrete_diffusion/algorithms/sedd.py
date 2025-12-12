@@ -51,7 +51,7 @@ class SEDD(trainer_base.AbsorbingState):
     # Positions that changed under the forward process
     changed = (xt != x0)
     if not torch.any(changed):
-      return torch.zeros_like(xt, dtype=log_score.dtype)
+      return torch.zeros_like(xt, dtype=log_score.dtype) + 0 * log_score.sum()
 
     expsig_minus_1 = torch.expm1(sigma).expand(-1, xt.shape[1])
     q_ratio = 1 / expsig_minus_1[changed]

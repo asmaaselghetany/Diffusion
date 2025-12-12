@@ -1,0 +1,4 @@
+ema_teacher:
+  _target_: discrete_diffusion.callbacks.ema_teacher.EMATeacherCallback
+  update_frequency: 1
+

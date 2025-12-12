@@ -29,15 +29,8 @@ def train(config):
   tokenizer = get_tokenizer(config)
   algo_cls = hydra.utils.get_class(config.algo._target_)
   
-  # Ensure dataset processing happens on rank 0 first
-  fabric = L.Fabric(num_nodes=config.trainer.num_nodes,
-                    devices=config.trainer.devices,
-                    accelerator='cuda')
-  fabric.launch()
-  with fabric.rank_zero_first():
-    train_ds, valid_ds = get_dataloaders(config, tokenizer)
-  fabric.barrier()
-  del fabric
+  # Load dataloaders (data should be pre-cached for multi-node)
+  train_ds, valid_ds = get_dataloaders(config, tokenizer)
   
   # WandB logger
   wandb_logger = L.pytorch.loggers.WandbLogger(
@@ -69,7 +62,12 @@ def train(config):
   if config.training.get('fault_tolerant', False):
     os.environ.setdefault('PL_FAULT_TOLERANT_TRAINING', '1')
 
+  use_dist = config.trainer.get('num_nodes', 1) > 1 or config.trainer.get('devices', 1) > 1
+  if config.get('strategy', None) is not None:
+    strategy = hydra.utils.instantiate(config.strategy)
+  else:
+    strategy = 'ddp_find_unused_parameters_true' if use_dist else 'auto'
   trainer = L.Trainer(
     **config.trainer, default_root_dir=os.getcwd(), callbacks=callbacks,
-    strategy=hydra.utils.instantiate(config.strategy), logger=wandb_logger)
+    strategy=strategy, logger=wandb_logger)
   trainer.fit(model, train_ds, valid_ds, ckpt_path=ckpt_path)
