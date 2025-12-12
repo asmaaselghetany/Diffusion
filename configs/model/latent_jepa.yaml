@@ -4,37 +4,44 @@ _target_: discrete_diffusion.models.latent_jepa.LatentJEPA
 name: latent_jepa
 type: latent_jepa
 
-# Encoder: tokens → latents
-latent_dim: 512
-hidden_size: 768
-n_heads: 12
-n_blocks: 28
-dropout: 0.0
+# ---------------- Encoder: tokens → latents ----------------
+# Large text JEPA-style setup: internal width 768, representation (latent_dim) fixed at 512.
+latent_dim: 512 # JEPA latent / representation dim (fixed across scales)
+hidden_size: 768 # Encoder transformer width (internal model dim)
+n_heads: 12 # 768 / 12 = 64-d per head
+n_blocks: 28 # Deep encoder
+dropout: 0.0 # JEPA pretraining typically uses no dropout
 
-# Time conditioning
+# NOTE: LatentJEPA should include a final projection 768 → 512 so E(x) lives in R^{L x 512}.
+
+# ---------------- Time conditioning ----------------
 time_conditioning: true
 time_embed_dim: 128
 
-# Predictor: noisy → clean latents
+# ---------------- Predictor: noisy → clean latents ----------------
+# Narrow predictor, scaled in depth (JEPA-style).
 predictor_type: transformer
-predictor_depth: 12
-predictor_hidden_size: 384
-predictor_n_heads: 6
-predictor_use_projections: true
+predictor_depth: 12 # L-scale predictor depth
+predictor_hidden_size: 384 # Bottleneck predictor width
+predictor_n_heads: 6 # 384 / 6 = 64-d per head
+predictor_use_projections: true # Project 768 ↔ 384 at boundaries
 
-# Readout decoder: latents → token logits
+# ---------------- Readout decoder: latents → token logits ----------------
+# The model should: 512 → 768 on entry, run an 8-layer 768-d transformer, then 768 → vocab logits.
 readout_type: tiny_transformer
-readout_hidden_size: 768
-readout_depth: 8
-tie_readout_to_embedding: false
+readout_hidden_size: 768 # Match encoder width
+readout_depth: 8 # Decoder depth
+tie_readout_to_embedding: false # Only relevant for "tied_linear"
 
-# EMA teacher
+# ---------------- EMA teacher (JEPA standard) ----------------
 ema_decay: 0.996
 ema_warmup_steps: 200000
 ema_final_decay: 0.9999
-copy_on_init: true
+copy_on_init: true # Initialize teacher as copy of student
 
 # Sequence params (injected by train.py)
 length: 1024
 max_tokens: 1024
+
+# vocab_size / max_seq_len are injected by train.py
 

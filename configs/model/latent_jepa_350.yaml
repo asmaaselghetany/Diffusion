@@ -1,17 +1,17 @@
-# Latent JEPA 180M config (matches Diffusion-Jepa original)
+# Latent JEPA 350M config
 # Encoder: Tokens → Latents
 # Predictor: Noisy latents → Clean latents
 # Readout: Latents → Token logits
 _target_: discrete_diffusion.models.latent_jepa.LatentJEPA
 
-name: latent_jepa_180M
+name: latent_jepa_350
 type: latent_jepa
 
 # Architecture dimensions (encoder/predictor)
 latent_dim: 512          # Latent representation dim
 hidden_size: 512         # Transformer hidden size
 n_heads: 8               # Attention heads
-n_blocks: 12             # Encoder transformer blocks
+n_blocks: 32             # Encoder transformer blocks
 dropout: 0.0             # Dropout probability
 
 # Time conditioning (optional)
@@ -20,15 +20,15 @@ time_embed_dim: 128      # Time embedding dim (if enabled)
 
 # Predictor configuration (noisy latents → clean latents)
 predictor_type: transformer        # "mlp" | "transformer"
-predictor_depth: 6                # Predictor depth
+predictor_depth: 12               # Predictor depth
 predictor_hidden_size: 384        # Predictor hidden size
 predictor_n_heads: 6              # Predictor heads
 predictor_use_projections: true   # Project when dims don't match
 
 # Readout decoder (latents → token logits; shallow for eval/sampling)
-readout_type: tiny_transformer     # "tied_linear" | "mlp" | "tiny_transformer"
-readout_hidden_size: 512           # Readout hidden size
-readout_depth: 2                  # Readout depth
+readout_type: transformer          # "tied_linear" | "mlp" | "tiny_transformer" | "transformer"
+readout_hidden_size: 768           # Readout hidden size
+readout_depth: 4                   # Readout depth
 tie_readout_to_embedding: false    # Tie weights (only for tied_linear)
 
 # EMA teacher (cosine momentum schedule)
@@ -41,3 +41,5 @@ copy_on_init: true        # Init teacher from student
 # Sequence params (injected by train.py)
 length: 1024
 max_tokens: 1024
+
+

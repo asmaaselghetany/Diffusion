@@ -1,3 +1,5 @@
+
+
 # Hydra config for Small LatentJEPA model (~30M params)
 _target_: discrete_diffusion.models.latent_jepa.LatentJEPA
 
