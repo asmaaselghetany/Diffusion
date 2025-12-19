@@ -7,6 +7,9 @@ _target_: discrete_diffusion.models.latent_jepa.LatentJEPA
 name: latent_jepa_350
 type: latent_jepa
 
+# Memory optimization
+gradient_checkpointing: true # Enable to trade compute for memory (~2-4x reduction, ~20% slower)
+
 # Architecture dimensions (encoder/predictor)
 latent_dim: 512          # Latent representation dim
 hidden_size: 512         # Transformer hidden size

@@ -1,0 +1,49 @@
+# Stage 1 Predictor Hyperparameter Sweep - 350M Model
+# Following hyperparameter_tuning_plan.md Section 4.2
+
+sweep:
+  name: stage1_350m_predictor
+  method: grid
+  metric:
+    name: latent/cosine_similarity
+    goal: maximize
+  
+  early_terminate:
+    type: collapse_detection
+    min_steps: 10000
+    std_threshold: 0.1
+    loss_threshold: 10.0
+  
+  parameters:
+    model.predictor_depth:
+      values: [6, 9, 12, 16]
+      baseline: 12
+    
+    model.predictor_hidden_size:
+      values: [384, 512, 768]
+      baseline: 384
+    
+    model.predictor_n_heads:
+      values: [6, 8, 12]
+      baseline: 6
+    
+    model.predictor_use_projections:
+      values: [true, false]
+      baseline: true
+
+fixed:
+  algo: jepa
+  algo.stage: 1
+  model: latent_jepa_350
+  model.gradient_checkpointing: true  # Enable to reduce memory usage (~2-4x reduction)
+  data: openwebtext-split
+  data.cache_dir: /home/hk-project-p0023960/hgf_nhz3359/New_Discrete_Diffusion-main/datasets/pgm_owt
+  trainer.max_steps: 200000
+  trainer.val_check_interval: 5000
+  loader.global_batch_size: 256
+  optim.lr: 3e-4
+
+constraints:
+  - type: divisible
+    params: [model.predictor_hidden_size, model.predictor_n_heads]
+

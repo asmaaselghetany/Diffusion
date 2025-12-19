@@ -1,0 +1,12 @@
+# Metric Logging Callback for Hyperparameter Analysis
+# Saves comprehensive metrics for sweep analysis
+
+metric_logging:
+  _target_: discrete_diffusion.tuning.early_stopping.MetricLoggingCallback
+  log_interval: 100
+  checkpoint_steps:
+    - 10000
+    - 50000
+    - 100000
+    - 200000
+

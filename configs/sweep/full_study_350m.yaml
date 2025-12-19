@@ -1,0 +1,84 @@
+# Full Hyperparameter Study - 350M Model
+# Orchestrates all phases from hyperparameter_tuning_plan.md
+
+study:
+  name: jepa_350m_full_study
+  description: "Complete hyperparameter optimization for 350M Latent JEPA model"
+  
+  wandb:
+    project: jepa_350m_hparam_study
+    entity: null
+  
+  compute:
+    nodes_per_run: 2
+    gpus_per_node: 4
+    time_per_run: "24:00:00"
+    memory: "256G"
+
+phases:
+  # Phase 1B: Encoder Architecture (2 weeks, 40-60 runs)
+  - name: phase1b_encoder
+    sweep_config: stage1_350m_encoder
+    num_runs: 50
+    method: latin_hypercube
+    priority: 1
+    depends_on: []
+    checkpoint_eval_steps: [10000, 50000, 100000, 200000]
+  
+  # Phase 2A: Predictor Architecture
+  - name: phase2a_predictor_350m
+    sweep_config: stage1_350m_predictor
+    num_runs: 50
+    method: grid
+    priority: 2
+    depends_on: [phase1b_encoder]
+    use_best_from: phase1b_encoder
+    checkpoint_eval_steps: [10000, 50000, 100000, 200000]
+  
+  # Phase 3: Readout Decoder (Stage 2)
+  - name: phase3_readout_350m
+    sweep_config: stage2_350m_readout
+    num_runs: 60
+    method: grid
+    priority: 3
+    depends_on: [phase2a_predictor_350m]
+    use_checkpoint_from: phase2a_predictor_350m
+    checkpoint_eval_steps: [10000, 25000, 50000]
+  
+  # Phase 4: Cross-component Validation
+  - name: phase4_validation_350m
+    sweep_config: null
+    num_runs: 30
+    method: cross_product
+    priority: 4
+    depends_on: [phase3_readout_350m]
+    cross_product:
+      stage1_configs: [phase2a_predictor_350m]
+      stage2_configs: [phase3_readout_350m]
+      top_k: 5
+    checkpoint_eval_steps: [50000, 100000, 200000]
+
+evaluation:
+  generation:
+    num_samples: 512
+    temperature: 1.0
+    num_steps: 256
+  
+  metrics:
+    - generative_perplexity
+    - output_entropy
+    - latent_std
+    - latent_cov_offdiag
+    - cosine_similarity
+  
+  reference_model: gpt2-large
+
+budget:
+  total_gpu_hours: 7000
+  phase_allocation:
+    phase1b_encoder: 1200
+    phase2a_predictor_350m: 1200
+    phase3_readout_350m: 360
+    phase4_validation_350m: 900
+    buffer: 3340
+

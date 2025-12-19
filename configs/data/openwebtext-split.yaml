@@ -1,7 +1,7 @@
 train: openwebtext-train
 valid: openwebtext-valid
 tokenizer_name_or_path: gpt2
-cache_dir: /share/kuleshov/ssahoo/textdiffusion/data
+cache_dir: /home/hk-project-p0023960/hgf_nhz3359/New_Discrete_Diffusion-main/datasets/pgm_owt
 wrap: True
 streaming: False
 insert_train_eos: True

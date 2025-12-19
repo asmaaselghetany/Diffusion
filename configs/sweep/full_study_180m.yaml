@@ -1,0 +1,113 @@
+# Full Hyperparameter Study - 180M Model
+# Orchestrates all phases from hyperparameter_tuning_plan.md
+
+study:
+  name: jepa_180m_full_study
+  description: "Complete hyperparameter optimization for 180M Latent JEPA model"
+  
+  # WandB project for aggregating all runs
+  wandb:
+    project: jepa_180m_hparam_study
+    entity: null  # Use default entity
+  
+  # Base compute settings per experiment
+  compute:
+    nodes_per_run: 8
+    gpus_per_node: 4
+    time_per_run: "12:00:00"
+    memory: "256G"
+
+phases:
+  # Phase 1A: Encoder Architecture (2 weeks, 50-80 runs)
+  - name: phase1a_encoder
+    sweep_config: stage1_180m_encoder
+    num_runs: 60
+    method: latin_hypercube
+    priority: 1
+    depends_on: []
+    checkpoint_eval_steps: [10000, 50000, 100000, 200000]
+  
+  # Phase 2A: Predictor Architecture (1 week, 50 runs)
+  - name: phase2a_predictor
+    sweep_config: stage1_180m_predictor
+    num_runs: 50
+    method: grid
+    priority: 2
+    depends_on: [phase1a_encoder]
+    use_best_from: phase1a_encoder
+    checkpoint_eval_steps: [10000, 50000, 100000, 200000]
+  
+  # Phase 2B: Training Hyperparameters (1 week, 40 runs)
+  - name: phase2b_training
+    sweep_config: stage1_180m_training
+    num_runs: 40
+    method: grid
+    priority: 2
+    depends_on: [phase1a_encoder]
+    use_best_from: phase1a_encoder
+    checkpoint_eval_steps: [10000, 50000, 100000, 200000]
+  
+  # Phase 2C: EMA Configuration (1 week, 27 runs)
+  - name: phase2c_ema
+    sweep_config: stage1_180m_ema
+    num_runs: 27
+    method: grid
+    priority: 3
+    depends_on: [phase2a_predictor, phase2b_training]
+    use_best_from: [phase2a_predictor, phase2b_training]
+    checkpoint_eval_steps: [10000, 50000, 100000, 200000]
+  
+  # Phase 3: Readout Decoder (Stage 2, 1 week, 60 runs)
+  - name: phase3_readout
+    sweep_config: stage2_180m_readout
+    num_runs: 60
+    method: grid
+    priority: 4
+    depends_on: [phase2c_ema]
+    use_checkpoint_from: phase2c_ema
+    checkpoint_eval_steps: [10000, 25000, 50000]
+  
+  # Phase 4: Cross-component Validation (1 week, 30 runs)
+  - name: phase4_validation
+    sweep_config: null  # Uses custom cross-product
+    num_runs: 30
+    method: cross_product
+    priority: 5
+    depends_on: [phase3_readout]
+    cross_product:
+      stage1_configs: [phase2c_ema]
+      stage2_configs: [phase3_readout]
+      top_k: 5
+    checkpoint_eval_steps: [50000, 100000, 200000]
+
+# Final evaluation settings
+evaluation:
+  # Sample generation settings
+  generation:
+    num_samples: 512
+    temperature: 1.0
+    num_steps: 256
+  
+  # Metrics to track
+  metrics:
+    - generative_perplexity
+    - output_entropy
+    - latent_std
+    - latent_cov_offdiag
+    - cosine_similarity
+  
+  # Reference model for perplexity
+  reference_model: gpt2-large
+
+# Resource budget (from Section 10.2)
+budget:
+  total_gpu_hours: 3500
+  phase_allocation:
+    phase1a_encoder: 720
+    phase2a_predictor: 600
+    phase2b_training: 480
+    phase2c_ema: 324
+    phase3_readout: 180
+    phase4_validation: 450
+    buffer: 746
+

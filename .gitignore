@@ -40,6 +40,8 @@ datasets/
 
 # Model outputs and checkpoints
 outputs/
+sweep_outputs/
+logs/
 *.ckpt
 *.pth
 *.pt

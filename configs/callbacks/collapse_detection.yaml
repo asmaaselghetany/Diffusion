@@ -1,0 +1,11 @@
+# Collapse Detection Callback for JEPA Training
+# Monitors latent space statistics and stops training on collapse
+
+collapse_detection:
+  _target_: discrete_diffusion.tuning.early_stopping.CollapseDetectionCallback
+  min_steps: 5000           # Minimum steps before early stopping
+  std_threshold: 0.1        # Stop if latent std < threshold
+  loss_threshold: 10.0      # Stop if loss > baseline * threshold
+  patience: 5               # Consecutive detections before stopping
+  check_interval: 500       # Steps between checks
+  save_diagnostics: true    # Save collapse diagnostics to file

@@ -1,8 +1,14 @@
-# Hydra config for LatentJEPA model
+# Latent JEPA ~700M config
+# Encoder: Tokens → Latents
+# Predictor: Noisy latents → Clean latents
+# Readout: Latents → Token logits
 _target_: discrete_diffusion.models.latent_jepa.LatentJEPA
 
 name: latent_jepa
 type: latent_jepa
+
+# ---------------- Memory optimization ----------------
+gradient_checkpointing: true # Enable to trade compute for memory (~2-4x reduction, ~20% slower)
 
 # ---------------- Encoder: tokens → latents ----------------
 # Large text JEPA-style setup: internal width 768, representation (latent_dim) fixed at 512.

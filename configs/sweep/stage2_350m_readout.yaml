@@ -1,0 +1,63 @@
+# Stage 2 Readout Decoder Hyperparameter Sweep - 350M Model
+# Following hyperparameter_tuning_plan.md Section 4.3
+
+sweep:
+  name: stage2_350m_readout
+  method: grid
+  metric:
+    name: decoder/accuracy
+    goal: maximize
+  
+  early_terminate:
+    type: performance
+    min_steps: 5000
+    accuracy_threshold: 0.01
+  
+  parameters:
+    model.readout_type:
+      values: ["tiny_transformer", "transformer"]
+      baseline: "transformer"
+    
+    model.readout_hidden_size:
+      values: [512, 768, 1024]
+      baseline: 768
+    
+    model.readout_depth:
+      values: [2, 4, 6, 8]
+      baseline: 4
+    
+    model.readout_n_heads:
+      values: [8, 12, 16]
+      baseline: 12
+    
+    model.readout_bidirectional:
+      values: [true, false]
+      baseline: true
+    
+    algo.latent_source:
+      values: ["predicted", "teacher", "mixed"]
+      baseline: "predicted"
+    
+    algo.mixed_warmup_steps:
+      values: [25000, 50000, 100000]
+      baseline: 50000
+
+fixed:
+  algo: jepa
+  algo.stage: 2
+  algo.sampling_eps: 1e-3
+  algo.mixed_schedule: linear
+  algo.weight_by_hazard: true
+  model: latent_jepa_350
+  model.gradient_checkpointing: true  # Enable to reduce memory usage (~2-4x reduction)
+  data: openwebtext-split
+  data.cache_dir: /home/hk-project-p0023960/hgf_nhz3359/New_Discrete_Diffusion-main/datasets/pgm_owt
+  trainer.max_steps: 50000
+  trainer.val_check_interval: 2500
+  loader.global_batch_size: 256
+  optim.lr: 1e-4
+
+requires_checkpoint:
+  stage: 1
+  checkpoint_key: training.finetune_path
+

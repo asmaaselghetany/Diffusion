@@ -1,0 +1,12 @@
+# Performance-based Early Stopping for Stage 2
+# Stops training if no improvement in target metric
+
+performance_early_stop:
+  _target_: discrete_diffusion.tuning.early_stopping.PerformanceEarlyStoppingCallback
+  monitor: decoder/accuracy
+  min_delta: 0.001
+  patience: 10
+  mode: max
+  min_steps: 5000
+  check_interval: 1000
+

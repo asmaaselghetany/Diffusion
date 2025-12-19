@@ -1,0 +1,70 @@
+# Stage 1 Encoder Hyperparameter Sweep - 180M Model
+# Following hyperparameter_tuning_plan.md Section 3.1
+# Fractional factorial design with ~60 runs recommended
+
+sweep:
+  name: stage1_180m_encoder
+  method: latin_hypercube  # grid, random, latin_hypercube
+  metric:
+    name: latent/cosine_similarity
+    goal: maximize
+  
+  # Early stopping for collapse detection
+  early_terminate:
+    type: collapse_detection
+    min_steps: 5000
+    std_threshold: 0.1  # Stop if latent std < 0.1
+    loss_threshold: 10.0  # Stop if loss > 10x baseline
+  
+  parameters:
+    # ---- Encoder Architecture ----
+    model.latent_dim:
+      values: [256, 512, 768]
+      baseline: 512
+    
+    model.hidden_size:
+      values: [384, 512, 768]
+      baseline: 512
+    
+    model.n_heads:
+      values: [4, 8, 12]
+      baseline: 8
+    
+    model.n_blocks:
+      values: [6, 8, 12]
+      baseline: 12
+    
+    model.dropout:
+      values: [0.0, 0.05, 0.1]
+      baseline: 0.0
+    
+    model.time_embed_dim:
+      values: [64, 128, 256]
+      baseline: 128
+
+# Fixed configuration (not swept)
+fixed:
+  algo: jepa
+  algo.stage: 1
+  model: latent_jepa_180M
+  model.gradient_checkpointing: true  # Enable to reduce memory usage (~2-4x reduction)
+  model.predictor_depth: 6
+  model.predictor_hidden_size: 384
+  model.predictor_n_heads: 6
+  model.readout_type: tiny_transformer
+  model.readout_hidden_size: 512
+  model.readout_depth: 2
+  model.ema_decay: 0.996
+  model.ema_warmup_steps: 200000
+  model.ema_final_decay: 0.9999
+  data: openwebtext-split
+  data.cache_dir: /home/hk-project-p0023960/hgf_nhz3359/New_Discrete_Diffusion-main/datasets/pgm_owt
+  trainer.max_steps: 200000
+  trainer.val_check_interval: 5000
+  loader.global_batch_size: 256
+  optim.lr: 3e-4
+
+# Constraints to ensure valid configurations
+constraints:
+  - type: divisible
+    params: [model.hidden_size, model.n_heads]

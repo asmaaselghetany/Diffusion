@@ -1,0 +1,70 @@
+# Stage 1 Training Hyperparameter Sweep - 180M Model
+# Following hyperparameter_tuning_plan.md Section 5
+# Critical VICReg and loss configuration combinations
+
+sweep:
+  name: stage1_180m_training
+  method: grid
+  metric:
+    name: latent/cosine_similarity
+    goal: maximize
+  
+  early_terminate:
+    type: collapse_detection
+    min_steps: 5000
+    std_threshold: 0.1
+    loss_threshold: 10.0
+  
+  parameters:
+    # ---- Loss Configuration ----
+    algo.loss_norm:
+      values: ["l2", "cosine"]
+      baseline: "l2"
+    
+    algo.mask_only:
+      values: [true, false]
+      baseline: true
+    
+    algo.normalize_targets:
+      values: [true, false]
+      baseline: true
+    
+    # ---- VICReg Regularization ----
+    algo.redundancy:
+      values: ["vicreg", "none"]
+      baseline: "vicreg"
+    
+    algo.lambda_var:
+      values: [0.0, 0.05, 0.1, 0.25, 0.5]
+      baseline: 0.1
+    
+    algo.lambda_cov:
+      values: [0.0, 0.02, 0.04, 0.1, 0.25]
+      baseline: 0.04
+    
+    # ---- Noise Warmup Curriculum ----
+    algo.noise_warmup_end_step:
+      values: [0, 10000, 25000]
+      baseline: 0
+
+fixed:
+  algo: jepa
+  algo.stage: 1
+  algo.sampling_eps: 1e-3
+  algo.vicreg_eps: 0.001
+  model: latent_jepa_180M
+  model.gradient_checkpointing: true  # Enable to reduce memory usage (~2-4x reduction)
+  data: openwebtext-split
+  data.cache_dir: /home/hk-project-p0023960/hgf_nhz3359/New_Discrete_Diffusion-main/datasets/pgm_owt
+  trainer.max_steps: 200000
+  trainer.val_check_interval: 5000
+  loader.global_batch_size: 256
+  optim.lr: 3e-4
+
+# Conditional parameters - only apply lambda values when redundancy is vicreg
+conditionals:
+  - condition: "algo.redundancy == 'none'"
+    overrides:
+      algo.lambda_var: 0.0
+      algo.lambda_cov: 0.0
+

@@ -1,5 +1,5 @@
 sample_saver:
-  _target_: src.discrete_diffusion.callbacks.sample_saver.SampleSaver
+  _target_: discrete_diffusion.callbacks.sample_saver.SampleSaver
   enabled: false
   every_n_steps: 1000
   num_samples: ${loader.eval_batch_size}

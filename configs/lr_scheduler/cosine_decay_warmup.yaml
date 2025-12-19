@@ -1,4 +1,4 @@
-_target_: src.discrete_diffusion.utils.CosineDecayWarmupLRScheduler
+_target_: discrete_diffusion.utils.CosineDecayWarmupLRScheduler
 t_in_epochs: False
 t_initial: ${sub:${trainer.max_steps}, ${.warmup_t}}
 warmup_prefix: True

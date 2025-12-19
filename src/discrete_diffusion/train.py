@@ -9,6 +9,7 @@ import torch
 
 from .data import get_dataloaders, get_tokenizer
 from . import utils
+from .callbacks.ddp_static_graph import DDPStaticGraphCallback
 
 
 def train(config):
@@ -63,10 +64,52 @@ def train(config):
     os.environ.setdefault('PL_FAULT_TOLERANT_TRAINING', '1')
 
   use_dist = config.trainer.get('num_nodes', 1) > 1 or config.trainer.get('devices', 1) > 1
+  
+  # Check if gradient checkpointing is enabled (check both model and config)
+  gradient_checkpointing_enabled = False
+  # First check the instantiated model
+  if hasattr(model, 'backbone') and hasattr(model.backbone, 'gradient_checkpointing'):
+    gradient_checkpointing_enabled = getattr(model.backbone, 'gradient_checkpointing', False)
+  elif hasattr(model, 'gradient_checkpointing'):
+    gradient_checkpointing_enabled = getattr(model, 'gradient_checkpointing', False)
+  # Fallback to config if model doesn't have the attribute yet
+  if not gradient_checkpointing_enabled and hasattr(config, 'model'):
+    if hasattr(config.model, 'gradient_checkpointing'):
+      gradient_checkpointing_enabled = getattr(config.model, 'gradient_checkpointing', False)
+  
+  # Determine DDP strategy
+  # When using static graph (for gradient checkpointing), we can use regular 'ddp'
+  # which is more efficient than 'ddp_find_unused_parameters_true'
   if config.get('strategy', None) is not None:
     strategy = hydra.utils.instantiate(config.strategy)
   else:
-    strategy = 'ddp_find_unused_parameters_true' if use_dist else 'auto'
+    if use_dist:
+      # Use regular DDP when gradient checkpointing is enabled (static graph will be set)
+      # Otherwise use find_unused_parameters for safety
+      if gradient_checkpointing_enabled:
+        strategy = 'ddp'
+        logger.info(
+          'Gradient checkpointing detected with DDP. Using "ddp" strategy. '
+          'Static graph will be set automatically for compatibility.'
+        )
+      else:
+        strategy = 'ddp_find_unused_parameters_true'
+    else:
+      strategy = 'auto'
+  
+  # Automatically add DDP static graph callback if needed
+  # Check if callback is already in the list (from config or manually added)
+  has_ddp_callback = any(
+    isinstance(cb, DDPStaticGraphCallback) for cb in callbacks
+  )
+  
+  if use_dist and gradient_checkpointing_enabled and not has_ddp_callback:
+    ddp_callback = DDPStaticGraphCallback(enabled=True)
+    callbacks.append(ddp_callback)
+    logger.info(
+      'Automatically added DDPStaticGraphCallback for gradient checkpointing compatibility.'
+    )
+  
   trainer = L.Trainer(
     **config.trainer, default_root_dir=os.getcwd(), callbacks=callbacks,
     strategy=strategy, logger=wandb_logger)

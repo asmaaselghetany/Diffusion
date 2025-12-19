@@ -150,7 +150,7 @@ class LatentJEPATrainer(trainer_base.AbsorbingState):
     else:  # cosine
       z_hat_norm = F.normalize(z_hat_0, p=2, dim=-1)
       z_0_norm = F.normalize(z_0, p=2, dim=-1)
-      per_token_loss = 1 - (z_hat_norm * z_0_norm).sum(dim=-1)
+      per_token_loss = 1 - (z_hat_norm * z_0_norm).mean(dim=-1)
     
     if self.mask_only:
       weighted_loss = per_token_loss * mask_indices.float() * weight

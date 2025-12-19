@@ -13,8 +13,30 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional, Iterable
 from torch.nn.parameter import Parameter
+from torch.utils.checkpoint import checkpoint as torch_checkpoint
 
 from .common import EmbeddingLayer, LayerNorm, TimestepEmbedder, DDiTBlock, Rotary
+
+
+def _forward_block_with_checkpoint(block, x, rotary_cos_sin, c, use_checkpoint: bool, training: bool):
+    """Forward through a single block with optional gradient checkpointing.
+    
+    Args:
+        block: DDiTBlock to forward through
+        x: Input tensor
+        rotary_cos_sin: Rotary position embeddings
+        c: Conditioning tensor
+        use_checkpoint: Whether to use gradient checkpointing
+        training: Whether in training mode (checkpointing only applies during training)
+    
+    Returns:
+        Output tensor
+    """
+    if use_checkpoint and training:
+        # use_reentrant=True is required for compatibility with TorchScript-compiled
+        # functions (bias_dropout_add_scale_fused_*) used in DDiTBlock
+        return torch_checkpoint(block, x, rotary_cos_sin, c, use_reentrant=True)
+    return block(x, rotary_cos_sin, c)
 
 
 class LatentJEPA(nn.Module):
@@ -42,6 +64,9 @@ class LatentJEPA(nn.Module):
     self.ema_warmup_steps = getattr(model_cfg, 'ema_warmup_steps', 50000)
     self.ema_final_decay = getattr(model_cfg, 'ema_final_decay', 0.9999)
     
+    # Memory optimization: gradient checkpointing trades compute for memory (~2-4x reduction)
+    self.gradient_checkpointing = getattr(model_cfg, 'gradient_checkpointing', False)
+    
     # Local vars for init
     latent_dim = self.latent_dim
     hidden_size = self.hidden_size
@@ -67,13 +92,15 @@ class LatentJEPA(nn.Module):
     self.student_encoder = LatentEncoder(
       vocab_size=vocab_size, hidden_size=hidden_size, latent_dim=latent_dim,
       n_heads=n_heads, n_blocks=n_blocks, dropout=dropout,
-      time_conditioning=time_conditioning, time_embed_dim=time_embed_dim)
+      time_conditioning=time_conditioning, time_embed_dim=time_embed_dim,
+      gradient_checkpointing=self.gradient_checkpointing)
 
-    # Teacher encoder (EMA, no gradients)
+    # Teacher encoder (EMA, no gradients) - no checkpointing needed (inference only)
     self.teacher_encoder = LatentEncoder(
       vocab_size=vocab_size, hidden_size=hidden_size, latent_dim=latent_dim,
       n_heads=n_heads, n_blocks=n_blocks, dropout=dropout,
-      time_conditioning=time_conditioning, time_embed_dim=time_embed_dim)
+      time_conditioning=time_conditioning, time_embed_dim=time_embed_dim,
+      gradient_checkpointing=False)
 
     if copy_on_init:
       self._copy_student_to_teacher()
@@ -91,7 +118,8 @@ class LatentJEPA(nn.Module):
         latent_dim=latent_dim, hidden_size=predictor_hidden,
         n_heads=(predictor_n_heads or n_heads), n_blocks=predictor_depth,
         dropout=dropout, time_conditioning=time_conditioning,
-        time_embed_dim=time_embed_dim, use_projections=predictor_use_projections)
+        time_embed_dim=time_embed_dim, use_projections=predictor_use_projections,
+        gradient_checkpointing=self.gradient_checkpointing)
     else:
       raise ValueError(f"Unknown predictor_type: {predictor_type}")
 
@@ -109,12 +137,14 @@ class LatentJEPA(nn.Module):
     elif readout_type == "tiny_transformer":
       self.readout = TinyTransformerReadout(
         latent_dim=latent_dim, hidden_size=readout_hidden, vocab_size=vocab_size,
-        n_heads=n_heads, n_blocks=readout_depth, dropout=dropout)
+        n_heads=n_heads, n_blocks=readout_depth, dropout=dropout,
+        gradient_checkpointing=self.gradient_checkpointing)
     elif readout_type == "transformer":
       self.readout = TransformerReadout(
         latent_dim=latent_dim, hidden_size=readout_hidden, vocab_size=vocab_size,
         n_heads=(readout_n_heads or n_heads), n_blocks=readout_depth,
-        dropout=dropout, bidirectional=readout_bidirectional)
+        dropout=dropout, bidirectional=readout_bidirectional,
+        gradient_checkpointing=self.gradient_checkpointing)
     else:
       raise ValueError(f"Unknown readout_type: {readout_type}")
 
@@ -170,10 +200,12 @@ class LatentEncoder(nn.Module):
   """Transformer encoder: Tokens → Latents."""
 
   def __init__(self, vocab_size: int, hidden_size: int, latent_dim: int, n_heads: int,
-               n_blocks: int, dropout: float, time_conditioning: bool, time_embed_dim: int):
+               n_blocks: int, dropout: float, time_conditioning: bool, time_embed_dim: int,
+               gradient_checkpointing: bool = False):
     super().__init__()
     self.time_conditioning = time_conditioning
     self.n_heads = n_heads
+    self.gradient_checkpointing = gradient_checkpointing
 
     self.vocab_embed = EmbeddingLayer(hidden_size, vocab_size)
     if time_conditioning:
@@ -206,7 +238,8 @@ class LatentEncoder(nn.Module):
 
     rotary_cos_sin = self.rotary_emb(x)
     for block in self.blocks:
-      x = block(x, rotary_cos_sin, c)
+      x = _forward_block_with_checkpoint(block, x, rotary_cos_sin, c, 
+                                          self.gradient_checkpointing, self.training)
     return self.to_latent(x)
 
 
@@ -249,11 +282,12 @@ class TransformerPredictor(nn.Module):
 
   def __init__(self, latent_dim: int, hidden_size: int, n_heads: int, n_blocks: int,
                dropout: float, time_conditioning: bool, time_embed_dim: int,
-               use_projections: bool = True):
+               use_projections: bool = True, gradient_checkpointing: bool = False):
     super().__init__()
     self.time_conditioning = time_conditioning
     self.n_heads = n_heads
     self.use_projections = use_projections
+    self.gradient_checkpointing = gradient_checkpointing
 
     if time_conditioning:
       self.time_embedder = TimestepEmbedder(time_embed_dim)
@@ -295,7 +329,8 @@ class TransformerPredictor(nn.Module):
 
     rotary_cos_sin = self.rotary_emb(x)
     for block in self.blocks:
-      x = block(x, rotary_cos_sin, c)
+      x = _forward_block_with_checkpoint(block, x, rotary_cos_sin, c,
+                                          self.gradient_checkpointing, self.training)
     return self.output_proj(x)
 
 
@@ -348,9 +383,11 @@ class TinyTransformerReadout(nn.Module):
   """Tiny transformer readout: z → logits (adds local context)."""
 
   def __init__(self, latent_dim: int, hidden_size: int, vocab_size: int,
-               n_heads: int, n_blocks: int, dropout: float):
+               n_heads: int, n_blocks: int, dropout: float,
+               gradient_checkpointing: bool = False):
     super().__init__()
     self.n_heads = n_heads
+    self.gradient_checkpointing = gradient_checkpointing
     self.input_proj = nn.Linear(latent_dim, hidden_size)
     self.rotary_emb = Rotary(hidden_size // n_heads, base=10000)
     self.blocks = nn.ModuleList([
@@ -364,7 +401,8 @@ class TinyTransformerReadout(nn.Module):
     c = torch.zeros(B, 1, device=z.device, dtype=x.dtype)
     rotary_cos_sin = self.rotary_emb(x)
     for block in self.blocks:
-      x = block(x, rotary_cos_sin, c)
+      x = _forward_block_with_checkpoint(block, x, rotary_cos_sin, c,
+                                          self.gradient_checkpointing, self.training)
     return self.output_proj(x)
 
 
@@ -372,10 +410,12 @@ class TransformerReadout(nn.Module):
   """Flexible transformer readout: z → logits."""
 
   def __init__(self, latent_dim: int, hidden_size: int, vocab_size: int,
-               n_heads: int, n_blocks: int, dropout: float, bidirectional: bool = True):
+               n_heads: int, n_blocks: int, dropout: float, bidirectional: bool = True,
+               gradient_checkpointing: bool = False):
     super().__init__()
     self.n_heads = n_heads
     self.bidirectional = bidirectional
+    self.gradient_checkpointing = gradient_checkpointing
 
     if hidden_size == latent_dim:
       self.input_proj = nn.Identity()
@@ -396,6 +436,7 @@ class TransformerReadout(nn.Module):
     c = torch.zeros(B, 1, device=z.device, dtype=x.dtype)
     rotary_cos_sin = self.rotary_emb(x)
     for block in self.blocks:
-      x = block(x, rotary_cos_sin, c)
+      x = _forward_block_with_checkpoint(block, x, rotary_cos_sin, c,
+                                          self.gradient_checkpointing, self.training)
     return self.output_proj(x)
 

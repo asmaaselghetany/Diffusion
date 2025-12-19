@@ -1,0 +1,66 @@
+# Stage 1 Predictor Hyperparameter Sweep - 180M Model
+# Following hyperparameter_tuning_plan.md Section 3.2
+# Full grid with ~72 combinations
+
+sweep:
+  name: stage1_180m_predictor
+  method: grid
+  metric:
+    name: latent/cosine_similarity
+    goal: maximize
+  
+  early_terminate:
+    type: collapse_detection
+    min_steps: 5000
+    std_threshold: 0.1
+    loss_threshold: 10.0
+  
+  parameters:
+    # ---- Predictor Architecture ----
+    model.predictor_depth:
+      values: [3, 6, 9, 12]
+      baseline: 6
+    
+    model.predictor_hidden_size:
+      values: [256, 384, 512]
+      baseline: 384
+    
+    model.predictor_n_heads:
+      values: [4, 6, 8]
+      baseline: 6
+    
+    model.predictor_use_projections:
+      values: [true, false]
+      baseline: true
+
+# Fixed configuration - use best encoder from encoder sweep
+fixed:
+  algo: jepa
+  algo.stage: 1
+  model: latent_jepa_180M
+  model.gradient_checkpointing: true  # Enable to reduce memory usage (~2-4x reduction)
+  # Use baseline encoder (or override with best from sweep)
+  model.latent_dim: 512
+  model.hidden_size: 512
+  model.n_heads: 8
+  model.n_blocks: 12
+  model.dropout: 0.0
+  model.time_embed_dim: 128
+  # Readout fixed
+  model.readout_type: tiny_transformer
+  model.readout_hidden_size: 512
+  model.readout_depth: 2
+  model.ema_decay: 0.996
+  model.ema_warmup_steps: 200000
+  model.ema_final_decay: 0.9999
+  data: openwebtext-split
+  data.cache_dir: /home/hk-project-p0023960/hgf_nhz3359/New_Discrete_Diffusion-main/datasets/pgm_owt
+  trainer.max_steps: 200000
+  trainer.val_check_interval: 5000
+  loader.global_batch_size: 256
+  optim.lr: 3e-4
+
+constraints:
+  - type: divisible
+    params: [model.predictor_hidden_size, model.predictor_n_heads]
+

@@ -1,0 +1,74 @@
+# Stage 2 Readout Decoder Hyperparameter Sweep - 180M Model
+# Following hyperparameter_tuning_plan.md Section 3.3 and 6
+
+sweep:
+  name: stage2_180m_readout
+  method: grid
+  metric:
+    name: decoder/accuracy
+    goal: maximize
+  
+  early_terminate:
+    type: performance
+    min_steps: 5000
+    accuracy_threshold: 0.01  # Stop if accuracy < 1% after min_steps
+  
+  parameters:
+    # ---- Readout Architecture ----
+    model.readout_type:
+      values: ["tiny_transformer", "transformer", "mlp"]
+      baseline: "tiny_transformer"
+    
+    model.readout_hidden_size:
+      values: [256, 512, 768, 1024]
+      baseline: 512
+    
+    model.readout_depth:
+      values: [1, 2, 4, 6, 8]
+      baseline: 2
+    
+    model.readout_n_heads:
+      values: [4, 8, 12]
+      baseline: 8
+    
+    model.readout_bidirectional:
+      values: [true, false]
+      baseline: true
+    
+    # ---- Stage 2 Latent Source ----
+    algo.latent_source:
+      values: ["predicted", "teacher", "mixed"]
+      baseline: "predicted"
+    
+    algo.mixed_warmup_steps:
+      values: [10000, 25000, 50000, 100000]
+      baseline: 50000
+    
+    # ---- Loss Configuration ----
+    algo.weight_by_hazard:
+      values: [true, false]
+      baseline: true
+    
+    algo.label_smoothing:
+      values: [0.0, 0.05, 0.1]
+      baseline: 0.0
+
+fixed:
+  algo: jepa
+  algo.stage: 2
+  algo.sampling_eps: 1e-3
+  algo.mixed_schedule: linear
+  # Encoder/predictor frozen from Stage 1
+  model: latent_jepa_180M
+  model.gradient_checkpointing: true  # Enable to reduce memory usage (~2-4x reduction)
+  data: openwebtext-split
+  data.cache_dir: /home/hk-project-p0023960/hgf_nhz3359/New_Discrete_Diffusion-main/datasets/pgm_owt
+  trainer.max_steps: 50000
+  trainer.val_check_interval: 2500
+  optim.lr: 1e-4  # Lower LR for decoder fine-tuning
+  loader.global_batch_size: 256
+# Stage 2 requires Stage 1 checkpoint
+requires_checkpoint:
+  stage: 1
+  checkpoint_key: training.finetune_path
+
