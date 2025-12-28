@@ -1,12 +1,13 @@
 # Stage 2 Readout Decoder Hyperparameter Sweep - 180M Model
 # Following hyperparameter_tuning_plan.md Section 3.3 and 6
+# Note: Full grid = 25,920 configs, using LHS sampling for practical exploration
 
 sweep:
   name: stage2_180m_readout
-  method: grid
+  method: latin_hypercube  # Changed from grid - full grid is 25,920 configs
   metric:
-    name: decoder/accuracy
-    goal: maximize
+    name: val/nll
+    goal: minimize
   
   early_terminate:
     type: performance
@@ -16,7 +17,7 @@ sweep:
   parameters:
     # ---- Readout Architecture ----
     model.readout_type:
-      values: ["tiny_transformer", "transformer", "mlp"]
+      values: ["transformer"]
       baseline: "tiny_transformer"
     
     model.readout_hidden_size:
@@ -24,7 +25,7 @@ sweep:
       baseline: 512
     
     model.readout_depth:
-      values: [1, 2, 4, 6, 8]
+      values: [2, 4, 6, 8]
       baseline: 2
     
     model.readout_n_heads:
@@ -32,16 +33,16 @@ sweep:
       baseline: 8
     
     model.readout_bidirectional:
-      values: [true, false]
+      values: [true]
       baseline: true
     
     # ---- Stage 2 Latent Source ----
     algo.latent_source:
-      values: ["predicted", "teacher", "mixed"]
+      values: ["predicted", "mixed"]
       baseline: "predicted"
     
     algo.mixed_warmup_steps:
-      values: [10000, 25000, 50000, 100000]
+      values: [25000, 50000, 100000]
       baseline: 50000
     
     # ---- Loss Configuration ----
@@ -63,7 +64,7 @@ fixed:
   model.gradient_checkpointing: true  # Enable to reduce memory usage (~2-4x reduction)
   data: openwebtext-split
   data.cache_dir: /home/hk-project-p0023960/hgf_nhz3359/New_Discrete_Diffusion-main/datasets/pgm_owt
-  trainer.max_steps: 50000
+  trainer.max_steps: 100000
   trainer.val_check_interval: 2500
   optim.lr: 1e-4  # Lower LR for decoder fine-tuning
   loader.global_batch_size: 256

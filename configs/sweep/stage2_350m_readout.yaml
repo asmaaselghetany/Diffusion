@@ -15,7 +15,7 @@ sweep:
   
   parameters:
     model.readout_type:
-      values: ["tiny_transformer", "transformer"]
+      values: ["transformer"]
       baseline: "transformer"
     
     model.readout_hidden_size:
@@ -23,7 +23,7 @@ sweep:
       baseline: 768
     
     model.readout_depth:
-      values: [2, 4, 6, 8]
+      values: [4, 6, 8]
       baseline: 4
     
     model.readout_n_heads:
@@ -31,11 +31,11 @@ sweep:
       baseline: 12
     
     model.readout_bidirectional:
-      values: [true, false]
+      values: [true]
       baseline: true
     
     algo.latent_source:
-      values: ["predicted", "teacher", "mixed"]
+      values: ["predicted", "mixed"]
       baseline: "predicted"
     
     algo.mixed_warmup_steps:
@@ -52,7 +52,7 @@ fixed:
   model.gradient_checkpointing: true  # Enable to reduce memory usage (~2-4x reduction)
   data: openwebtext-split
   data.cache_dir: /home/hk-project-p0023960/hgf_nhz3359/New_Discrete_Diffusion-main/datasets/pgm_owt
-  trainer.max_steps: 50000
+  trainer.max_steps: 100000
   trainer.val_check_interval: 2500
   loader.global_batch_size: 256
   optim.lr: 1e-4

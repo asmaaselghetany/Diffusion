@@ -43,11 +43,11 @@ class LatentJEPATrainer(trainer_base.AbsorbingState):
     self.vicreg_eps = getattr(config.algo, 'vicreg_eps', 1e-4)
     self.normalize_targets = getattr(config.algo, 'normalize_targets', True)
     
-    # Noise warmup config
-    self.noise_warmup_start = int(getattr(config.algo, 'noise_warmup_start_step', 0))
-    self.noise_warmup_end = int(getattr(config.algo, 'noise_warmup_end_step', 0))
-    warmup_range = getattr(config.algo, 'noise_warmup_range', [0.15, 0.3])
-    self.noise_warmup_range = [float(warmup_range[0]), float(warmup_range[1])]
+    # # Noise warmup config
+    # self.noise_warmup_start = int(getattr(config.algo, 'noise_warmup_start_step', 0))
+    # self.noise_warmup_end = int(getattr(config.algo, 'noise_warmup_end_step', 0))
+    # warmup_range = getattr(config.algo, 'noise_warmup_range', [0.15, 0.3])
+    # self.noise_warmup_range = [float(warmup_range[0]), float(warmup_range[1])]
     
     # Stage 2 specific
     self.latent_source = getattr(config.algo, 'latent_source', 'predicted').lower()
@@ -84,13 +84,13 @@ class LatentJEPATrainer(trainer_base.AbsorbingState):
 
   def _sample_timesteps(self, batch_size, device):
     """Sample timesteps with optional noise warmup."""
-    if (self.noise_warmup_end > 0 and 
-        self.noise_warmup_start <= self.global_step < self.noise_warmup_end):
-      t_min, t_max = self.noise_warmup_range
-      t0 = torch.rand((), device=device)
-      t = (t0 + torch.arange(batch_size, device=device, dtype=torch.float32) / max(batch_size, 1)) % 1.0
-      t = t_min + t * (t_max - t_min)
-      return t.clamp(max(t_min, self.sampling_eps), min(t_max, 1.0 - self.sampling_eps))
+    # if (self.noise_warmup_end > 0 and 
+    #     self.noise_warmup_start <= self.global_step < self.noise_warmup_end):
+    #   t_min, t_max = self.noise_warmup_range
+    #   t0 = torch.rand((), device=device)
+    #   t = (t0 + torch.arange(batch_size, device=device, dtype=torch.float32) / max(batch_size, 1)) % 1.0
+    #   t = t_min + t * (t_max - t_min)
+    #   return t.clamp(max(t_min, self.sampling_eps), min(t_max, 1.0 - self.sampling_eps))
     # Standard antithetic sampling
     t0 = torch.rand((), device=device)
     t = (t0 + torch.arange(batch_size, device=device, dtype=torch.float32) / max(batch_size, 1)) % 1.0

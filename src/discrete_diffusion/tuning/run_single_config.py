@@ -3,7 +3,7 @@
 
 This script is called by the multi-node parallel orchestrator to execute
 one configuration on N GPUs. It loads the configuration by index and
-runs training with proper logging.
+runs training with proper logging and metrics extraction.
 
 GPU Configuration:
     --gpus-per-config 1: Single GPU, uses SingleDeviceStrategy
@@ -14,12 +14,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
 def load_config(configs_file: str, config_idx: int) -> Dict[str, Any]:
@@ -45,6 +46,100 @@ def config_to_overrides(config: Dict[str, Any]) -> List[str]:
     return overrides
 
 
+def extract_metrics_from_logs(run_dir: Path) -> Dict[str, float]:
+    """Extract metrics from training logs.
+    
+    Parses stdout/stderr logs for common metric patterns like:
+    - 'val/nll': 0.7241
+    - Epoch 0, global step 5000: 'val/nll' reached 0.72412
+    - metric_name=value format
+    """
+    metrics = {}
+    
+    # Try to load from metrics.json first (if training wrote it)
+    metrics_file = run_dir / "metrics.json"
+    if metrics_file.exists():
+        try:
+            with open(metrics_file) as f:
+                metrics = json.load(f)
+            return metrics
+        except (json.JSONDecodeError, IOError):
+            pass
+    
+    # Parse from logs
+    for log_file in ["stdout.log", "stderr.log"]:
+        log_path = run_dir / log_file
+        if not log_path.exists():
+            # Also check parent logs directory
+            parent_log = run_dir.parent.parent / "logs" / f"config_{run_dir.name.split('_')[0]}.out"
+            if parent_log.exists():
+                log_path = parent_log
+            else:
+                continue
+        
+        try:
+            with open(log_path, 'r') as f:
+                content = f.read()
+            
+            # Pattern 1: PyTorch Lightning validation log format
+            # Epoch 0, global step 5000: 'val/nll' reached 0.72412
+            pattern1 = r"'(val/[a-z_]+|train/[a-z_]+|latent/[a-z_]+)'\s+reached\s+([\d.]+)"
+            for match in re.finditer(pattern1, content):
+                metric_name = match.group(1)
+                metric_val = float(match.group(2))
+                # Keep the latest (best) value
+                if metric_name not in metrics or (
+                    'nll' in metric_name and metric_val < metrics[metric_name]
+                ) or (
+                    'accuracy' in metric_name and metric_val > metrics[metric_name]
+                ):
+                    metrics[metric_name] = metric_val
+            
+            # Pattern 2: Simple key=value format
+            # val/nll=0.7241 or val_nll: 0.7241
+            pattern2 = r"(val[/_][a-z_]+|train[/_][a-z_]+|latent[/_][a-z_]+)[=:]\s*([\d.]+)"
+            for match in re.finditer(pattern2, content):
+                metric_name = match.group(1).replace('_', '/')
+                metric_val = float(match.group(2))
+                if metric_name not in metrics:
+                    metrics[metric_name] = metric_val
+            
+            # Pattern 3: WandB summary log format
+            pattern3 = r'"(val/[^"]+|train/[^"]+)":\s*([\d.]+)'
+            for match in re.finditer(pattern3, content):
+                metric_name = match.group(1)
+                metric_val = float(match.group(2))
+                if metric_name not in metrics:
+                    metrics[metric_name] = metric_val
+                    
+        except (IOError, UnicodeDecodeError):
+            continue
+    
+    return metrics
+
+
+def find_checkpoint(run_dir: Path) -> Optional[str]:
+    """Find the best available checkpoint in run directory."""
+    checkpoints_dir = run_dir / "checkpoints"
+    if not checkpoints_dir.exists():
+        return None
+    
+    # Priority order: best.ckpt > last.ckpt > any .ckpt
+    for name in ["best.ckpt", "last.ckpt"]:
+        ckpt = checkpoints_dir / name
+        if ckpt.exists():
+            return str(ckpt)
+    
+    # Fallback to any checkpoint
+    ckpts = list(checkpoints_dir.glob("*.ckpt"))
+    if ckpts:
+        # Sort by modification time, newest first
+        ckpts.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        return str(ckpts[0])
+    
+    return None
+
+
 def run_training(
     config_data: Dict[str, Any],
     output_dir: str,
@@ -68,6 +163,23 @@ def run_training(
     
     run_dir = Path(output_dir) / "runs" / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Check if already completed successfully
+    status_file = run_dir / "status.json"
+    if status_file.exists():
+        try:
+            with open(status_file, 'r') as f:
+                status = json.load(f)
+            exit_code = status.get('exit_code', 1)
+            if exit_code == 0:
+                print(f"\n{'='*60}")
+                print(f"Config {idx} ({run_name}) already completed successfully.")
+                print(f"Skipping re-execution.")
+                print(f"{'='*60}\n")
+                return 0
+        except (json.JSONDecodeError, KeyError):
+            # If status file is corrupted, continue with execution
+            pass
     
     # Save config
     with open(run_dir / "config.yaml", 'w') as f:
@@ -125,13 +237,28 @@ def run_training(
             "command": cmd[:10]  # First 10 elements
         }, f, indent=2)
     
-    # Run training - stream output to console
-    result = subprocess.run(
-        cmd,
-        cwd=str(Path(output_dir).parent.parent),  # Project root
-        stdout=sys.stdout,
-        stderr=sys.stderr,
-    )
+    # Run training - capture output for metrics extraction
+    stdout_log = run_dir / "stdout.log"
+    stderr_log = run_dir / "stderr.log"
+    
+    with open(stdout_log, 'w') as stdout_f, open(stderr_log, 'w') as stderr_f:
+        result = subprocess.run(
+            cmd,
+            cwd=str(Path(output_dir).parent.parent),  # Project root
+            stdout=stdout_f,
+            stderr=stderr_f,
+        )
+    
+    # Also print to console for real-time monitoring
+    print(f"\n--- Training output summary (last 50 lines of stderr) ---")
+    try:
+        with open(stderr_log, 'r') as f:
+            lines = f.readlines()
+            for line in lines[-50:]:
+                print(line, end='')
+    except IOError:
+        pass
+    print(f"\n--- End training output ---\n")
     
     # Log completion
     duration = time.time() - start_time
@@ -141,7 +268,13 @@ def run_training(
     print(f"Exit code: {result.returncode}")
     print(f"{'='*60}\n")
     
-    # Save final status
+    # Extract metrics from logs
+    metrics = extract_metrics_from_logs(run_dir)
+    
+    # Find checkpoint
+    checkpoint_path = find_checkpoint(run_dir)
+    
+    # Save final status with metrics
     status = {
         "config_idx": idx,
         "run_name": run_name,
@@ -152,16 +285,19 @@ def run_training(
         "exit_code": result.returncode,
         "duration_seconds": duration,
         "started_at": start_time,
-        "completed_at": datetime.now().isoformat()
+        "completed_at": datetime.now().isoformat(),
+        "metrics": metrics,
+        "checkpoint_path": checkpoint_path,
     }
     
-    with open(run_dir / "status.json", 'w') as f:
+    with open(status_file, 'w') as f:
         json.dump(status, f, indent=2)
     
-    # Try to extract metrics if available
-    metrics_file = run_dir / "metrics.json"
-    if metrics_file.exists():
-        status["has_metrics"] = True
+    # Also save metrics separately for easy access
+    if metrics:
+        with open(run_dir / "metrics.json", 'w') as f:
+            json.dump(metrics, f, indent=2)
+        print(f"Extracted metrics: {metrics}")
     
     return result.returncode
 
@@ -172,7 +308,6 @@ def main():
     # CUDA_VISIBLE_DEVICES is set by the shell script based on GPUS_PER_CONFIG.
     # For single-GPU: "0" or "1" or "2" or "3"
     # For multi-GPU:  "0,1" or "0,1,2,3" etc.
-    # We just log what we received.
     # =========================================================================
     cuda_devices = os.environ.get('CUDA_VISIBLE_DEVICES', 'not set')
     print(f"[GPU Binding] CUDA_VISIBLE_DEVICES={cuda_devices}")
@@ -211,4 +346,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

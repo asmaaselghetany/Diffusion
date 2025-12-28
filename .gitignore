@@ -16,12 +16,7 @@ build/
 .cache/
 data_cache/
 
-# Shell scripts: ignore by default, but keep examples + latent-JEPA entrypoints
-*.sh
-!examples/**/*.sh
-!slurm_scripts/latent_jepa_owt.sh
-!Diffusion-Jepa/discrete_diffusion_latent_jepa_stage1.sh
-!Diffusion-Jepa/discrete_diffusion_latent_jepa_stage2.sh
+# Shell scripts: ignore by default, but keep examples + latent-JEPA entrypoints + tuning scripts
 
 # Slurm batch scripts
 *.sbatch
@@ -49,12 +44,22 @@ logs/
 wandb/
 *.wandb
 
+# Large training artifacts (checkpoints, logs, metrics)
+**/runs/
+**/checkpoints/
+**/logs/
+**/*.ckpt
+**/*.pth
+**/*.pt
+**/metrics.json
+**/status.json
+**/started.json
+
 # Generated artifacts
 generated_samples/
 
 # Plans / notes (keep core docs, drop WIP plans)
 docs/JEPA_PORT_PLAN.md
-Diffusion-Jepa/hyperparameter_tuning_research_plan.md
 
 # Tests / verification scripts
 tests/

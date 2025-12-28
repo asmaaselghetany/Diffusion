@@ -1,4 +1,4 @@
-# 
+# Latent JEPA Hyperparameter Tuning Research Plan
 
 **Document Version**: 1.0
 

@@ -3,7 +3,7 @@
 
 sweep:
   name: stage1_350m_predictor
-  method: grid
+  method: latin_hypercube
   metric:
     name: latent/cosine_similarity
     goal: maximize
@@ -16,11 +16,11 @@ sweep:
   
   parameters:
     model.predictor_depth:
-      values: [6, 9, 12, 16]
+      values: [9, 12, 16]
       baseline: 12
     
     model.predictor_hidden_size:
-      values: [384, 512, 768]
+      values: [384, 512]
       baseline: 384
     
     model.predictor_n_heads:
@@ -28,7 +28,7 @@ sweep:
       baseline: 6
     
     model.predictor_use_projections:
-      values: [true, false]
+      values: [true]
       baseline: true
 
 fixed:

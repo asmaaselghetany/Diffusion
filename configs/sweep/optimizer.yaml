@@ -3,7 +3,7 @@
 
 sweep:
   name: optimizer_sweep
-  method: grid
+  method: latin_hypercube
   metric:
     name: latent/cosine_similarity
     goal: maximize
@@ -17,7 +17,7 @@ sweep:
   parameters:
     # ---- Optimizer ----
     optim.lr:
-      values: [1e-4, 3e-4, 5e-4, 1e-3]
+      values: [1e-4, 3e-4, 1e-3]
       baseline: 3e-4
     
     optim.weight_decay:

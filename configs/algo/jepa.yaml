@@ -23,10 +23,10 @@ mask_only: true
 normalize_targets: true
 vicreg_eps: 0.001  # bf16 stability (increased from 1e-4)
 
-# Noise warmup (optional curriculum)
-noise_warmup_start_step: 0
-noise_warmup_end_step: 0
-noise_warmup_range: [0.15, 0.3]
+# # Noise warmup (optional curriculum)
+# noise_warmup_start_step: 0
+# noise_warmup_end_step: 0
+# noise_warmup_range: [0.15, 0.3]
 
 # Stage 2 specific
 latent_source: predicted  # predicted, teacher, mixed

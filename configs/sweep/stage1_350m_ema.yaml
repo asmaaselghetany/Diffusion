@@ -1,8 +1,8 @@
-# Stage 1 EMA Teacher Hyperparameter Sweep - 180M Model
+# Stage 1 EMA Teacher Hyperparameter Sweep - 350M Model
 # Following hyperparameter_tuning_plan.md Section 8
 
 sweep:
-  name: stage1_180m_ema
+  name: stage1_350m_ema
   method: latin_hypercube
   metric:
     name: latent/cosine_similarity
@@ -10,7 +10,7 @@ sweep:
   
   early_terminate:
     type: collapse_detection
-    min_steps: 5000
+    min_steps: 10000
     std_threshold: 0.1
     loss_threshold: 10.0
   
@@ -35,12 +35,13 @@ sweep:
 fixed:
   algo: jepa
   algo.stage: 1
-  model: latent_jepa_180M
-  model.gradient_checkpointing: true  # Enable to reduce memory usage (~2-4x reduction)
+  model: latent_jepa_350
+  model.gradient_checkpointing: true
   data: openwebtext-split
   data.cache_dir: /home/hk-project-p0023960/hgf_nhz3359/New_Discrete_Diffusion-main/datasets/pgm_owt
   trainer.max_steps: 200000
   trainer.val_check_interval: 5000
   loader.global_batch_size: 256
   optim.lr: 3e-4
+
 
