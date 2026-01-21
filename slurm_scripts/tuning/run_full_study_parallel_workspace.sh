@@ -8,8 +8,8 @@
 #SBATCH --mem=256G
 #SBATCH --ntasks-per-node=4
 #SBATCH --cpus-per-task=12
-#SBATCH --output=/hkfs/work/workspace/scratch/hgf_nhz3359-JEDi/logs/350_study_orchestrator_%j.out
-#SBATCH --error=/hkfs/work/workspace/scratch/hgf_nhz3359-JEDi/logs/350_study_orchestrator_%j.err
+#SBATCH --output=logs/350_study_orchestrator_%j.out
+#SBATCH --error=logs/350_study_orchestrator_%j.err
 
 ###############################################################################
 # JEPA Diffusion Full Hyperparameter Study - Production Parallel Version
@@ -47,7 +47,8 @@ set -euo pipefail
 # ============================================================================
 # Configuration
 # ============================================================================
-REPO_ROOT="${REPO_ROOT:-/home/hk-project-p0023960/hgf_nhz3359/text-diffusion-jepa}"
+# Repository root on scratch filesystem for better performance and larger capacity
+REPO_ROOT="${REPO_ROOT:-/hkfs/work/workspace/scratch/hgf_nhz3359-JEDi/}"
 # Output directory on scratch filesystem for better performance and larger capacity
 OUTPUT_BASE="${OUTPUT_BASE:-/hkfs/work/workspace/scratch/hgf_nhz3359-JEDi/sweep_outputs}"
 
@@ -75,7 +76,9 @@ fi
 cd "${REPO_ROOT}"
 # Ensure output base directory exists
 mkdir -p "${OUTPUT_BASE}"
-mkdir -p "${STUDY_DIR}/logs" logs
+mkdir -p "${STUDY_DIR}/logs"
+# Create logs directory in scratch if needed (avoid creating in HOME)
+mkdir -p "${OUTPUT_BASE}/logs"
 
 # ============================================================================
 # Environment Setup
@@ -101,8 +104,9 @@ export PYTHONPATH="${REPO_ROOT}/src"
 export WANDB_PROJECT="${WANDB_PROJECT:-jepa_${MODEL_SIZE}_hparam_study}"
 export WANDB_MODE="${WANDB_MODE:-online}"
 
-# HuggingFace cache (offline mode for compute nodes)
-export HF_HOME="/home/hk-project-p0023960/hgf_nhz3359/.cache/huggingface"
+# HuggingFace cache on scratch filesystem (offline mode for compute nodes)
+SCRATCH_CACHE_BASE="/hkfs/work/workspace/scratch/hgf_nhz3359-JEDi/.cache"
+export HF_HOME="${SCRATCH_CACHE_BASE}/huggingface"
 export HF_DATASETS_CACHE="${HF_HOME}/datasets"
 export HF_HUB_OFFLINE=1
 
@@ -129,8 +133,9 @@ export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 # export GLOO_SOCKET_IFNAME="${RDZV_IFNAME}"
 # export NCCL_SOCKET_IFNAME="${RDZV_IFNAME}"
 
-# Cache directories
-CACHE_DIR="${REPO_ROOT}/.cache"
+# Cache directories on scratch filesystem
+SCRATCH_CACHE_BASE="/hkfs/work/workspace/scratch/hgf_nhz3359-JEDi/.cache"
+CACHE_DIR="${SCRATCH_CACHE_BASE}"
 mkdir -p "${CACHE_DIR}"
 export TORCHINDUCTOR_CACHE_DIR="${CACHE_DIR}/torch_inductor"
 export TORCH_HOME="${CACHE_DIR}/torch"
@@ -578,13 +583,13 @@ print(f'Generated {len(output)} configurations')
                     # (Optional, keep if you don't want verbs/RDMA)
                     export NCCL_IB_DISABLE=1
                     
-                    # Cache directories
-                    export TORCH_HOME=${REPO_ROOT}/.cache/torch
-                    export TORCHINDUCTOR_CACHE_DIR=${REPO_ROOT}/.cache/torch_inductor
-                    export XDG_CACHE_HOME=${REPO_ROOT}/.cache
+                    # Cache directories on scratch filesystem
+                    export TORCH_HOME=/hkfs/work/workspace/scratch/hgf_nhz3359-JEDi/.cache/torch
+                    export TORCHINDUCTOR_CACHE_DIR=/hkfs/work/workspace/scratch/hgf_nhz3359-JEDi/.cache/torch_inductor
+                    export XDG_CACHE_HOME=/hkfs/work/workspace/scratch/hgf_nhz3359-JEDi/.cache
                     
-                    # HuggingFace
-                    export HF_HOME=/home/hk-project-p0023960/hgf_nhz3359/.cache/huggingface
+                    # HuggingFace cache on scratch filesystem
+                    export HF_HOME=/hkfs/work/workspace/scratch/hgf_nhz3359-JEDi/.cache/huggingface
                     export HF_DATASETS_CACHE=\${HF_HOME}/datasets
                     export HF_HUB_OFFLINE=1
                     
@@ -668,13 +673,13 @@ print(f'Generated {len(output)} configurations')
                     export NCCL_SOCKET_IFNAME=\"\${RDZV_IFNAME}\"
                     export GLOO_SOCKET_IFNAME=\"\${RDZV_IFNAME}\"
                     
-                    # Cache directories
-                    export TORCH_HOME=${REPO_ROOT}/.cache/torch
-                    export TORCHINDUCTOR_CACHE_DIR=${REPO_ROOT}/.cache/torch_inductor
-                    export XDG_CACHE_HOME=${REPO_ROOT}/.cache
+                    # Cache directories on scratch filesystem
+                    export TORCH_HOME=/hkfs/work/workspace/scratch/hgf_nhz3359-JEDi/.cache/torch
+                    export TORCHINDUCTOR_CACHE_DIR=/hkfs/work/workspace/scratch/hgf_nhz3359-JEDi/.cache/torch_inductor
+                    export XDG_CACHE_HOME=/hkfs/work/workspace/scratch/hgf_nhz3359-JEDi/.cache
                     
-                    # HuggingFace
-                    export HF_HOME=/home/hk-project-p0023960/hgf_nhz3359/.cache/huggingface
+                    # HuggingFace cache on scratch filesystem
+                    export HF_HOME=/hkfs/work/workspace/scratch/hgf_nhz3359-JEDi/.cache/huggingface
                     export HF_DATASETS_CACHE=\${HF_HOME}/datasets
                     export HF_HUB_OFFLINE=1
                     
@@ -783,332 +788,6 @@ if best_run_id:
 }
 
 # ============================================================================
-# Phase 1B: Architecture Validation (Encoder × Predictor combinations)
-# ============================================================================
-# This phase validates that top encoders and predictors work well together,
-# since they were originally trained with baseline counterparts.
-
-# Configuration for Phase 1B
-PHASE1B_TOP_K="${PHASE1B_TOP_K:-3}"  # Number of top configs from each phase
-PHASE1B_ENABLED="${PHASE1B_ENABLED:-true}"  # Can be disabled via environment
-
-has_completed_runs() {
-    # Check if a phase directory has at least one completed run (exit_code: 0)
-    local phase_dir="$1"
-    local runs_dir="${phase_dir}/runs"
-
-    if [[ ! -d "${runs_dir}" ]]; then
-        return 1
-    fi
-
-    for run_dir in "${runs_dir}"/*; do
-        if [[ ! -d "${run_dir}" ]]; then
-            continue
-        fi
-        local status_file="${run_dir}/status.json"
-        if [[ -f "${status_file}" ]]; then
-            local exit_code=$(python -c "import json; print(json.load(open('${status_file}')).get('exit_code', 1))" 2>/dev/null || echo "1")
-            if [[ "${exit_code}" == "0" ]]; then
-                return 0  # Found at least one completed run
-            fi
-        fi
-    done
-
-    return 1  # No completed runs found
-}
-
-should_run_phase1b() {
-    # Check if Phase 1B should run (backward compatibility)
-    local phase1b_dir="${STUDY_DIR}/phase1b_arch_validation"
-
-    # If explicitly disabled, skip
-    if [[ "${PHASE1B_ENABLED}" != "true" ]]; then
-        echo "[Phase 1B] Disabled via PHASE1B_ENABLED=false"
-        return 1
-    fi
-
-    # If Phase 1B already has results, let run_sweep handle skip logic
-    if [[ -f "${phase1b_dir}/summary.json" ]]; then
-        return 0
-    fi
-
-    # If Phase 1B configs exist, we started it - continue
-    if [[ -f "${phase1b_dir}/configs.json" ]]; then
-        return 0
-    fi
-
-    # If not resuming, always run Phase 1B (new behavior)
-    if [[ "${RESUME_MODE}" != "true" ]]; then
-        return 0
-    fi
-
-    # Resuming an old study - check if downstream phases have COMPLETED runs
-    # Only skip Phase 1B if there are actually completed runs in Phase 2C or Phase 3
-    # This allows Phase 1B to run if previous Phase 2C/3 runs all failed
-    if has_completed_runs "${STUDY_DIR}/phase2c_ema"; then
-        echo "[Phase 1B] Skipping - old study has completed Phase 2C runs (backward compatibility)"
-        return 1
-    fi
-    if has_completed_runs "${STUDY_DIR}/phase3_decoder"; then
-        echo "[Phase 1B] Skipping - old study has completed Phase 3 runs (backward compatibility)"
-        return 1
-    fi
-
-    return 0
-}
-
-run_phase1b() {
-    # Run Phase 1B: Architecture Validation
-    local phase1b_dir="${STUDY_DIR}/phase1b_arch_validation"
-    local configs_file="${phase1b_dir}/configs.json"
-
-    echo ""
-    echo "=========================================="
-    echo "Phase 1B: Architecture Validation"
-    echo "Combining top-${PHASE1B_TOP_K} encoders × top-${PHASE1B_TOP_K} predictors"
-    echo "Output: ${phase1b_dir}"
-    echo "Started: $(date)"
-    echo "=========================================="
-
-    mkdir -p "${phase1b_dir}/runs" "${phase1b_dir}/logs"
-
-    # Generate configs if not already present (or if resuming and configs exist)
-    if [[ -f "${configs_file}" && "${RESUME_MODE}" == "true" ]]; then
-        echo "Using existing configurations from ${configs_file}"
-    else
-        echo "Generating Phase 1B configurations..."
-        echo "  Extracting top-${PHASE1B_TOP_K} from Phase 1A (encoders)"
-        echo "  Extracting top-${PHASE1B_TOP_K} from Phase 2A (predictors)"
-
-        python -m discrete_diffusion.tuning.generate_phase1b_configs \
-            --study-dir "${STUDY_DIR}" \
-            --top-k "${PHASE1B_TOP_K}" \
-            --model-size "${MODEL_SIZE}" \
-            --output-file "${configs_file}"
-
-        if [[ $? -ne 0 ]]; then
-            echo "ERROR: Failed to generate Phase 1B configurations"
-            return 1
-        fi
-    fi
-
-    local num_configs=$(python -c "import json; print(len(json.load(open('${configs_file}'))))")
-    echo "Total configurations: ${num_configs} (${PHASE1B_TOP_K}×${PHASE1B_TOP_K})"
-
-    # Count completed and pending configs
-    local completed=0
-    local pending=0
-    for idx in $(seq 0 $((num_configs - 1))); do
-        if is_config_complete "${phase1b_dir}" "${idx}"; then
-            ((completed+=1))
-        else
-            ((pending+=1))
-        fi
-    done
-
-    echo "Configuration status: ${completed}/${num_configs} completed, ${pending} pending"
-
-    if [[ ${pending} -eq 0 ]]; then
-        echo "All configurations already completed. Skipping phase."
-        return 0
-    fi
-
-    # Run configurations using the same parallel execution as other phases
-    echo ""
-    echo "Launching ${pending} pending configurations (${GPUS_PER_CONFIG} GPU(s) each)..."
-
-    # Track running jobs and their slots
-    declare -A RUNNING_JOBS
-    declare -a SLOT_BUSY
-
-    for ((i=0; i<CONFIGS_PER_BATCH; i++)); do
-        SLOT_BUSY[$i]=false
-    done
-
-    for config_idx in $(seq 0 $((num_configs - 1))); do
-        if is_config_complete "${phase1b_dir}" "${config_idx}"; then
-            continue
-        fi
-
-        # Find a free slot
-        local free_slot=-1
-        while [[ $free_slot -eq -1 ]]; do
-            for ((i=0; i<CONFIGS_PER_BATCH; i++)); do
-                if [[ "${SLOT_BUSY[$i]}" == "false" ]]; then
-                    free_slot=$i
-                    break
-                fi
-            done
-
-            if [[ $free_slot -eq -1 ]]; then
-                wait -n || true
-                for pid in "${!RUNNING_JOBS[@]}"; do
-                    if ! kill -0 "$pid" 2>/dev/null; then
-                        local finished_slot="${RUNNING_JOBS[$pid]}"
-                        SLOT_BUSY[$finished_slot]=false
-                        unset "RUNNING_JOBS[$pid]"
-                    fi
-                done
-            fi
-        done
-
-        local slot=$free_slot
-        SLOT_BUSY[$slot]=true
-
-        local config_start_node_idx=$((slot * NODES_PER_CONFIG))
-        local node_list=""
-        for n in $(seq 0 $((NODES_PER_CONFIG - 1))); do
-            local node_idx=$((config_start_node_idx + n))
-            local node_name=$(scontrol show hostnames $SLURM_JOB_NODELIST | sed -n "$((node_idx + 1))p")
-            if [[ -n "${node_list}" ]]; then
-                node_list="${node_list},${node_name}"
-            else
-                node_list="${node_name}"
-            fi
-        done
-
-        echo "[$(date +%T)] Launching config ${config_idx} in slot ${slot} on nodes ${node_list}"
-
-        # Launch using single-node execution (same as other phases)
-        local target_node=$(echo "${node_list}" | cut -d',' -f1)
-        srun --nodes=1 --ntasks=1 \
-            --nodelist=${target_node} \
-            --output="${phase1b_dir}/logs/config_${config_idx}.out" \
-            --error="${phase1b_dir}/logs/config_${config_idx}.err" \
-            bash -c "
-                export CUDA_VISIBLE_DEVICES=0,1,2,3
-                export NCCL_DEBUG=WARN
-                export NCCL_IB_TIMEOUT=50
-                export NCCL_IB_RETRY_CNT=10
-                export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
-                unset NCCL_SOCKET_IFNAME
-                unset NCCL_SOCKET_FAMILY
-                export NCCL_SOCKET_IFNAME=\"en,eth,em,bond,ib\"
-                export GLOO_SOCKET_IFNAME=\"en,eth,em,bond,ib\"
-                export NCCL_IB_DISABLE=1
-                export TORCH_HOME=${REPO_ROOT}/.cache/torch
-                export TORCHINDUCTOR_CACHE_DIR=${REPO_ROOT}/.cache/torch_inductor
-                export XDG_CACHE_HOME=${REPO_ROOT}/.cache
-                export HF_HOME=/home/hk-project-p0023960/hgf_nhz3359/.cache/huggingface
-                export HF_DATASETS_CACHE=\${HF_HOME}/datasets
-                export HF_HUB_OFFLINE=1
-                export WANDB_MODE=${WANDB_MODE:-online}
-                unset SLURM_JOB_ID SLURM_JOBID SLURM_JOB_NAME
-                unset SLURM_NTASKS SLURM_NTASKS_PER_NODE SLURM_NNODES
-                unset SLURM_LOCALID SLURM_PROCID SLURM_NODEID
-                unset SLURM_JOB_NODELIST SLURM_NODELIST
-                unset SLURM_STEP_GPUS SLURM_STEP_NUM_TASKS
-                cd ${REPO_ROOT}
-                source ${REPO_ROOT}/venv/bin/activate
-                export PYTHONPATH=${REPO_ROOT}/src
-                export HYDRA_FULL_ERROR=1
-                python -m discrete_diffusion.tuning.run_single_config \
-                    --configs-file '${phase1b_dir}/configs.json' \
-                    --config-idx ${config_idx} \
-                    --output-dir '${phase1b_dir}' \
-                    --wandb-project '${WANDB_PROJECT}' \
-                    --gpus-per-config ${GPUS_PER_CONFIG} \
-                    --num-nodes 1
-            " &
-
-        RUNNING_JOBS[$!]=$slot
-    done
-
-    echo "Waiting for all Phase 1B jobs to complete..."
-    wait
-    echo "Phase 1B completed at $(date)"
-
-    # Aggregate results
-    echo ""
-    echo "Aggregating Phase 1B results..."
-    python -c "
-import json
-from pathlib import Path
-
-phase_dir = Path('${phase1b_dir}')
-configs_file = phase_dir / 'configs.json'
-with open(configs_file) as f:
-    configs = json.load(f)
-
-results = []
-completed = 0
-failed = 0
-best_metric = float('inf')
-best_run_id = ''
-best_run_metrics = {}
-
-for cfg_data in configs:
-    run_name = cfg_data['run_name']
-    run_dir = phase_dir / 'runs' / run_name
-    status_file = run_dir / 'status.json'
-
-    if status_file.exists():
-        with open(status_file) as f:
-            status = json.load(f)
-        results.append(status)
-
-        if status.get('exit_code', 1) == 0:
-            completed += 1
-            # Find wandb-summary.json for metrics
-            wandb_dir = run_dir / 'wandb'
-            if wandb_dir.exists():
-                for d in wandb_dir.iterdir():
-                    if d.is_dir() and d.name.startswith('run-'):
-                        wandb_summary = d / 'files' / 'wandb-summary.json'
-                        if wandb_summary.exists():
-                            with open(wandb_summary) as f:
-                                metrics = json.load(f)
-                            pred_loss = metrics.get('latent/pred_loss')
-                            reg_loss = metrics.get('latent/reg_loss')
-                            if pred_loss is not None and reg_loss is not None:
-                                combined = 20.0 * reg_loss + pred_loss
-                                if combined < best_metric:
-                                    best_metric = combined
-                                    best_run_id = run_name
-                                    best_run_metrics = {
-                                        'latent/pred_loss': pred_loss,
-                                        'latent/reg_loss': reg_loss,
-                                        'combined': combined
-                                    }
-                            break
-        else:
-            failed += 1
-    else:
-        failed += 1
-        results.append({'run_name': run_name, 'status': 'missing'})
-
-summary = {
-    'sweep_name': 'phase1b_arch_validation',
-    'total_runs': len(configs),
-    'completed': completed,
-    'failed': failed,
-    'metric_name': '20*reg_loss + pred_loss',
-    'best_run_id': best_run_id,
-    'best_run_metrics': best_run_metrics,
-    'best_metric_value': best_metric if best_metric != float('inf') else None,
-    'results': results
-}
-
-with open(phase_dir / 'summary.json', 'w') as f:
-    json.dump(summary, f, indent=2, default=str)
-
-print(f'Summary: {completed} completed, {failed} failed out of {len(configs)}')
-if best_run_id:
-    print(f'Best run: {best_run_id}')
-    print(f'  pred_loss={best_run_metrics.get(\"latent/pred_loss\", \"N/A\"):.6f}')
-    print(f'  reg_loss={best_run_metrics.get(\"latent/reg_loss\", \"N/A\"):.6f}')
-    print(f'  combined={best_metric:.6f}')
-"
-
-    echo ""
-    echo "Phase 1B completed"
-    echo "Finished: $(date)"
-    echo "=========================================="
-
-    return 0
-}
-
-# ============================================================================
 # Main Study Execution - Stage 1 Phases
 # ============================================================================
 
@@ -1138,28 +817,6 @@ PHASE2A_STATUS=$?
 
 if [[ ${PHASE2A_STATUS} -ne 0 ]]; then
     echo "WARNING: Phase 2A had errors (exit code: ${PHASE2A_STATUS})"
-fi
-
-# ============================================================================
-# Phase 1B: Architecture Validation (runs after 1A and 2A complete)
-# ============================================================================
-echo ""
-echo "################################################################"
-echo "# PHASE 1B: Architecture Validation"
-echo "# Validating top encoder × predictor combinations"
-echo "################################################################"
-
-PHASE1B_STATUS=0
-if should_run_phase1b; then
-    run_phase1b
-    PHASE1B_STATUS=$?
-
-    if [[ ${PHASE1B_STATUS} -ne 0 ]]; then
-        echo "WARNING: Phase 1B had errors (exit code: ${PHASE1B_STATUS})"
-    fi
-else
-    echo "Phase 1B skipped (backward compatibility or disabled)"
-    PHASE1B_STATUS="SKIPPED"
 fi
 
 # Phase 2B: Training Hyperparameters (with best architecture from Phase 2A)
@@ -1204,108 +861,41 @@ fi
 # ============================================================================
 
 # Find overall best Stage 1 checkpoint by comparing all phases
-# Selection metric: 20*reg_loss + pred_loss (balances prediction quality and representation health)
 echo ""
 echo "################################################################"
 echo "# Selecting Best Stage 1 Checkpoint for Stage 2"
-echo "# Metric: 20*latent/reg_loss + latent/pred_loss"
 echo "################################################################"
 
 BEST_STAGE1_CKPT=""
 BEST_STAGE1_METRIC=99999
-BEST_STAGE1_PRED_LOSS=""
-BEST_STAGE1_REG_LOSS=""
 
-for phase_dir in "${STUDY_DIR}/phase1a_encoder" "${STUDY_DIR}/phase1b_arch_validation" "${STUDY_DIR}/phase2a_predictor" "${STUDY_DIR}/phase2b_training" "${STUDY_DIR}/phase2c_ema"; do
-    runs_dir="${phase_dir}/runs"
-    if [[ ! -d "${runs_dir}" ]]; then
-        continue
-    fi
-
-    # Scan all runs in this phase
-    for run_dir in "${runs_dir}"/*; do
-        if [[ ! -d "${run_dir}" ]]; then
-            continue
-        fi
-
-        status_file="${run_dir}/status.json"
-        if [[ ! -f "${status_file}" ]]; then
-            continue
-        fi
-
-        # Check exit code from status.json first
-        exit_code=$(python -c "import json; print(json.load(open('${status_file}')).get('exit_code', 1))" 2>/dev/null || echo "1")
-        if [[ "${exit_code}" != "0" ]]; then
-            continue
-        fi
-
-        # Find wandb-summary.json (metrics are stored there, not in status.json)
-        wandb_summary=""
-        for wandb_run_dir in "${run_dir}/wandb/run-"*; do
-            if [[ -d "${wandb_run_dir}" ]]; then
-                candidate="${wandb_run_dir}/files/wandb-summary.json"
-                if [[ -f "${candidate}" ]]; then
-                    wandb_summary="${candidate}"
-                    break
-                fi
-            fi
-        done
-
-        if [[ -z "${wandb_summary}" || ! -f "${wandb_summary}" ]]; then
-            continue
-        fi
-
-        # Extract metrics and compute combined score: 20*reg_loss + pred_loss
-        result=$(python -c "
+for phase_dir in "${STUDY_DIR}/phase1a_encoder" "${STUDY_DIR}/phase2a_predictor" "${STUDY_DIR}/phase2b_training" "${STUDY_DIR}/phase2c_ema"; do
+    if [[ -f "${phase_dir}/summary.json" ]]; then
+        metric=$(python -c "
 import json
-with open('${wandb_summary}') as f:
-    data = json.load(f)
-
-pred_loss = data.get('latent/pred_loss')
-reg_loss = data.get('latent/reg_loss')
-
-if pred_loss is None or reg_loss is None:
-    print('SKIP')
-    exit(0)
-
-combined = 20.0 * reg_loss + pred_loss
-print(f'{combined:.6f},{pred_loss:.6f},{reg_loss:.6f}')
+with open('${phase_dir}/summary.json') as f:
+    s = json.load(f)
+val = s.get('best_metric_value')
+if val is not None:
+    print(val)
+else:
+    print('999999')
 " 2>/dev/null)
-
-        if [[ "${result}" == "SKIP" || -z "${result}" ]]; then
-            continue
-        fi
-
-        combined_metric=$(echo "${result}" | cut -d',' -f1)
-        pred_loss=$(echo "${result}" | cut -d',' -f2)
-        reg_loss=$(echo "${result}" | cut -d',' -f3)
-
-        # Check for checkpoint
-        ckpt="${run_dir}/checkpoints/last.ckpt"
-        if [[ ! -f "${ckpt}" ]]; then
-            ckpt="${run_dir}/checkpoints/best.ckpt"
-        fi
-
-        if [[ -f "${ckpt}" ]]; then
-            if (( $(echo "${combined_metric} < ${BEST_STAGE1_METRIC}" | bc -l) )); then
-                BEST_STAGE1_METRIC="${combined_metric}"
+        ckpt=$(get_best_checkpoint "${phase_dir}" "val/nll" "minimize")
+        if [[ -n "${ckpt}" && -f "${ckpt}" ]]; then
+            if (( $(echo "${metric} < ${BEST_STAGE1_METRIC}" | bc -l) )); then
+                BEST_STAGE1_METRIC="${metric}"
                 BEST_STAGE1_CKPT="${ckpt}"
-                BEST_STAGE1_PRED_LOSS="${pred_loss}"
-                BEST_STAGE1_REG_LOSS="${reg_loss}"
-                run_name=$(basename "${run_dir}")
-                echo "New best: ${run_name}"
-                echo "  pred_loss=${pred_loss}, reg_loss=${reg_loss}, combined=${combined_metric}"
+                echo "New best: ${ckpt} (val/nll=${metric})"
             fi
         fi
-    done
+    fi
 done
 
 if [[ -n "${BEST_STAGE1_CKPT}" && -f "${BEST_STAGE1_CKPT}" ]]; then
     echo ""
     echo "Best Stage 1 checkpoint: ${BEST_STAGE1_CKPT}"
-    echo "  latent/pred_loss: ${BEST_STAGE1_PRED_LOSS}"
-    echo "  latent/reg_loss:  ${BEST_STAGE1_REG_LOSS}"
-    echo "  combined (20*reg + pred): ${BEST_STAGE1_METRIC}"
+    echo "Best Stage 1 val/nll: ${BEST_STAGE1_METRIC}"
     
     # Phase 3: Readout Decoder Sweep (Stage 2)
     echo ""
@@ -1335,12 +925,11 @@ echo "Study: ${STUDY_NAME}"
 echo "Output: ${STUDY_DIR}"
 echo ""
 echo "Phase Status:"
-echo "  Phase 1A (Encoder):       Exit ${PHASE1A_STATUS:-N/A}"
-echo "  Phase 1B (Arch Valid):    Exit ${PHASE1B_STATUS:-N/A}"
-echo "  Phase 2A (Predictor):     Exit ${PHASE2A_STATUS:-N/A}"
-echo "  Phase 2B (Training):      Exit ${PHASE2B_STATUS:-N/A}"
-echo "  Phase 2C (EMA):           Exit ${PHASE2C_STATUS:-N/A}"
-echo "  Phase 3 (Decoder):        Exit ${PHASE3_STATUS:-N/A}"
+echo "  Phase 1A (Encoder):    Exit ${PHASE1A_STATUS:-N/A}"
+echo "  Phase 2A (Predictor):  Exit ${PHASE2A_STATUS:-N/A}"
+echo "  Phase 2B (Training):   Exit ${PHASE2B_STATUS:-N/A}"
+echo "  Phase 2C (EMA):        Exit ${PHASE2C_STATUS:-N/A}"
+echo "  Phase 3 (Decoder):     Exit ${PHASE3_STATUS:-N/A}"
 echo ""
 echo "End time: $(date)"
 echo "================================================================"
@@ -1353,10 +942,9 @@ from datetime import datetime
 
 study_dir = Path('${STUDY_DIR}')
 phases = [
-    'phase1a_encoder',
-    'phase1b_arch_validation',
-    'phase2a_predictor',
-    'phase2b_training',
+    'phase1a_encoder', 
+    'phase2a_predictor', 
+    'phase2b_training', 
     'phase2c_ema',
     'phase3_decoder'
 ]

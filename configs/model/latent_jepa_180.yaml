@@ -4,7 +4,7 @@
 # Readout: Latents → Token logits
 _target_: discrete_diffusion.models.latent_jepa.LatentJEPA
 
-name: latent_jepa_180M
+name: latent_jepa_180
 type: latent_jepa
 
 # Memory optimization

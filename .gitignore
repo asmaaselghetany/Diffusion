@@ -12,9 +12,15 @@ ENV/
 dist/
 build/
 
+# External libraries (cloned repos)
+mteb/
+
 # Local caches
 .cache/
 data_cache/
+
+# AI assistant files
+.claude/
 
 # Shell scripts: ignore by default, but keep examples + latent-JEPA entrypoints + tuning scripts
 
@@ -64,6 +70,7 @@ docs/JEPA_PORT_PLAN.md
 # Tests / verification scripts
 tests/
 test_*.py
+test_*.sh
 verify_*.py
 Diffusion-Jepa/test_*.py
 Diffusion-Jepa/verify_*.py

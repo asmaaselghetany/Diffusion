@@ -2,12 +2,20 @@
 """Run a single configuration from a sweep configs file.
 
 This script is called by the multi-node parallel orchestrator to execute
-one configuration on N GPUs. It loads the configuration by index and
-runs training with proper logging and metrics extraction.
+one configuration on N GPUs across M nodes. It loads the configuration by index and
+runs training with proper logging and metrics extraction using PyTorch Lightning.
 
-GPU Configuration:
+Training Configuration:
     --gpus-per-config 1: Single GPU, uses SingleDeviceStrategy
-    --gpus-per-config 2+: Multiple GPUs, uses DDP strategy
+    --gpus-per-config 2+: Multiple GPUs per node, uses DDP strategy
+    --num-nodes 1: Single-node training (Lightning spawns processes internally)
+    --num-nodes >1: Multi-node training (requires RANK, WORLD_SIZE env vars)
+
+Note:
+    This script uses PyTorch Lightning's native distributed training capabilities.
+    For single-node multi-GPU, Lightning spawns processes internally.
+    For multi-node, environment variables (RANK, WORLD_SIZE, MASTER_ADDR, etc.)
+    must be set by the launcher (e.g., srun), and Lightning coordinates automatically.
 """
 
 from __future__ import annotations
@@ -145,17 +153,24 @@ def run_training(
     output_dir: str,
     wandb_project: str,
     gpus_per_config: int = 1,
+    num_nodes: int = 1,
 ) -> int:
-    """Run training for this configuration.
+    """Run training for this configuration using PyTorch Lightning.
     
     Args:
         config_data: Dict with 'idx', 'run_name', and 'config' keys
         output_dir: Phase output directory
         wandb_project: WandB project name
-        gpus_per_config: Number of GPUs to use (1=single-device, >1=DDP)
+        gpus_per_config: Number of GPUs per node (1=single-device, >1=DDP)
+        num_nodes: Number of nodes (1=single-node, >1=multi-node)
     
     Returns:
         Exit code (0 for success)
+    
+    Note:
+        For single-node multi-GPU, Lightning spawns processes internally.
+        For multi-node, environment variables (RANK, WORLD_SIZE, etc.) must be set
+        by the launcher (e.g., srun), and Lightning coordinates via these.
     """
     idx = config_data['idx']
     run_name = config_data['run_name']
@@ -186,6 +201,20 @@ def run_training(
         import yaml
         yaml.dump(config, f, default_flow_style=False)
     
+    # Detect multi-node environment from environment variables
+    # If RANK, WORLD_SIZE, etc. are set, we're in a multi-node setup
+    rank = os.environ.get('RANK', None)
+    world_size = os.environ.get('WORLD_SIZE', None)
+    local_rank = os.environ.get('LOCAL_RANK', None)
+    
+    # Auto-detect num_nodes if not explicitly provided and env vars are set
+    if num_nodes == 1 and rank is not None and world_size is not None:
+        # Infer num_nodes from WORLD_SIZE and devices per node
+        detected_num_nodes = int(world_size) // gpus_per_config
+        if detected_num_nodes > 1:
+            num_nodes = detected_num_nodes
+            print(f"[Multi-node Detection] Detected {num_nodes} nodes from environment variables")
+    
     # Build overrides
     overrides = config_to_overrides(config)
     overrides.extend([
@@ -194,16 +223,23 @@ def run_training(
         f"wandb.group={run_name.rsplit('_', 4)[0]}",  # Extract sweep name
         f"checkpointing.save_dir='{run_dir}'",
         f"wandb.project={wandb_project}",
-        # GPU configuration
+        # GPU configuration - Lightning handles process spawning internally
         f"trainer.devices={gpus_per_config}",
-        "trainer.num_nodes=1",
+        f"trainer.num_nodes={num_nodes}",
     ])
     
-    # Strategy depends on GPU count
-    if gpus_per_config == 1:
+    # Strategy selection: Lightning best practices
+    if num_nodes == 1 and gpus_per_config == 1:
         # Single GPU: use SingleDeviceStrategy to avoid DDP overhead
         overrides.append("strategy=single-device")
-    # else: use default DDP strategy from config (for multi-GPU)
+    elif num_nodes == 1 and gpus_per_config > 1:
+        # Single-node multi-GPU: Lightning will spawn processes internally
+        # Use DDP strategy (Lightning's default for multi-GPU)
+        overrides.append("strategy=ddp")
+    elif num_nodes > 1:
+        # Multi-node: Lightning coordinates via environment variables
+        # Use DDP strategy (Lightning's default for multi-node)
+        overrides.append("strategy=ddp")
     
     # Build command
     cmd = [sys.executable, "-m", "discrete_diffusion"] + overrides
@@ -212,7 +248,18 @@ def run_training(
     start_time = time.time()
     gpu_id = os.environ.get('CUDA_VISIBLE_DEVICES', 'unknown')
     hostname = os.environ.get('SLURMD_NODENAME', os.environ.get('HOSTNAME', 'unknown'))
-    strategy = "single-device" if gpus_per_config == 1 else "ddp"
+    
+    # Determine strategy for logging
+    if num_nodes == 1 and gpus_per_config == 1:
+        strategy = "single-device"
+    else:
+        strategy = "ddp"
+    
+    # Log environment variables for multi-node debugging
+    if num_nodes > 1:
+        print(f"[Multi-node Info] RANK={rank}, WORLD_SIZE={world_size}, LOCAL_RANK={local_rank}")
+        print(f"[Multi-node Info] MASTER_ADDR={os.environ.get('MASTER_ADDR', 'not set')}")
+        print(f"[Multi-node Info] MASTER_PORT={os.environ.get('MASTER_PORT', 'not set')}")
     
     print(f"\n{'='*60}")
     print(f"Config Index: {idx}")
@@ -231,8 +278,12 @@ def run_training(
             "run_name": run_name,
             "hostname": hostname,
             "gpus_per_config": gpus_per_config,
+            "num_nodes": num_nodes,
             "cuda_visible_devices": gpu_id,
             "strategy": strategy,
+            "rank": rank,
+            "world_size": world_size,
+            "local_rank": local_rank,
             "started_at": datetime.now().isoformat(),
             "command": cmd[:10]  # First 10 elements
         }, f, indent=2)
@@ -280,8 +331,12 @@ def run_training(
         "run_name": run_name,
         "hostname": hostname,
         "gpus_per_config": gpus_per_config,
+        "num_nodes": num_nodes,
         "cuda_visible_devices": gpu_id,
         "strategy": strategy,
+        "rank": rank,
+        "world_size": world_size,
+        "local_rank": local_rank,
         "exit_code": result.returncode,
         "duration_seconds": duration,
         "started_at": start_time,
@@ -322,12 +377,15 @@ def main():
     parser.add_argument("--wandb-project", type=str, default="jepa_hparam_study",
                        help="WandB project name")
     parser.add_argument("--gpus-per-config", type=int, default=1,
-                       help="Number of GPUs per config (1=single-device, >1=DDP)")
+                       help="Number of GPUs per node (1=single-device, >1=DDP)")
+    parser.add_argument("--num-nodes", type=int, default=1,
+                       help="Number of nodes (1=single-node, >1=multi-node)")
     
     args = parser.parse_args()
     
     # Log GPU configuration
-    print(f"[Config Runner] GPUs per config: {args.gpus_per_config}")
+    print(f"[Config Runner] GPUs per config (per node): {args.gpus_per_config}")
+    print(f"[Config Runner] Number of nodes: {args.num_nodes}")
     print(f"[Config Runner] CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES', 'not set')}")
     
     # Load configuration
@@ -339,6 +397,7 @@ def main():
         output_dir=args.output_dir,
         wandb_project=args.wandb_project,
         gpus_per_config=args.gpus_per_config,
+        num_nodes=args.num_nodes,
     )
     
     sys.exit(exit_code)

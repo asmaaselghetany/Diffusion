@@ -4,7 +4,7 @@
 # Readout: Latents → Token logits
 _target_: discrete_diffusion.models.latent_jepa.LatentJEPA
 
-name: latent_jepa_180M
+name: latent_jepa_predictor
 type: latent_jepa
 
 # Memory optimization
@@ -12,21 +12,21 @@ gradient_checkpointing: true # Enable to trade compute for memory (~2-4x reducti
 
 # Architecture dimensions (encoder/predictor)
 latent_dim: 512          # Latent representation dim
-hidden_size: 384         # Transformer hidden size
+hidden_size: 512         # Transformer hidden size
 n_heads: 8               # Attention heads
-n_blocks: 8             # Encoder transformer blocks
-dropout: 0.05             # Dropout probability
+n_blocks: 12             # Encoder transformer blocks
+dropout: 0.0             # Dropout probability
 
 # Time conditioning (optional)
 time_conditioning: true  # Enable time conditioning
-time_embed_dim: 256      # Time embedding dim (if enabled)
+time_embed_dim: 128      # Time embedding dim (if enabled)
 
 # Predictor configuration (noisy latents → clean latents)
 predictor_type: transformer        # "mlp" | "transformer"
-predictor_depth: 6                # Predictor depth
-predictor_hidden_size: 384        # Predictor hidden size
-predictor_n_heads: 6              # Predictor heads
-predictor_use_projections: true   # Project when dims don't match
+predictor_depth: 3                # Predictor depth
+predictor_hidden_size: 512        # Predictor hidden size
+predictor_n_heads: 4              # Predictor heads
+predictor_use_projections: false   # Project when dims don't match
 
 # Readout decoder (latents → token logits; shallow for eval/sampling)
 readout_type: tiny_transformer     # "tied_linear" | "mlp" | "tiny_transformer"

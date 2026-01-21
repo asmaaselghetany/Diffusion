@@ -4,6 +4,9 @@ defaults:
     - checkpoint_every_n_steps
     - checkpoint_monitor
     - learning_rate_monitor
+    - latent_eval
+    - ema_teacher
+    - metric_logging
     - sample_saver
   - /data: openwebtext
   - /model: small
@@ -82,7 +85,8 @@ wandb:
   group: null
   job_type: null
   name: null
-  id: null 
+  id: null
+  save_dir: null  # Directory to store wandb logs (passed to WandbLogger)
   tags:
     - ${data.train}
     - ${data.valid}

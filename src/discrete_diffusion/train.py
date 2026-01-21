@@ -51,7 +51,7 @@ def train(config):
   if config.training.finetune_path != '':
     assert utils.fsspec_exists(config.training.finetune_path)
     model = algo_cls.load_from_checkpoint(
-      config.training.finetune_path, tokenizer=tokenizer, config=config)
+      config.training.finetune_path, tokenizer=tokenizer, config=config, strict=False)
   else:
     model = algo_cls(config, tokenizer=tokenizer)
 

@@ -76,6 +76,19 @@ class LatentJEPATrainer(trainer_base.AbsorbingState):
       return self.backbone.decoder_parameters()
     return self.backbone.optimizable_parameters()
 
+  def _prepare_ema(self):
+    """Disable base class EMA in Stage 2.
+    
+    Stage 2 only trains the readout decoder and doesn't need EMA:
+    - The JEPA teacher encoder is frozen (no updates required)
+    - The decoder is small; EMA smoothing provides marginal benefit
+    - Loading Stage 1's EMA state would cause parameter mismatch errors
+    """
+    if self.stage == 2:
+      self.ema = None
+    else:
+      super()._prepare_ema()
+
   def optimizer_step(self, *args, **kwargs):
     """Update optimizer and EMA teacher."""
     super().optimizer_step(*args, **kwargs)
@@ -255,6 +268,9 @@ class LatentJEPATrainer(trainer_base.AbsorbingState):
         z_hat_0 = self.backbone.predict_latent(z_t, t)
         z_source = mix_ratio * z_0 + (1 - mix_ratio) * z_hat_0
     
+    
+    # Enable gradients for readout backward pass (required for gradient checkpointing + DDP)
+    z_source = z_source.requires_grad_(True)
     # Decode to logits
     logits = self.backbone.readout_tokens(z_source)
     

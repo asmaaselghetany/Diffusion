@@ -18,7 +18,8 @@ from torch.utils.checkpoint import checkpoint as torch_checkpoint
 from .common import EmbeddingLayer, LayerNorm, TimestepEmbedder, DDiTBlock, Rotary
 
 
-def _forward_block_with_checkpoint(block, x, rotary_cos_sin, c, use_checkpoint: bool, training: bool):
+def _forward_block_with_checkpoint(block, x, rotary_cos_sin, c, attn_mask,
+                                   use_checkpoint: bool, training: bool):
     """Forward through a single block with optional gradient checkpointing.
     
     Args:
@@ -35,8 +36,8 @@ def _forward_block_with_checkpoint(block, x, rotary_cos_sin, c, use_checkpoint: 
     if use_checkpoint and training:
         # use_reentrant=True is required for compatibility with TorchScript-compiled
         # functions (bias_dropout_add_scale_fused_*) used in DDiTBlock
-        return torch_checkpoint(block, x, rotary_cos_sin, c, use_reentrant=True)
-    return block(x, rotary_cos_sin, c)
+        return torch_checkpoint(block, x, rotary_cos_sin, c, attn_mask, use_reentrant=True)
+    return block(x, rotary_cos_sin, c, attn_mask=attn_mask)
 
 
 class LatentJEPA(nn.Module):
@@ -153,12 +154,14 @@ class LatentJEPA(nn.Module):
       for s_p, t_p in zip(self.student_encoder.parameters(), self.teacher_encoder.parameters()):
         t_p.data.copy_(s_p.data)
 
-  def encode_student(self, input_ids: torch.Tensor, t: Optional[torch.Tensor] = None) -> torch.Tensor:
-    return self.student_encoder(input_ids, t)
+  def encode_student(self, input_ids: torch.Tensor, t: Optional[torch.Tensor] = None,
+                     attention_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    return self.student_encoder(input_ids, t, attention_mask=attention_mask)
 
-  def encode_teacher(self, input_ids: torch.Tensor, t: Optional[torch.Tensor] = None) -> torch.Tensor:
+  def encode_teacher(self, input_ids: torch.Tensor, t: Optional[torch.Tensor] = None,
+                     attention_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
     with torch.no_grad():
-      return self.teacher_encoder(input_ids, t)
+      return self.teacher_encoder(input_ids, t, attention_mask=attention_mask)
 
   def predict_latent(self, z_t: torch.Tensor, t: Optional[torch.Tensor] = None) -> torch.Tensor:
     return self.predictor(z_t, t)
@@ -167,8 +170,9 @@ class LatentJEPA(nn.Module):
     return self.readout(z)
 
   def forward(self, input_ids: torch.Tensor, t: Optional[torch.Tensor] = None,
-              return_latents: bool = False) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-    z_t = self.encode_student(input_ids, t)
+              return_latents: bool = False,
+              attention_mask: Optional[torch.Tensor] = None) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+    z_t = self.encode_student(input_ids, t, attention_mask=attention_mask)
     z_hat_0 = self.predict_latent(z_t, t)
     logits = self.readout_tokens(z_hat_0)
     return (logits, z_hat_0) if return_latents else logits
@@ -224,10 +228,17 @@ class LatentEncoder(nn.Module):
 
     self.to_latent = nn.Linear(hidden_size, latent_dim)
 
-  def forward(self, input_ids: torch.Tensor, t: Optional[torch.Tensor] = None) -> torch.Tensor:
+  def forward(self, input_ids: torch.Tensor, t: Optional[torch.Tensor] = None,
+              attention_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
     B, L = input_ids.shape
     device = input_ids.device
     x = self.vocab_embed(input_ids)
+    attn_mask = None
+    if attention_mask is not None:
+      if attention_mask.dim() != 2:
+        raise ValueError("attention_mask must be 2D (batch, seq_len)")
+      attn_mask = (attention_mask == 0).to(device=device)
+      attn_mask = attn_mask.unsqueeze(1)
 
     if self.time_conditioning:
       if t is None:
@@ -238,7 +249,7 @@ class LatentEncoder(nn.Module):
 
     rotary_cos_sin = self.rotary_emb(x)
     for block in self.blocks:
-      x = _forward_block_with_checkpoint(block, x, rotary_cos_sin, c, 
+      x = _forward_block_with_checkpoint(block, x, rotary_cos_sin, c, attn_mask,
                                           self.gradient_checkpointing, self.training)
     return self.to_latent(x)
 
@@ -329,7 +340,7 @@ class TransformerPredictor(nn.Module):
 
     rotary_cos_sin = self.rotary_emb(x)
     for block in self.blocks:
-      x = _forward_block_with_checkpoint(block, x, rotary_cos_sin, c,
+      x = _forward_block_with_checkpoint(block, x, rotary_cos_sin, c, None,
                                           self.gradient_checkpointing, self.training)
     return self.output_proj(x)
 
@@ -401,7 +412,7 @@ class TinyTransformerReadout(nn.Module):
     c = torch.zeros(B, 1, device=z.device, dtype=x.dtype)
     rotary_cos_sin = self.rotary_emb(x)
     for block in self.blocks:
-      x = _forward_block_with_checkpoint(block, x, rotary_cos_sin, c,
+      x = _forward_block_with_checkpoint(block, x, rotary_cos_sin, c, None,
                                           self.gradient_checkpointing, self.training)
     return self.output_proj(x)
 
@@ -436,7 +447,6 @@ class TransformerReadout(nn.Module):
     c = torch.zeros(B, 1, device=z.device, dtype=x.dtype)
     rotary_cos_sin = self.rotary_emb(x)
     for block in self.blocks:
-      x = _forward_block_with_checkpoint(block, x, rotary_cos_sin, c,
+      x = _forward_block_with_checkpoint(block, x, rotary_cos_sin, c, None,
                                           self.gradient_checkpointing, self.training)
     return self.output_proj(x)
-

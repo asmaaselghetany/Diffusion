@@ -386,6 +386,11 @@ class DDiTBlock(nn.Module):
     cos, sin = rotary_cos_sin
     cos = cos.to(qkv.dtype)
     sin = sin.to(qkv.dtype)
+    if attn_mask is not None:
+      # Masked attention requires SDPA to respect the padding mask.
+      qkv = apply_rotary_pos_emb_torchscript(qkv, cos, sin)
+      q, k, v = [x.squeeze(2) for x in qkv.chunk(3, dim=2)]
+      return sdpa_attention_masked(q, k, v, attn_mask, causal=False)
     if self.attn_backend == 'flash_attn' or (self.attn_backend == 'auto' and supports_flash_attention()):
       qkv = apply_rotary_pos_emb(qkv, cos, sin)
       return flash_varlen_attention_qkvpacked(qkv, causal=False)
