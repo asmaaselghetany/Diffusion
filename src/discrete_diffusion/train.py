@@ -50,8 +50,31 @@ def train(config):
 
   if config.training.finetune_path != '':
     assert utils.fsspec_exists(config.training.finetune_path)
-    model = algo_cls.load_from_checkpoint(
-      config.training.finetune_path, tokenizer=tokenizer, config=config, strict=False)
+    # Custom loading that handles size mismatches (e.g., different decoder architecture)
+    checkpoint = torch.load(config.training.finetune_path, map_location='cpu', weights_only=False)
+    model = algo_cls(config, tokenizer=tokenizer)
+    model_state = model.state_dict()
+    ckpt_state = checkpoint.get('state_dict', checkpoint)
+    
+    # Filter checkpoint: only load keys with matching shapes
+    filtered_state = {}
+    skipped_keys = []
+    for key, value in ckpt_state.items():
+      if key in model_state:
+        if model_state[key].shape == value.shape:
+          filtered_state[key] = value
+        else:
+          skipped_keys.append(f"{key}: ckpt{list(value.shape)} vs model{list(model_state[key].shape)}")
+    
+    if skipped_keys:
+      logger.info(f"Skipped {len(skipped_keys)} keys due to shape mismatch (new decoder architecture):")
+      for k in skipped_keys[:5]:
+        logger.info(f"  {k}")
+      if len(skipped_keys) > 5:
+        logger.info(f"  ... and {len(skipped_keys) - 5} more")
+    
+    model.load_state_dict(filtered_state, strict=False)
+    logger.info(f"Loaded {len(filtered_state)}/{len(ckpt_state)} checkpoint keys")
   else:
     model = algo_cls(config, tokenizer=tokenizer)
 

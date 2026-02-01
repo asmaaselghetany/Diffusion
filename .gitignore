@@ -14,6 +14,7 @@ build/
 
 # External libraries (cloned repos)
 mteb/
+cdcd-pytorch/
 
 # Local caches
 .cache/
@@ -63,9 +64,21 @@ wandb/
 
 # Generated artifacts
 generated_samples/
+gen_ppl_results*.json
 
 # Plans / notes (keep core docs, drop WIP plans)
 docs/JEPA_PORT_PLAN.md
+
+# 0013 experiment configs (not for release)
+configs/algo/jepa_training_0013.yaml
+configs/algo/jepa_training_0013_stage2.yaml
+configs/baselines/jepa_training_0013.yaml
+configs/model/latent_jepa_180_training_0013.yaml
+configs/sampling/latent_jepa_training_0013.yaml
+
+# Local scratch / accidental files
+configs/model/latent_jepa_180_encoder.yaml
+*.bak
 
 # Tests / verification scripts
 tests/

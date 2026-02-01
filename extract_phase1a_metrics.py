@@ -560,7 +560,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "study_dir",
         nargs="?",
-        default="/hkfs/work/workspace/scratch/hgf_nhz3359-JEDi/sweep_outputs/jepa_180m_full_study_20251223_202845",
+        default="/hkfs/work/workspace/scratch/hgf_nhz3359-JEDi/sweep_outputs/jepa_350m_full_study_20260102_164904",
         help="Path to study directory"
     )
     parser.add_argument(

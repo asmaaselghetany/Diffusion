@@ -55,7 +55,8 @@ def main(cfg):
         checkpoint_path, 
         config=model_config, 
         tokenizer=tokenizer,
-        map_location=device
+        map_location=device,
+        strict=False
     )
     
     model.to(device)

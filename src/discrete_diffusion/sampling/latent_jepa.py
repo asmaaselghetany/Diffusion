@@ -15,7 +15,12 @@ import torch
 
 from .base import Sampler
 from .position_scorer import ConfidencePositionScorer
-from .token_selection import GreedySelection
+from .token_selection import (
+  GreedySelection,
+  NucleusSelection,
+  TemperatureSelection,
+  TopKSelection,
+)
 
 
 class LatentJEPASampler(Sampler):
@@ -32,11 +37,60 @@ class LatentJEPASampler(Sampler):
       commit_fraction: Fraction of remaining masks to commit per step (if None, computed from timesteps)
   """
 
-  def __init__(self, config, position_scorer=None, token_selector=None, commit_fraction=None):
+  def __init__(
+    self,
+    config,
+    position_scorer=None,
+    token_selector=None,
+    commit_fraction=None,
+    commit_schedule=None,
+    top_p=None,
+    top_k=None,
+    temperature=None,
+    min_tokens_to_keep=None,
+    ban_special_tokens=None,
+    forward_process=None,
+    latent_norm=None,
+    **kwargs,
+  ):
     self.config = config
+    # Latent normalization layer (e.g., LayerNorm) to apply before readout
+    # This ensures decoder sees normalized latents consistent with training
+    self.latent_norm = latent_norm
     self.position_scorer = position_scorer or ConfidencePositionScorer()
-    self.token_selector = token_selector or GreedySelection()
     self.commit_fraction = commit_fraction
+    self.commit_schedule = commit_schedule or getattr(
+      self.config.sampling, "commit_schedule", "hazard"
+    )
+    self.top_p = top_p if top_p is not None else getattr(
+      self.config.sampling, "top_p", getattr(self.config.sampling, "p_nucleus", 1.0)
+    )
+    self.top_k = top_k if top_k is not None else getattr(self.config.sampling, "top_k", 0)
+    self.temperature = temperature if temperature is not None else getattr(
+      self.config.sampling, "temperature", 1.0
+    )
+    self.min_tokens_to_keep = min_tokens_to_keep if min_tokens_to_keep is not None else getattr(
+      self.config.sampling, "min_tokens_to_keep", 1
+    )
+    self.ban_special_tokens = ban_special_tokens if ban_special_tokens is not None else getattr(
+      self.config.sampling, "ban_special_tokens", True
+    )
+    self.position_score_noise = getattr(self.config.sampling, "position_score_noise", 0.0)
+    self.forward_process = forward_process
+    self.token_selector = token_selector or self._build_token_selector()
+
+  def _build_token_selector(self):
+    if self.top_p is not None and self.top_p < 1.0:
+      return NucleusSelection(
+        p=self.top_p,
+        temperature=self.temperature,
+        min_tokens_to_keep=self.min_tokens_to_keep,
+      )
+    if self.top_k is not None and self.top_k > 0:
+      return TopKSelection(k=self.top_k, temperature=self.temperature)
+    if self.temperature is not None and self.temperature != 1.0:
+      return TemperatureSelection(temperature=self.temperature)
+    return GreedySelection()
 
   @torch.no_grad()
   def generate(self, model, *, num_samples, num_steps, eps, inject_bos):
@@ -69,6 +123,17 @@ class LatentJEPASampler(Sampler):
     # Fixed positions mask
     fix_mask = x != mask_id
 
+    banned_token_ids = None
+    if self.ban_special_tokens:
+      banned_token_ids = {int(mask_id)}
+      tokenizer = getattr(model, "tokenizer", None)
+      if tokenizer is not None:
+        pad_id = getattr(tokenizer, "pad_token_id", None)
+        if pad_id is not None:
+          banned_token_ids.add(int(pad_id))
+    if banned_token_ids:
+      banned_token_ids = sorted(banned_token_ids)
+
     # Timestep schedule
     timesteps = torch.linspace(1, eps, steps + 1, device=device)
 
@@ -83,18 +148,34 @@ class LatentJEPASampler(Sampler):
       # Latent forward pass
       z_t = model.encode_student(x, t_batch)
       z_hat_0 = model.predict_latent(z_t, t_batch)
+      
+      # Apply latent normalization before readout (consistent with training)
+      if self.latent_norm is not None:
+        z_hat_0 = self.latent_norm(z_hat_0)
+      
       logits = model.readout_tokens(z_hat_0)
 
-      # Determine transfer probability
-      p_transfer = self.commit_fraction if self.commit_fraction is not None else (1 - s / t if i < steps - 1 else 1.0)
-
       # Score positions
+      if banned_token_ids:
+        logits[..., banned_token_ids] = -float("inf")
       scores = self.position_scorer(logits, device)
+      if self.position_score_noise > 0:
+        scores = scores + torch.randn_like(scores) * self.position_score_noise
       scores = scores.masked_fill(~mask_index, -float("inf"))
 
       # Determine how many positions to transfer per sequence
       masked_counts = mask_index.sum(dim=-1)
-      num_to_transfer = torch.ceil(masked_counts.float() * p_transfer).to(torch.long)
+      if self.commit_fraction is not None:
+        p_transfer = self.commit_fraction
+        num_to_transfer = torch.ceil(masked_counts.float() * p_transfer).to(torch.long)
+      elif self.commit_schedule == "uniform":
+        remaining_steps = max(1, steps - i)
+        num_to_transfer = torch.ceil(masked_counts.float() / remaining_steps).to(torch.long)
+      elif self.commit_schedule == "hazard":
+        p_transfer = 1 - s / t if i < steps - 1 else 1.0
+        num_to_transfer = torch.ceil(masked_counts.float() * p_transfer).to(torch.long)
+      else:
+        raise ValueError(f"Unknown commit_schedule: {self.commit_schedule}")
       num_to_transfer = torch.minimum(num_to_transfer, masked_counts)
 
       batch_size, seq_len = x.shape
@@ -120,4 +201,3 @@ class LatentJEPASampler(Sampler):
 
 
 __all__ = ['LatentJEPASampler']
-

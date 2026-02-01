@@ -1,52 +1,47 @@
 #!/bin/bash
-#SBATCH --job-name=best_predictor_jepa_latent_owt
-#SBATCH --partition=accelerated-h200,accelerated-h100,accelerated
-#SBATCH --nodes=2
+#SBATCH --job-name=s1_enc0017_opt
+#SBATCH --partition=accelerated
+#SBATCH --reservation=llmtum
+#SBATCH --nodes=4
 #SBATCH --gres=gpu:4
-##SBATCH --reservation=llmtum
 #SBATCH --time=48:00:00
 #SBATCH --mem=256G
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=48
-#SBATCH --output=/hkfs/work/workspace/scratch/hgf_nhz3359-JEDi/logs/best_predictor_jepa_latent_owt_%j.out
-#SBATCH --error=/hkfs/work/workspace/scratch/hgf_nhz3359-JEDi/logs/best_predictor_jepa_latent_owt_%j.err
+#SBATCH --output=/hkfs/work/workspace/scratch/hgf_nhz3359-JEDi/logs/stage1_encoder_0017_opt_%j.out
+#SBATCH --error=/hkfs/work/workspace/scratch/hgf_nhz3359-JEDi/logs/stage1_encoder_0017_opt_%j.err
+
+# Stage 1 JEPA Training - OPTIMIZED for efficiency
+# Configuration: latent_dim=256, hidden_size=768, n_heads=4, n_blocks=8
+# OPTIMIZATIONS:
+#   - Reduced from 14 nodes to 4 nodes (16 GPUs) - better compute/communication ratio
+#   - Increased per-GPU batch from 6 to 32 - better GPU utilization
+#   - Disabled gradient checkpointing - not needed for 235M model
+#   - Enabled torch.compile - free 10-30% speedup
+#   - find_unused_parameters=true required (teacher encoder not in loss graph)
 
 set -euo pipefail
 
 REPO_ROOT="${REPO_ROOT:-/home/hk-project-p0023960/hgf_nhz3359/text-diffusion-jepa}"
 cd "${REPO_ROOT}"
 
-# module purge
-# module load Stages/2025
-# module load GCCcore/.13.3.0
-# module load Python/3.12.3
-# module load CUDA/12
-
 module purge
 module load compiler/gnu/13 || true
 module load devel/cuda/12.4 || true
-
 
 source venv/bin/activate
 export PYTHONPATH="${REPO_ROOT}/src"
 export WANDB_MODE=online
 
-# Set workspace output directory
+# Resume from existing checkpoint directory
 WORKSPACE_BASE="/hkfs/work/workspace/scratch/hgf_nhz3359-JEDi"
-export OUTPUT_DIR="${WORKSPACE_BASE}/outputs/owt/latent_jepa_predictor"
-# stage1_180m_encoder_0046_latent_dim_512_hidden_size_384_n_heads_8_n_blocks_8
-# stage1_180m_encoder_0033_latent_dim_768_hidden_size_384_n_heads_4_n_blocks_8
-# /hkfs/work/workspace/scratch/hgf_nhz3359-JEDi/sweep_outputs/jepa_180m_full_study_20251223_202845/phase1a_encoder/runs/stage1_180m_encoder_0046_latent_dim_512_hidden_size_384_n_heads_8_n_blocks_8/checkpoints/best.ckpt
-
-export STAGE1_CKPT_PATH="/hkfs/work/workspace/scratch/hgf_nhz3359-JEDi/sweep_outputs/jepa_180m_full_study_20251223_202845/phase2a_predictor/runs/stage1_180m_predictor_0022_predictor_depth_3_predictor_hidden_size_512_predictor_n_heads_4_predictor_use_projections_False/checkpoints/best.ckpt"
+export OUTPUT_DIR="${WORKSPACE_BASE}/outputs/owt/stage1_encoder_0017_fixed_20260125_234231"
 mkdir -p "${OUTPUT_DIR}"
 mkdir -p "${WORKSPACE_BASE}/logs"
 
 # Use cached HuggingFace models (no internet on compute nodes)
-# Use existing HuggingFace cache from home directory
 export HF_HOME="/home/hk-project-p0023960/hgf_nhz3359/.cache/huggingface"
 export HF_DATASETS_CACHE="${HF_HOME}/datasets"
-# DEPRECATED: export TRANSFORMERS_CACHE="${HF_HOME}"
 export HF_HUB_OFFLINE=1
 
 # NCCL settings for InfiniBand
@@ -57,7 +52,6 @@ export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 export NCCL_SOCKET_FAMILY=AF_INET
 
 # Network Interfaces - auto-detect a valid interface
-# Try common HPC interface patterns, fall back to first available with IP
 RDZV_IFNAME=""
 for iface in ib0 ipogif0 eth0; do
   if ip link show dev "${iface}" >/dev/null 2>&1; then
@@ -67,7 +61,6 @@ for iface in ib0 ipogif0 eth0; do
     fi
   fi
 done
-# Try wildcard patterns if no standard interface found
 if [[ -z "${RDZV_IFNAME}" ]]; then
   for iface in $(ip -o link show | awk -F': ' '{print $2}' | grep -E '^(enp|eno|ens)'); do
     if ip -4 addr show dev "${iface}" 2>/dev/null | grep -q "inet "; then
@@ -77,7 +70,6 @@ if [[ -z "${RDZV_IFNAME}" ]]; then
   done
 fi
 
-# If interface found, set NCCL/GLOO to use it
 if [[ -n "${RDZV_IFNAME}" ]]; then
   export GLOO_SOCKET_IFNAME="${RDZV_IFNAME}"
   export NCCL_SOCKET_IFNAME="${RDZV_IFNAME}"
@@ -92,10 +84,14 @@ export TORCH_HOME="${CACHE_DIR}/torch"
 export XDG_CACHE_HOME="${CACHE_DIR}"
 
 echo "=========================================="
-echo "Latent JEPA OWT Training - $(date)"
-echo "Nodes: ${SLURM_NNODES}, GPUs per node: 4"
+echo "Stage 1 JEPA Training (OPTIMIZED) - $(date)"
+echo "Config: latent_dim=256, hidden_size=768, n_heads=4, n_blocks=8"
+echo "Nodes: ${SLURM_NNODES}, GPUs per node: 4, Total: $((SLURM_NNODES * 4)) GPUs"
+echo "Batch: 512 global, 32 per-GPU | torch.compile=ON | grad_ckpt=OFF"
+echo "Output: ${OUTPUT_DIR}"
 echo "=========================================="
 
+# Data cache setup
 DATA_CACHE_SHARED="/home/hk-project-p0023960/hgf_nhz3359/New_Discrete_Diffusion-main/datasets/pgm_owt"
 DATA_CACHE="${DATA_CACHE_SHARED}"
 if [[ -n "${SLURM_TMPDIR:-}" ]]; then
@@ -112,15 +108,13 @@ done
 fi
 mkdir -p "${DATA_CACHE}"
 
-# Get master node's IP - use hostname resolution (more portable)
+# Get master node's IP
 MASTER_NODE=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
-# Try to get IP from detected interface, fall back to hostname -i
 MASTER_ADDR_TMP=""
 if [[ -n "${RDZV_IFNAME}" ]]; then
   MASTER_ADDR_TMP=$(srun --nodes=1 --ntasks=1 -w "$MASTER_NODE" ip -4 -o addr show dev "${RDZV_IFNAME}" 2>/dev/null | head -n 1 | awk '{print $4}' | cut -d/ -f1)
 fi
 if [[ -z "${MASTER_ADDR_TMP}" ]]; then
-  # Fallback: resolve hostname to IP
   MASTER_ADDR_TMP=$(srun --nodes=1 --ntasks=1 -w "$MASTER_NODE" hostname -i 2>/dev/null | awk '{print $1}')
 fi
 export MASTER_ADDR="${MASTER_ADDR_TMP}"
@@ -132,12 +126,12 @@ if [[ -z "${MASTER_ADDR}" ]]; then
 fi
 echo "Master: ${MASTER_NODE} -> (${MASTER_ADDR}:${MASTER_PORT})"
 
-# Export for srun subprocesses
 export DATA_CACHE MASTER_ADDR MASTER_PORT
 
-# Multi-node training with torchrun per node
-# Note: Variables like OUTPUT_DIR are expanded in the parent shell using the
-# 'literal '"$var"' more' quoting technique to avoid OmegaConf interpolation issues
+# ====================================================
+# Stage 1 Training with FIXED normalization
+# Config matches encoder_0017 exactly
+# ====================================================
 srun --kill-on-bad-exit=1 --export=ALL bash -c 'torchrun \
     --nnodes=${SLURM_NNODES} \
     --nproc_per_node=4 \
@@ -147,45 +141,71 @@ srun --kill-on-bad-exit=1 --export=ALL bash -c 'torchrun \
     -m discrete_diffusion \
     data=openwebtext-split \
     data.cache_dir="'"$DATA_CACHE"'" \
-    model=latent_jepa_180_predictor \
+    model=latent_jepa_180M \
     model.length=1024 \
+    model.latent_dim=256 \
+    model.hidden_size=768 \
+    model.n_heads=4 \
+    model.n_blocks=8 \
+    model.dropout=0.1 \
+    model.time_embed_dim=256 \
+    model.predictor_type=transformer \
+    model.predictor_depth=6 \
+    model.predictor_hidden_size=384 \
+    model.predictor_n_heads=6 \
+    model.predictor_use_projections=true \
+    model.readout_type=tiny_transformer \
+    model.readout_hidden_size=512 \
+    model.readout_depth=2 \
     model.gradient_checkpointing=false \
     algo=jepa \
-    algo.stage=2 \
-    training.torch_compile=false \
-    loader.batch_size=16 \
-    loader.global_batch_size=1024 \
-    loader.eval_batch_size=16 \
-    loader.num_workers=4 \
+    algo.stage=1 \
+    algo.loss_norm=l2 \
+    algo.mask_only=true \
+    algo.normalize_targets=true \
+    algo.redundancy=vicreg \
+    algo.lambda_var=0.1 \
+    algo.lambda_cov=0.04 \
+    algo.vicreg_eps=0.001 \
+    algo.sampling_eps=0.001 \
+    training.torch_compile=true \
+    optim.lr=0.0003 \
+    optim.weight_decay=0 \
+    lr_scheduler.num_warmup_steps=2500 \
+    loader.global_batch_size=512 \
+    loader.num_workers=8 \
     trainer.num_nodes=${SLURM_NNODES} \
     trainer.devices=4 \
     trainer.accumulate_grad_batches=1 \
+    trainer.max_steps=200000 \
     trainer.val_check_interval=10000 \
     trainer.log_every_n_steps=100 \
-    trainer.precision=bf16-mixed \
-    trainer.num_sanity_val_steps=0 \
-    trainer.limit_val_batches=10 \
+    trainer.precision=bf16 \
+    trainer.num_sanity_val_steps=2 \
+    trainer.limit_val_batches=1.0 \
     eval.generate_samples=true \
-    eval.save_validation_samples=true \
+    eval.save_validation_samples=false \
     eval.compute_perplexity_on_sanity=false \
-    sampling.steps=64 \
+    sampling.steps=5000 \
     sampling.num_sample_batches=1 \
-    sampling.num_sample_log=8 \
-    callbacks.checkpoint_every_n_steps.every_n_train_steps=20000 \
-    callbacks.checkpoint_every_n_steps.save_top_k=3 \
+    sampling.num_sample_log=2 \
+    callbacks.checkpoint_every_n_steps.every_n_train_steps=10000 \
+    callbacks.checkpoint_every_n_steps.save_top_k=-1 \
     callbacks.checkpoint_every_n_steps.save_last=true \
     callbacks.checkpoint_monitor.save_top_k=3 \
+    callbacks.checkpoint_monitor.monitor=val/nll \
+    callbacks.checkpoint_monitor.mode=min \
     strategy.find_unused_parameters=true \
     checkpointing.resume_from_ckpt=true \
-    training.finetune_path="'"$STAGE1_CKPT_PATH"'" \
     checkpointing.save_dir="'"$OUTPUT_DIR"'" \
     wandb.project=latent_jepa \
-    wandb.name=jepa_predictor_owt \
+    wandb.name=stage1_encoder_0017_fixed_norm \
+    wandb.group=stage1_fixed_normalization \
     wandb.save_dir="'"$OUTPUT_DIR"'/wandb" \
     hydra.run.dir="'"$OUTPUT_DIR"'"'
 
-
 echo "=========================================="
 echo "Training completed at $(date)"
+echo "Output directory: ${OUTPUT_DIR}"
 echo "=========================================="
 

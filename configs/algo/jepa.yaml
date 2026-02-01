@@ -29,10 +29,22 @@ vicreg_eps: 0.001  # bf16 stability (increased from 1e-4)
 # noise_warmup_range: [0.15, 0.3]
 
 # Stage 2 specific
-latent_source: predicted  # predicted, teacher, mixed
+latent_source: teacher  # predicted, teacher, mixed
 mixed_schedule: linear  # linear, constant
 mixed_warmup_steps: 10000
 weight_by_hazard: true
+
+# Stage 2 mixing study parameters (teacher latent scaffold with rapid handover)
+teacher_mix_warm_frac: 0.07        # s_w = 7% of Stage-2 steps for warm window
+teacher_mix_type: bernoulli        # 'bernoulli' (bimodal sampling) or 'blend' (linear interp)
+teacher_corruption_lambda: 0.7     # lambda for noise corruption on teacher latents
+teacher_error_ema_decay: 0.99      # EMA decay for per-dimension error sigma estimation
+
+# Robust teacher corruption parameters (Stage 2)
+noise_warmup_steps: 5000           # Steps to ramp up noise from 0 to full
+noise_min_samples: 1000.0          # Min effective samples before applying noise
+noise_max_ratio: 2.0               # Max noise magnitude relative to z_0 std
+noise_time_scaling: true           # Scale noise by sqrt(t)
 
 # Noise schedule
 noise_schedule:

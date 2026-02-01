@@ -31,7 +31,7 @@ predictor_use_projections: false   # Project when dims don't match
 # Readout decoder (latents → token logits; shallow for eval/sampling)
 readout_type: tiny_transformer     # "tied_linear" | "mlp" | "tiny_transformer"
 readout_hidden_size: 512           # Readout hidden size
-readout_depth: 2                  # Readout depth
+readout_depth: 4                  # Readout depth
 tie_readout_to_embedding: false    # Tie weights (only for tied_linear)
 
 # EMA teacher (cosine momentum schedule)

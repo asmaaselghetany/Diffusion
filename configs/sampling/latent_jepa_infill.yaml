@@ -1,0 +1,30 @@
+# Latent JEPA Sampling Configuration - Infill Mode
+# Used by scripts/eval_stage2_gen_ppl.py
+
+# Denoising parameters
+steps: 256                   # Number of denoising steps
+commit_schedule: hazard      # Token commit schedule: hazard or uniform
+commit_fraction: null        # Override: fixed fraction of masks to commit per step (null = use schedule)
+
+# Token selection parameters
+temperature: 1.0             # Sampling temperature (1.0 = no scaling)
+top_p: 0.9                   # Nucleus sampling probability threshold (1.0 = disabled)
+top_k: 0                     # Top-k sampling (0 = disabled)
+min_tokens_to_keep: 1        # Minimum tokens to keep after top-p/top-k filtering
+ban_special_tokens: false    # Mask special tokens (pad/mask) from sampling logits
+
+# Sequence parameters
+inject_bos: true             # Inject BOS token at position 0
+
+# Prompting parameters - INFILL MODE
+prompt_mode: infill          # Fill-in-the-middle mode
+prompt_text: "On a gray Monday morning, Martin badges into the office a little early, coffee in hand, still buzzing from last night."
+suffix_text: "and they all lived happily ever after. The end."
+generated_length: 200        # Number of tokens to infill between prefix and suffix
+
+# Sampler class (for Hydra instantiation)
+sampler:
+  _target_: discrete_diffusion.sampling.latent_jepa.LatentJEPASampler
+
+
+

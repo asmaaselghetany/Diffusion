@@ -54,13 +54,14 @@ class TopKSelection(TokenSelectionCriteria):
 
   def __call__(self, logits):
     logits = logits / self.temperature
-    top_k_values, top_k_indices = torch.topk(logits, self.k, dim=-1)
+    k = min(self.k, logits.size(-1))
+    top_k_values, top_k_indices = torch.topk(logits, k, dim=-1)
     probs = torch.softmax(top_k_values, dim=-1)
     if logits.dim() == 2:
       sampled_indices = torch.multinomial(probs, num_samples=1).squeeze(-1)
       return torch.gather(top_k_indices, -1, sampled_indices.unsqueeze(-1)).squeeze(-1)
     batch_size, seq_len = logits.shape[:2]
-    probs_flat = probs.view(batch_size * seq_len, self.k)
+    probs_flat = probs.view(batch_size * seq_len, k)
     sampled_indices = torch.multinomial(probs_flat, num_samples=1).squeeze(-1)
     sampled_indices = sampled_indices.view(batch_size, seq_len)
     return torch.gather(top_k_indices, -1, sampled_indices.unsqueeze(-1)).squeeze(-1)
@@ -69,11 +70,13 @@ class TopKSelection(TokenSelectionCriteria):
 class NucleusSelection(TokenSelectionCriteria):
   """Nucleus (top-p) sampling - sample from tokens comprising the top-p probability mass."""
 
-  def __init__(self, p=0.9, temperature=1.0):
+  def __init__(self, p=0.9, temperature=1.0, min_tokens_to_keep=1):
     assert 0 < p <= 1, "p must be in (0, 1]"
     assert temperature > 0, "Temperature must be positive"
+    assert min_tokens_to_keep >= 1, "min_tokens_to_keep must be >= 1"
     self.p = p
     self.temperature = temperature
+    self.min_tokens_to_keep = min_tokens_to_keep
 
   def __call__(self, logits):
     logits = logits / self.temperature
@@ -81,7 +84,10 @@ class NucleusSelection(TokenSelectionCriteria):
     sorted_probs = torch.softmax(sorted_logits, dim=-1)
     cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
     cutoff_mask = cumulative_probs > self.p
+    cutoff_mask[..., 1:] = cutoff_mask[..., :-1].clone()
     cutoff_mask[..., 0] = False
+    if self.min_tokens_to_keep > 1:
+      cutoff_mask[..., :self.min_tokens_to_keep] = False
     sorted_logits = sorted_logits.masked_fill(cutoff_mask, float("-inf"))
     nucleus_probs = torch.softmax(sorted_logits, dim=-1)
     if logits.dim() == 2:
@@ -101,4 +107,3 @@ __all__ = [
   'TopKSelection',
   'NucleusSelection',
 ]
-
