@@ -1,0 +1,65 @@
+defaults:
+  - /forward_process: gaussian
+
+_target_: discrete_diffusion.algorithms.continuous_embedding_diffusion.ContinuousEmbeddingDiffusion
+name: continuous_embedding_diffusion
+backbone: continuous_embedding
+
+stage: 1
+
+# ---- Flow-map objective (no JVP, directly predicts z_s) ----
+objective: flow_map
+interpolant: rectified
+conditioning: span_masking
+embedding_provider: tied
+embedding_trainable: false
+train_timesteps: 1000
+lambda_ce: 0.1
+
+# Flow-map specific
+flow_map:
+  dt_min: 1e-3
+  s_zero_prob: 0.0
+
+stabilizers:
+  self_conditioning: false
+  self_conditioning_prob: 0.5
+  anchor_weight: 0.0
+  noise_scale: 1.0
+
+loss:
+  min_snr_gamma: null
+
+# iMF defaults (unused but kept to avoid missing-key errors)
+imf:
+  dt_min: 1e-3
+  stopgrad_dudt: true
+  use_aux_v_head: true
+  alpha_floor: 0.0
+  alpha_imf: 1.0
+  warmup_steps: 0
+  ramp_steps: 0
+  fm_aux_weight: 0.05
+
+parameterization: x0
+loss_type: simple
+sampling_eps: 1e-3
+
+decoder_latent_source: teacher_z0
+decoder_timestep_policy: uniform_continuous
+decoder_num_steps: 128
+decoder_sampling_eps: 1e-5
+decoder_mixed_teacher_prob_start: 0.5
+decoder_mixed_teacher_prob_end: 0.0
+decoder:
+  stage2:
+    enabled: false
+
+sampler:
+  _target_: discrete_diffusion.sampling.continuous_embedding.ContinuousEmbeddingSampler
+  sampling_method: flowmap_few_step
+  eta: 1.0
+  temperature: 1.0
+  guidance_scale: 1.0
+  top_p: 0.0
+  clip_denoised: false

@@ -52,6 +52,9 @@ eval:
   disable_ema: False
   compute_perplexity_on_sanity: False
   generate_samples: True
+  interval_steps: 10000
+  unconditional_samples: 10
+  ppl_model: gpt2-xl
   save_validation_samples: false
   generated_samples_path: ${cwd:}/samples.json
   results_json_path: null

@@ -68,6 +68,9 @@ gen_ppl_results*.json
 
 # Plans / notes (keep core docs, drop WIP plans)
 docs/JEPA_PORT_PLAN.md
+docs/continuous_embedding_model_report_2026-02-17.md
+docs/prescale_gates_study_2026-02-19.md
+docs/prescale_gates_study_2026-02-20.md
 
 # 0013 experiment configs (not for release)
 configs/algo/jepa_training_0013.yaml
@@ -80,13 +83,13 @@ configs/sampling/latent_jepa_training_0013.yaml
 configs/model/latent_jepa_180_encoder.yaml
 *.bak
 
-# Tests / verification scripts
+# Tests and verification scripts
 tests/
 test_*.py
 test_*.sh
 verify_*.py
-Diffusion-Jepa/test_*.py
-Diffusion-Jepa/verify_*.py
+slurm_scripts/continuous_embedding/submit_decoder_robust_suite.sh
+slurm_scripts/continuous_embedding/eval_decoder_robust_checkpoints.sh
 
 # Temporary files
 tmp*/

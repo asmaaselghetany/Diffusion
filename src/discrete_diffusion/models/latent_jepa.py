@@ -237,7 +237,8 @@ class LatentEncoder(nn.Module):
     if attention_mask is not None:
       if attention_mask.dim() != 2:
         raise ValueError("attention_mask must be 2D (batch, seq_len)")
-      attn_mask = (attention_mask == 0).to(device=device)
+      # SDPA boolean masks use True=keep and False=masked-out.
+      attn_mask = attention_mask.to(device=device, dtype=torch.bool)
       attn_mask = attn_mask.unsqueeze(1)
 
     if self.time_conditioning:

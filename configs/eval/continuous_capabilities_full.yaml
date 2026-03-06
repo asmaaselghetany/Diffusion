@@ -1,0 +1,26 @@
+# Full preset for research-grade capability assessment.
+num_samples: 512
+num_steps: 128
+
+eval_model: gpt2-xl
+ppl_batch_size: 4
+ppl_max_length: 1024
+
+reconstruction_batch_size: 16
+generation_batch_size: 8
+
+eta: 1.0
+temperature: 1.0
+top_p: 0.9
+top_k: 0
+ban_special_tokens: true
+sampling_eps: 1.0e-5
+
+infill_span_fraction: 0.25
+infill_min_span_tokens: 8
+qa_max_answer_tokens: 64
+
+clip_denoised: false
+clip_range: [-10.0, 10.0]
+
+sample_save_limit: 64

@@ -15,6 +15,7 @@ from .. import utils
 from .datasets import (
     generate_synthetic_dataset,
     get_lambada_test_dataset,
+    get_tiny_shakespeare_dataset,
     get_text8_dataset,
 )
 from .processing import (
@@ -51,6 +52,9 @@ def get_dataset(dataset_name,
                 revision: Optional[str] = None,
                 min_length: int = 0,
                 chunking: str = "none"):
+  if dataset_name == "karpathy/tiny_shakespeare":
+    dataset_name = "tiny_shakespeare"
+
   chunking_mode = (chunking or "none").lower()
   if chunking_mode not in {"none", "double_newline"}:
     raise ValueError(f"Unsupported chunking mode: {chunking_mode}")
@@ -106,6 +110,9 @@ def get_dataset(dataset_name,
     assert revision is None
     dataset = get_text8_dataset(
       cache_dir, max_seq_length=block_size, crop_train=True)
+  elif dataset_name == "tiny_shakespeare":
+    dataset = get_tiny_shakespeare_dataset(
+      cache_dir, max_seq_length=block_size)
   elif dataset_name == "openwebtext-train":
     dataset = datasets.load_dataset(
       "openwebtext",

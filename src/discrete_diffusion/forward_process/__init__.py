@@ -9,10 +9,12 @@ from .base import ForwardProcess
 from .uniform import UniformForwardProcess
 from .block_absorbing import BlockAbsorbingForwardProcess
 from .flexmdm import FlexMDMForwardProcess
+from .gaussian import GaussianForwardProcess
 from .utils import _effective_vocab_size, _mask_token_id, _unsqueeze, sample_categorical
 
 __all__ = [
   'AbsorbingForwardProcess', 'ForwardProcess', '_unsqueeze',
   'UniformForwardProcess', 'BlockAbsorbingForwardProcess', 'FlexMDMForwardProcess',
+  'GaussianForwardProcess',
   '_effective_vocab_size', '_mask_token_id', 'sample_categorical',
 ]

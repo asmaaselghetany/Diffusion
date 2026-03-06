@@ -1,0 +1,13 @@
+defaults:
+  - continuous_embedding_diffusion
+
+name: decoder_robust_epsilon
+stage: 2
+parameterization: epsilon
+embedding_provider: legacy_contextual
+
+# Decoder robustness objective: train decoder on denoiser-predicted x0.
+decoder_latent_source: predicted_x0
+decoder_timestep_policy: inference_matched
+decoder_num_steps: 128
+decoder_sampling_eps: 1e-5

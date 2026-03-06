@@ -1,0 +1,27 @@
+# Sampling config for continuous embedding diffusion
+_target_: discrete_diffusion.sampling.continuous_embedding.ContinuousEmbeddingSampler
+
+# Sampling method: ddpm, ddim, ancestral, rectified_one_step, rectified_few_step
+sampling_method: ddpm
+
+# DDIM eta parameter (0=deterministic, 1=DDPM-like)
+eta: 1.0
+
+# Token selection temperature
+temperature: 1.0
+
+# Classifier-free guidance scale (>1 for stronger guidance)
+guidance_scale: 1.0
+
+# Nucleus (top-p) sampling: 0 = greedy argmax, (0,1] = nucleus threshold
+top_p: 0.0
+
+# Whether to clip denoised predictions
+clip_denoised: false
+clip_range: [-10.0, 10.0]
+
+# Default sampling parameters
+predictor: ddpm
+steps: 8
+num_sample_batches: 1
+num_sample_log: 8

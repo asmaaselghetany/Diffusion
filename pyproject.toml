@@ -96,4 +96,7 @@ where = ["src"]
 include = ["discrete_diffusion*"]
 namespaces = false
 
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
 

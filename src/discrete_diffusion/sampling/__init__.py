@@ -6,6 +6,7 @@ from .absorbing import AbsorbingSampler
 from .ar import ARSampler
 from .base import Sampler
 from .bd3lm import BD3LMSampler
+from .continuous_embedding import ContinuousEmbeddingSampler
 from .gidd import GIDDSampler
 from .latent_jepa import LatentJEPASampler
 from .partition import PartitionSampler
@@ -30,6 +31,7 @@ __all__ = [
   "AbsorbingSampler",
   "ARSampler",
   "BD3LMSampler",
+  "ContinuousEmbeddingSampler",
   "GIDDSampler",
   "LatentJEPASampler",
   "PartitionSampler",

@@ -1,2 +1,2 @@
 _target_: lightning.pytorch.strategies.DDPStrategy
-find_unused_parameters: true
+find_unused_parameters: false  # Faster - no unused params in these models

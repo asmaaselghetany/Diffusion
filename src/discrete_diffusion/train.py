@@ -39,11 +39,26 @@ def train(config):
   ) if config.get('wandb', None) is not None else None
 
   # Resume checkpoint path
-  ckpt_path = config.checkpointing.resume_ckpt_path if (
-    config.checkpointing.resume_from_ckpt and 
-    config.checkpointing.resume_ckpt_path is not None and 
-    utils.fsspec_exists(config.checkpointing.resume_ckpt_path)
-  ) else None
+  ckpt_path = None
+  if config.checkpointing.resume_from_ckpt:
+    # PyTorch 2.6 defaults torch.load(weights_only=True). Lightning resume
+    # checkpoints include non-tensor objects and require full trusted loads.
+    os.environ.setdefault('TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD', '1')
+    resume_ckpt_path = config.checkpointing.resume_ckpt_path
+    if resume_ckpt_path is None or str(resume_ckpt_path) == '':
+      logger.warning(
+        'checkpointing.resume_from_ckpt=true but checkpointing.resume_ckpt_path is empty. '
+        'Starting from scratch.'
+      )
+    elif utils.fsspec_exists(resume_ckpt_path):
+      ckpt_path = resume_ckpt_path
+      logger.info('Set TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 for resume checkpoint compatibility.')
+      logger.info(f'Resuming training from checkpoint: {ckpt_path}')
+    else:
+      logger.warning(
+        'checkpointing.resume_from_ckpt=true but checkpoint was not found at '
+        f'{resume_ckpt_path}. Starting from scratch.'
+      )
 
   # Lightning callbacks
   callbacks = [hydra.utils.instantiate(cb) for _, cb in config.callbacks.items()] if 'callbacks' in config else []

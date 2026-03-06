@@ -92,6 +92,17 @@ class LatentJEPATrainer(trainer_base.AbsorbingState):
     for param in self.backbone.predictor.parameters():
       param.requires_grad = False
 
+  # Sampler compatibility shims: latent_jepa sampler expects these methods
+  # on the trainer object (not only on self.backbone).
+  def encode_student(self, input_ids, t=None, attention_mask=None):
+    return self.backbone.encode_student(input_ids, t, attention_mask=attention_mask)
+
+  def predict_latent(self, z_t, t=None):
+    return self.backbone.predict_latent(z_t, t)
+
+  def readout_tokens(self, z):
+    return self.backbone.readout_tokens(z)
+
   def _get_parameters(self):
     """Return trainable parameters based on stage."""
     if self.stage == 2:
@@ -131,6 +142,16 @@ class LatentJEPATrainer(trainer_base.AbsorbingState):
     t = (t0 + torch.arange(batch_size, device=device, dtype=torch.float32) / max(batch_size, 1)) % 1.0
     return t.clamp(self.sampling_eps, 1.0 - self.sampling_eps)
 
+  def _teacher_timestep(self, t: torch.Tensor | None) -> torch.Tensor | None:
+    """Return the teacher conditioning timestep for clean targets.
+
+    Teacher targets are computed from clean inputs, so we anchor time conditioning
+    at t=0 instead of reusing the noisy student timestep.
+    """
+    if t is None:
+      return None
+    return torch.zeros_like(t)
+
   def _loss(self, x0, valid_tokens, current_accumulation_step=None, train_mode=False):
     """Compute JEPA loss based on current stage."""
     if self.stage == 1:
@@ -153,7 +174,7 @@ class LatentJEPATrainer(trainer_base.AbsorbingState):
     
     # Encode with student and teacher
     z_t = self.backbone.encode_student(x_t, t)
-    z_0_raw = self.backbone.encode_teacher(input_sequence, t)
+    z_0_raw = self.backbone.encode_teacher(input_sequence, self._teacher_timestep(t))
     
     # Predict clean latents (raw output for VICReg)
     z_hat_0_raw = self.backbone.predict_latent(z_t, t)
@@ -291,7 +312,7 @@ class LatentJEPATrainer(trainer_base.AbsorbingState):
     # Get latents (frozen encoder/predictor)
     with torch.no_grad():
       z_t = self.backbone.encode_student(x_t, t)
-      z_0_raw = self.backbone.encode_teacher(input_sequence, t)
+      z_0_raw = self.backbone.encode_teacher(input_sequence, self._teacher_timestep(t))
       z_hat_0_raw = self.backbone.predict_latent(z_t, t)
       
       # Normalize BOTH teacher and predictor latents for decoder input
@@ -590,7 +611,7 @@ class LatentJEPATrainer(trainer_base.AbsorbingState):
     
     with torch.no_grad():
       z_t = self.backbone.encode_student(x_t, t)
-      z_0_raw = self.backbone.encode_teacher(input_sequence, t)
+      z_0_raw = self.backbone.encode_teacher(input_sequence, self._teacher_timestep(t))
       z_hat_0_raw = self.backbone.predict_latent(z_t, t)
       
       # Normalize BOTH teacher and predictor latents for decoder input
@@ -631,4 +652,3 @@ class LatentJEPATrainer(trainer_base.AbsorbingState):
     self.metrics.update_valid(masked_ce_pred * num_tokens, num_tokens)
     
     return masked_ce_pred
-

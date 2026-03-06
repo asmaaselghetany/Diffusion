@@ -1,0 +1,66 @@
+defaults:
+  - /forward_process: gaussian
+
+_target_: discrete_diffusion.algorithms.continuous_embedding_diffusion.ContinuousEmbeddingDiffusion
+name: continuous_embedding_diffusion
+backbone: continuous_embedding
+
+# Training stage:
+#   1 = denoiser-only diffusion training (latent MSE)
+#   2 = decoder-only training (latent source controlled below)
+stage: 1
+
+# Objective/interpolant configuration (new modular path)
+objective: ddpm         # ddpm | flow_matching | flow_map | meanflow | imf
+interpolant: vp         # vp | rectified
+conditioning: span_masking      # none | span_masking
+embedding_provider: tied  # legacy_contextual | lookup | tied
+embedding_trainable: false
+train_timesteps: 1000
+lambda_ce: 0.1
+
+# Stabilizers
+stabilizers:
+  self_conditioning: false
+  self_conditioning_prob: 0.5
+  anchor_weight: 0.0
+  noise_scale: 1.0
+
+loss:
+  min_snr_gamma: null   # e.g. 5.0 for DDPM Min-SNR weighting
+
+imf:
+  dt_min: 1e-3
+  stopgrad_dudt: true
+  use_aux_v_head: true
+  alpha_floor: 0.0
+  alpha_imf: 1.0
+  warmup_steps: 0
+  ramp_steps: 0
+  fm_aux_weight: 0.05
+
+# Diffusion parameters
+parameterization: x0  # x0, epsilon, v
+loss_type: simple     # simple (MSE) or weighted (ELBO-style)
+sampling_eps: 1e-3
+
+# Stage-2 decoder latent-source controls (backward compatible defaults)
+decoder_latent_source: teacher_z0              # teacher_z0, predicted_x0, mixed
+decoder_timestep_policy: uniform_continuous    # inference_matched, uniform_continuous, curriculum
+decoder_num_steps: 128
+decoder_sampling_eps: 1e-5
+decoder_mixed_teacher_prob_start: 0.5
+decoder_mixed_teacher_prob_end: 0.0
+decoder:
+  stage2:
+    enabled: false   # deprecated; set true or stage=2 for legacy decoder-only mode
+
+# Sampler for generation
+sampler:
+  _target_: discrete_diffusion.sampling.continuous_embedding.ContinuousEmbeddingSampler
+  sampling_method: ddpm  # ddpm, ddim, ancestral, flowmap_one_step, flowmap_few_step
+  eta: 1.0              # DDIM eta (0=deterministic, 1=stochastic)
+  temperature: 1.0      # Softmax temperature for token selection
+  guidance_scale: 1.0   # Classifier-free guidance scale
+  top_p: 0.0            # Nucleus sampling: 0=greedy, (0,1]=nucleus threshold
+  clip_denoised: false

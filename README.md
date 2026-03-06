@@ -11,7 +11,7 @@ Moving beyond the constraints of autoregressive modeling, UNI-D² brings the ben
 ## Highlights
 - Hydra + Lightning entry point (`python -m discrete_diffusion`) for experimenting with MDLM, UDLM, BD3LM, FlexMDM, GIDD, SEDD, and PartitionMDLM papers.
 - Sampling helpers that cover absorbing, BD3LM, GIDD, partition, uniform, autoregressive, and FlexMDM samplers.
-- Scripts that reproduce training recipes for datasets such as LM1B, OWT, and Text8.
+- Scripts that reproduce training recipes for datasets such as LM1B, OWT, Text8, and Tiny Shakespeare.
 
 ## Getting Started
 
@@ -54,6 +54,34 @@ PYTHONPATH=src python -u -m discrete_diffusion \
   hydra.run.dir=./outputs/owt/mdlm
 ```
 The `examples/` directory contains dataset-specific recipes (e.g., `bd3lm/owt.sh`, `udlm/text8.sh`). Override any Hydra config key by appending `key=value` pairs on the command line.
+
+For small toy runs, use the built-in Tiny Shakespeare config:
+```bash
+PYTHONPATH=src python -u -m discrete_diffusion \
+  data=tiny_shakespeare \
+  model=small \
+  model.length=128 \
+  algo=mdlm \
+  loader.global_batch_size=64 \
+  trainer.devices=1 \
+  trainer.max_steps=2000
+```
+
+For cluster baselines on Tiny Shakespeare (MDLM, latent JEPA, continuous embedding), use the hybrid SLURM suite:
+```bash
+sbatch slurm_scripts/shakespeare_baselines/train_mdlm.sh
+sbatch slurm_scripts/shakespeare_baselines/train_latent_jepa.sh
+sbatch slurm_scripts/shakespeare_baselines/train_continuous_embedding.sh
+
+sbatch --export=ALL,RUN_DIR=/path/to/mdlm_run \
+  slurm_scripts/shakespeare_baselines/eval_mdlm_gen_ppl.sh
+sbatch --export=ALL,RUN_DIR=/path/to/latent_jepa_run \
+  slurm_scripts/shakespeare_baselines/eval_latent_jepa_gen_ppl.sh
+sbatch --export=ALL,RUN_DIR=/path/to/continuous_run \
+  slurm_scripts/shakespeare_baselines/eval_continuous_gen_ppl.sh
+```
+Evaluation wrappers and shared-core usage are documented in:
+`slurm_scripts/shakespeare_baselines/README.md`
 
 ### Generating samples
 Once you have a checkpoint, use the evaluation script:

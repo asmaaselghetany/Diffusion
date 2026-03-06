@@ -1,8 +1,14 @@
-"""Periodic sample saving hook for discrete diffusion models."""
+"""Periodic sample saving hook for discrete diffusion models.
+
+Generates a small batch of samples every ``every_n_steps`` training steps,
+saves decoded text to disk and (optionally) logs a W&B text table plus
+token-entropy scalar.
+"""
 
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Optional
 
@@ -10,9 +16,17 @@ import lightning as L
 import torch
 from omegaconf import OmegaConf
 
+log = logging.getLogger(__name__)
+
 
 class SampleSaver(L.Callback):
-  """Save generated tokens every ``every_n_steps`` during training."""
+  """Save generated tokens every ``every_n_steps`` during training.
+
+  When ``log_to_wandb`` is *True* (the default) and a W&B logger is
+  attached, a text table and the token entropy are also logged so
+  generation quality can be tracked on the dashboard without opening
+  JSON files.
+  """
 
   def __init__(
       self,
@@ -21,7 +35,8 @@ class SampleSaver(L.Callback):
       num_samples: Optional[int] = None,
       num_steps: Optional[int] = None,
       save_dir: str = './samples/',
-      filename_template: str = 'step_{global_step}.json') -> None:
+      filename_template: str = 'step_{global_step}.json',
+      log_to_wandb: bool = True) -> None:
     super().__init__()
     if every_n_steps <= 0:
       raise ValueError('every_n_steps must be positive')
@@ -32,6 +47,7 @@ class SampleSaver(L.Callback):
     self.num_steps = num_steps
     self.save_dir = Path(save_dir)
     self.filename_template = filename_template
+    self.log_to_wandb = log_to_wandb
 
   def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
     del outputs, batch, batch_idx
@@ -42,15 +58,20 @@ class SampleSaver(L.Callback):
     if global_step % self.every_n_steps != 0:
       return
 
-    samples = pl_module.generate_samples(
-      num_samples=self._resolve_num_samples(pl_module),
-      num_steps=self._resolve_num_steps(pl_module))
+    try:
+      samples = pl_module.generate_samples(
+        num_samples=self._resolve_num_samples(pl_module),
+        num_steps=self._resolve_num_steps(pl_module))
+    except Exception as exc:
+      log.warning("SampleSaver: generation failed at step %d: %s", global_step, exc)
+      return
     samples = samples.detach().cpu()
-    save_path = self._build_save_path(global_step)
-    save_path.parent.mkdir(parents=True, exist_ok=True)
 
     text_samples = pl_module.tokenizer.batch_decode(samples.tolist())
     entropy = self._mean_entropy(samples)
+
+    save_path = self._build_save_path(global_step)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
     metadata = dict(
       text=text_samples,
       entropy=entropy,
@@ -58,6 +79,26 @@ class SampleSaver(L.Callback):
     )
     with open(save_path, 'w', encoding='utf-8') as fp:
       json.dump(metadata, fp, indent=2)
+
+    pl_module.log('samples/entropy', entropy, on_step=True, on_epoch=False)
+
+    if self.log_to_wandb:
+      self._log_wandb(trainer, text_samples, global_step)
+
+  @staticmethod
+  def _log_wandb(trainer, text_samples, global_step):
+    logger = trainer.logger
+    if logger is None:
+      return
+    if hasattr(logger, 'log_table'):
+      try:
+        logger.log_table(
+          key=f'samples@step{global_step}',
+          columns=['idx', 'text'],
+          data=[[i, t] for i, t in enumerate(text_samples)],
+        )
+      except Exception:
+        pass
 
   def _mean_entropy(self, samples: torch.Tensor) -> float:
     if samples.numel() == 0:

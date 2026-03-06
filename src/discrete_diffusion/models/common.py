@@ -7,6 +7,7 @@ selection (flash-attn vs SDPA vs flex) remains in each backbone.
 
 from __future__ import annotations
 
+import contextlib
 import math
 import typing
 
@@ -24,9 +25,40 @@ except (ImportError, RuntimeError):  # pragma: no cover - flash_attn required in
   FLASH_ATTN_AVAILABLE = False
 
 
-def supports_flash_attention() -> bool:
-  """Check if flash-attn is available and functional."""
-  return FLASH_ATTN_AVAILABLE
+# Global guardrail for iMF/MeanFlow JVP compatibility.
+# When enabled, SDPA runs with math kernels only.
+_FORCE_SDPA_MATH = False
+
+
+def set_sdpa_math_mode(enabled: bool) -> None:
+  """Enable/disable math-only SDPA kernels globally."""
+  global _FORCE_SDPA_MATH
+  _FORCE_SDPA_MATH = bool(enabled)
+
+
+def _device_supports_flash_attention(device: typing.Optional[torch.device] = None) -> bool:
+  """Return whether the given device can execute flash-attn kernels.
+
+  FlashAttention requires CUDA and Ampere-or-newer GPUs (SM >= 80).
+  """
+  if not torch.cuda.is_available():
+    return False
+
+  if device is None:
+    device_index = torch.cuda.current_device()
+  else:
+    dev = torch.device(device)
+    if dev.type != 'cuda':
+      return False
+    device_index = dev.index if dev.index is not None else torch.cuda.current_device()
+
+  major, _ = torch.cuda.get_device_capability(device_index)
+  return major >= 8
+
+
+def supports_flash_attention(device: typing.Optional[torch.device] = None) -> bool:
+  """Check if flash-attn is available and supported on the target device."""
+  return FLASH_ATTN_AVAILABLE and _device_supports_flash_attention(device)
 
 
 def supports_flex_attention() -> bool:
@@ -86,8 +118,9 @@ def bias_dropout_add_scale_fused_inference(
   return bias_dropout_add_scale(x, bias, scale, residual, prob, False)
 
 
-@torch.jit.script
 def modulate_fused(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
+  # Keep eager mode here: TorchScript'ed modulation can break forward-mode AD
+  # used by iMF/MeanFlow JVP paths.
   return modulate(x, shift, scale)
 
 
@@ -391,7 +424,12 @@ class DDiTBlock(nn.Module):
       qkv = apply_rotary_pos_emb_torchscript(qkv, cos, sin)
       q, k, v = [x.squeeze(2) for x in qkv.chunk(3, dim=2)]
       return sdpa_attention_masked(q, k, v, attn_mask, causal=False)
-    if self.attn_backend == 'flash_attn' or (self.attn_backend == 'auto' and supports_flash_attention()):
+    flash_dtype_ok = qkv.dtype in (torch.float16, torch.bfloat16)
+    use_flash = flash_dtype_ok and (
+      self.attn_backend == 'flash_attn'
+      or (self.attn_backend == 'auto' and supports_flash_attention(qkv.device))
+    ) and supports_flash_attention(qkv.device)
+    if use_flash:
       qkv = apply_rotary_pos_emb(qkv, cos, sin)
       return flash_varlen_attention_qkvpacked(qkv, causal=False)
     # Fallback to SDPA
@@ -470,7 +508,12 @@ class DDiTBlockCausal(nn.Module):
     sin = sin.to(qkv.dtype)
 
     # Try flash-attn first
-    if self.attn_backend == 'flash_attn' or (self.attn_backend == 'auto' and supports_flash_attention()):
+    flash_dtype_ok = qkv.dtype in (torch.float16, torch.bfloat16)
+    use_flash = flash_dtype_ok and (
+      self.attn_backend == 'flash_attn'
+      or (self.attn_backend == 'auto' and supports_flash_attention(qkv.device))
+    ) and supports_flash_attention(qkv.device)
+    if use_flash:
       with torch.amp.autocast('cuda', enabled=False):
         qkv_rotary = apply_rotary_pos_emb(qkv, cos, sin)
       return flash_varlen_attention_qkvpacked(qkv_rotary, causal=True)
@@ -504,7 +547,7 @@ class DDiTBlockCausal(nn.Module):
 
 
 __all__ = [
-  'supports_flash_attention', 'supports_flex_attention',
+  'supports_flash_attention', 'supports_flex_attention', 'set_sdpa_math_mode',
   'bias_dropout_add_scale', 'get_bias_dropout_add_scale',
   'bias_dropout_add_scale_fused_train', 'bias_dropout_add_scale_fused_inference',
   'modulate', 'modulate_fused',
@@ -520,6 +563,34 @@ __all__ = [
 # -----------------------------------------------------------------------------
 # Multi-head attention helpers (centralized)
 # -----------------------------------------------------------------------------
+def _sdpa_backend_context(device: torch.device):
+  """Select a JVP-safe SDPA backend when required.
+
+  On CPU, PyTorch may choose flash-style SDPA kernels that currently do not
+  implement forward-mode AD. Math-only mode can also be enabled globally for
+  CUDA to keep iMF JVP paths functional and deterministic.
+  """
+  force_math = bool(_FORCE_SDPA_MATH) or (device.type == 'cpu')
+  if not force_math:
+    return contextlib.nullcontext()
+
+  attn_mod = getattr(torch.nn, 'attention', None)
+  if attn_mod is not None and hasattr(attn_mod, 'sdpa_kernel'):
+    sdp_backend = getattr(attn_mod, 'SDPBackend', None)
+    if sdp_backend is not None and hasattr(sdp_backend, 'MATH'):
+      return attn_mod.sdpa_kernel(sdp_backend.MATH)
+
+  # Fallback for older torch variants.
+  if hasattr(torch.backends, 'cuda') and hasattr(torch.backends.cuda, 'sdp_kernel'):
+    return torch.backends.cuda.sdp_kernel(
+      enable_flash=False,
+      enable_math=True,
+      enable_mem_efficient=False,
+    )
+
+  return contextlib.nullcontext()
+
+
 def sdpa_attention(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -545,14 +616,16 @@ def sdpa_attention(
   q = q.transpose(1, 2)
   k = k.transpose(1, 2)
   v = v.transpose(1, 2)
-  x = F.scaled_dot_product_attention(
-    q, k, v,
-    attn_mask=attn_mask[:, None] if attn_mask is not None else None,
-    dropout_p=dropout_p,
-    is_causal=causal,
-    scale=scale)
+  with _sdpa_backend_context(q.device):
+    x = F.scaled_dot_product_attention(
+      q, k, v,
+      attn_mask=attn_mask[:, None] if attn_mask is not None else None,
+      dropout_p=dropout_p,
+      is_causal=causal,
+      scale=scale)
   x = x.transpose(1, 2)  # (B, S, H, D)
-  return rearrange(x, 'b s h d -> b s (h d)')
+  bsz, seqlen, n_heads, head_dim = x.shape
+  return x.reshape(bsz, seqlen, n_heads * head_dim)
 
 
 def sdpa_attention_unmasked(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:

@@ -68,7 +68,7 @@ class LatentEvalCallback(Callback):
                     x_t, _ = forward_process(input_sequence, t)
                 
                 z_t = pl_module.backbone.encode_student(x_t, t)
-                z_0 = pl_module.backbone.encode_teacher(input_sequence, t)
+                z_0 = pl_module.backbone.encode_teacher(input_sequence, torch.zeros_like(t))
                 z_hat_0 = pl_module.backbone.predict_latent(z_t, t)
                 
                 mask_indices = (x_t == pl_module.mask_id)
@@ -87,4 +87,3 @@ class LatentEvalCallback(Callback):
                     metrics["latent_eval/latent_var"].append(z_flat.var(dim=0).mean().item())
         
         return {k: sum(v) / len(v) for k, v in metrics.items() if v}
-

@@ -2,6 +2,7 @@
 from .datasets import (
     generate_synthetic_dataset,
     get_lambada_test_dataset,
+    get_tiny_shakespeare_dataset,
     get_text8_dataset,
 )
 from .datamodule import DiscreteDiffusionDataModule
@@ -26,6 +27,7 @@ __all__ = [
     "SyntheticTokenizer",
     "generate_synthetic_dataset",
     "get_lambada_test_dataset",
+    "get_tiny_shakespeare_dataset",
     "get_text8_dataset",
     "wt_detokenizer",
     "ptb_detokenizer",
@@ -39,4 +41,3 @@ __all__ = [
     "get_dataloaders",
     "DiscreteDiffusionDataModule",
 ]
-

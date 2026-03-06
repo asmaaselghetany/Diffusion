@@ -12,6 +12,16 @@ Train on OpenWebText:
 bash examples/mdlm/owt.sh
 ```
 
+Toy run on Tiny Shakespeare:
+
+```bash
+bash examples/mdlm/tiny_shakespeare.sh
+```
+
+For SLURM baseline runs/evaluation across MDLM, latent JEPA, and continuous
+embedding on Tiny Shakespeare, see:
+`slurm_scripts/shakespeare_baselines/README.md`
+
 ## Citation
 
 ```bibtex

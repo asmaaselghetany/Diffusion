@@ -15,6 +15,7 @@ See docs/01_algorithms.md for detailed documentation on algorithm structure.
 
 from .ar import AR  # noqa: F401
 from .bd3lm import BD3LM  # noqa: F401
+from .continuous_embedding_diffusion import ContinuousEmbeddingDiffusion  # noqa: F401
 from .flexmdm_anyorder import FlexMDMAnyOrder  # noqa: F401
 from .gidd import GIDD  # noqa: F401
 from .jepa import LatentJEPATrainer  # noqa: F401
@@ -26,6 +27,7 @@ from .udlm import UDLM  # noqa: F401
 __all__ = [
   'AR',
   'BD3LM',
+  'ContinuousEmbeddingDiffusion',
   'FlexMDMAnyOrder',
   'GIDD',
   'LatentJEPATrainer',

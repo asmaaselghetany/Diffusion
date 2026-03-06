@@ -8,7 +8,7 @@ This repository centralizes tooling, datasets, experiments, and evaluation pipel
 
 *   **Unified Entry Point:** Hydra + Lightning workflow for experimenting with MDLM, UDLM, BD3LM, FlexMDM, GIDD, SEDD, and PartitionMDLM.
 *   **Comprehensive Sampling:** Helpers for absorbing, autoregressive, block, and flexible sampling strategies.
-*   **Reproducibility:** Scripts to reproduce training recipes for datasets like LM1B, OpenWebText, and Text8.
+*   **Reproducibility:** Scripts to reproduce training recipes for datasets like LM1B, OpenWebText, Text8, and Tiny Shakespeare.
 
 ## Papers Implemented
 
@@ -48,6 +48,37 @@ PYTHONPATH=src python -u -m discrete_diffusion \
   trainer.devices=8 \
   hydra.run.dir=./outputs/owt/mdlm
 ```
+
+For toy experiments, use the Tiny Shakespeare data config:
+
+```bash
+PYTHONPATH=src python -u -m discrete_diffusion \
+  data=tiny_shakespeare \
+  model=small \
+  model.length=128 \
+  algo=mdlm \
+  loader.global_batch_size=64 \
+  trainer.devices=1 \
+  trainer.max_steps=2000
+```
+
+For SLURM baselines on Tiny Shakespeare (MDLM, latent JEPA, continuous embedding), use:
+
+```bash
+sbatch slurm_scripts/shakespeare_baselines/train_mdlm.sh
+sbatch slurm_scripts/shakespeare_baselines/train_latent_jepa.sh
+sbatch slurm_scripts/shakespeare_baselines/train_continuous_embedding.sh
+
+sbatch --export=ALL,RUN_DIR=/path/to/mdlm_run \
+  slurm_scripts/shakespeare_baselines/eval_mdlm_gen_ppl.sh
+sbatch --export=ALL,RUN_DIR=/path/to/latent_jepa_run \
+  slurm_scripts/shakespeare_baselines/eval_latent_jepa_gen_ppl.sh
+sbatch --export=ALL,RUN_DIR=/path/to/continuous_run \
+  slurm_scripts/shakespeare_baselines/eval_continuous_gen_ppl.sh
+```
+
+The wrapper/core script layout and unified evaluation flow are documented in
+`slurm_scripts/shakespeare_baselines/README.md`.
 
 ### 2. Sampling
 Once you have a checkpoint, use the generation script:

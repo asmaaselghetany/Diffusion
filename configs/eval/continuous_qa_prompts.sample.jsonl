@@ -1,0 +1,10 @@
+{"id":"qa_001","prompt":"The capital city of France is","answer":"Paris","max_answer_tokens":4,"stop_strings":[".","\n"]}
+{"id":"qa_002","prompt":"Water freezes at","answer":"0 degrees Celsius","max_answer_tokens":8,"stop_strings":[".","\n"]}
+{"id":"qa_003","prompt":"The largest planet in our solar system is","answer":"Jupiter","max_answer_tokens":6,"stop_strings":[".","\n"]}
+{"id":"qa_004","prompt":"The author of 'Pride and Prejudice' is","answer":"Jane Austen","max_answer_tokens":6,"stop_strings":[".","\n"]}
+{"id":"qa_005","prompt":"The process by which plants make food using sunlight is called","answer":"photosynthesis","max_answer_tokens":8,"stop_strings":[".","\n"]}
+{"id":"qa_006","prompt":"Python is primarily known as a","answer":"programming language","max_answer_tokens":8,"stop_strings":[".","\n"]}
+{"id":"qa_007","prompt":"The square root of 81 is","answer":"9","max_answer_tokens":4,"stop_strings":[".","\n"]}
+{"id":"qa_008","prompt":"In machine learning, overfitting usually hurts","answer":"generalization","max_answer_tokens":8,"stop_strings":[".","\n"]}
+{"id":"qa_009","prompt":"Complete the sentence: The scientist wrote the conclusion,","suffix":"after repeating the experiment twice.","answer":"then submitted the report","max_answer_tokens":12,"stop_strings":[".","\n"]}
+{"id":"qa_010","prompt":"The opposite of 'increase' is","answer":"decrease","max_answer_tokens":6,"stop_strings":[".","\n"]}

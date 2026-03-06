@@ -1,0 +1,40 @@
+# Continuous Embedding Diffusion Model Config
+# Denoiser: Predicts clean embeddings from noisy embeddings
+# Decoder: Maps embeddings to token logits
+
+_target_: discrete_diffusion.models.continuous_denoiser.ContinuousEmbeddingModel
+name: continuous_embedding
+type: continuous_embedding
+
+# ---------------- Memory optimization ----------------
+gradient_checkpointing: true
+
+# ---------------- Encoder (frozen, pretrained) ----------------
+encoder_name: "Qwen/Qwen3-Embedding-0.6B"
+encoder_dtype: bfloat16  # float32, float16, bfloat16
+
+# Embedding dimension (from Qwen3-Embedding-0.6B)
+embed_dim: 1024
+
+# ---------------- Denoiser: noisy embeddings → clean embeddings ----------------
+hidden_size: 1024       # Denoiser transformer width
+n_heads: 16             # 1024 / 16 = 64-d per head
+n_blocks: 12            # Denoiser depth
+mlp_ratio: 4            # MLP hidden dim = 4 * hidden_size
+dropout: 0.1
+time_embed_dim: 256     # Time embedding dimension
+parameterization: x0    # x0, epsilon, v
+objective: ddpm         # ddpm | flow_matching | meanflow | imf
+attn_backend: auto      # auto | sdpa | flash_attn
+
+# ---------------- Decoder: embeddings → token logits ----------------
+decoder_hidden_size: 1024  # Match embedding dimension
+decoder_n_heads: 16
+decoder_n_blocks: 2        # Shallow decoder
+decoder_dropout: 0.1
+
+# ---------------- Sequence params ----------------
+length: 256             # Default sequence length
+max_tokens: 256
+
+# vocab_size is injected by train.py from tokenizer

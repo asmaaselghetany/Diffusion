@@ -3,7 +3,7 @@ checkpoint_every_n_steps:
   _target_: lightning.pytorch.callbacks.ModelCheckpoint
   save_last: True # save model as ${save_dir}/checkpoints/last.ckpt
   verbose: True
-  every_n_train_steps: 50000  # Changed from 500 to 5000 (save less frequently)
+  every_n_train_steps: 5000  # Save every 5k steps for safety
   save_top_k: -1  # Changed from -1 - only keep last 5 periodic checkpoints, -1 do not save any "best" models; this callback is being used to save every n train steps
   dirpath: ${checkpointing.save_dir}/checkpoints
   auto_insert_metric_name: False

@@ -22,6 +22,7 @@ __all__ = [
     "generate_synthetic_dataset",
     "get_lambada_test_dataset",
     "get_text8_dataset",
+    "get_tiny_shakespeare_dataset",
 ]
 
 
@@ -143,3 +144,58 @@ def get_text8_dataset(cache_dir, max_seq_length=256, drop_last=True,
     dataset = datasets.load_from_disk(cache_dir)
   return dataset
 
+
+def get_tiny_shakespeare_dataset(cache_dir, max_seq_length=1024,
+                                 drop_last=True):
+  """Build tiny Shakespeare from the upstream Karpathy source text.
+
+  The original HF dataset script (`karpathy/tiny_shakespeare`) downloads the
+  same file and applies a 90/5/5 train/validation/test split. We mirror that
+  behavior here because dataset scripts are disabled in `datasets>=3`.
+  """
+  url = (
+    "https://raw.githubusercontent.com/karpathy/char-rnn/master/"
+    "data/tinyshakespeare/input.txt"
+  )
+  cache_dir = os.path.join(cache_dir, "tiny_shakespeare")
+  split_names = ["train", "validation", "test"]
+  if not all([
+    utils.fsspec_exists(os.path.join(cache_dir, split))
+    for split in split_names
+  ]):
+    raw_cache_dir = os.path.join(cache_dir, "raw_data")
+    raw_path = os.path.join(raw_cache_dir, "input.txt")
+    if not utils.fsspec_exists(raw_path):
+      utils.fsspec_mkdirs(raw_cache_dir, exist_ok=True)
+      LOGGER.info("Downloading tiny_shakespeare from URL %s.", url)
+      with (urllib.request.urlopen(url) as in_stream,
+            open(raw_path, "wb") as out_file):
+        shutil.copyfileobj(in_stream, out_file)
+
+    with fsspec.open(raw_path, "r") as f:
+      rawdata = f.read()
+    i = int(len(rawdata) * 0.9)
+    train_text, rawdata = rawdata[:i], rawdata[i:]
+    i = int(len(rawdata) * 0.5)
+    validation_text, test_text = rawdata[:i], rawdata[i:]
+    splits = {
+      "train": train_text,
+      "validation": validation_text,
+      "test": test_text,
+    }
+
+    def chunks(text, n):
+      for i in range(0, len(text), n):
+        yield text[i:i + n]
+
+    dataset_dict = {}
+    for split, text in splits.items():
+      chunked = list(chunks(text, max_seq_length))
+      if drop_last and chunked and len(chunked[-1]) < max_seq_length:
+        chunked = chunked[:-1]
+      dataset_dict[split] = datasets.Dataset.from_dict({"text": chunked})
+    dataset = datasets.DatasetDict(dataset_dict)
+    dataset.save_to_disk(cache_dir)
+  else:
+    dataset = datasets.load_from_disk(cache_dir)
+  return dataset

@@ -1,0 +1,10 @@
+# Hydra instantiation config for Gaussian forward process
+# Note: schedule must be passed at runtime
+_target_: discrete_diffusion.forward_process.gaussian.GaussianForwardProcess
+
+# Noise clipping for numerical stability
+clip_noise: false
+noise_clip_value: 6.0
+
+# Independent noise per token position
+per_token_noise: true
