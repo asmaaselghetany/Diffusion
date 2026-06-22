@@ -4,6 +4,8 @@ Supports Stage 1 (latent JEPA training with MSE + VICReg) and
 Stage 2 (decoder-only training with CE loss).
 """
 
+from __future__ import annotations
+
 import math
 
 import torch

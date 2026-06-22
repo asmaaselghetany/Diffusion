@@ -6,6 +6,7 @@ from .absorbing import AbsorbingSampler
 from .ar import ARSampler
 from .base import Sampler
 from .bd3lm import BD3LMSampler
+from .block_diffusion import BlockDiffusionSampler
 from .continuous_embedding import ContinuousEmbeddingSampler
 from .gidd import GIDDSampler
 from .latent_jepa import LatentJEPASampler
@@ -31,6 +32,7 @@ __all__ = [
   "AbsorbingSampler",
   "ARSampler",
   "BD3LMSampler",
+  "BlockDiffusionSampler",
   "ContinuousEmbeddingSampler",
   "GIDDSampler",
   "LatentJEPASampler",

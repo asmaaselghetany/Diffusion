@@ -33,6 +33,15 @@ def _unsqueeze(x: torch.Tensor, reference: torch.Tensor) -> torch.Tensor:
   return x.view(*x.shape, * ((1,) * (len(reference.shape) - len(x.shape))))
 
 
+def is_absorbing_forward_process_config(config) -> bool:
+  """Return True when ``config.algo.forward_process`` selects absorbing noise."""
+  fp = getattr(config.algo, 'forward_process', None)
+  if fp is None:
+    return True
+  target = str(getattr(fp, '_target_', '') or getattr(fp, 'name', ''))
+  return 'uniform' not in target.lower()
+
+
 def sample_categorical(categorical_probs: torch.Tensor) -> torch.Tensor:
   """Sample categories via a Gumbel-max formulation for stability.
 

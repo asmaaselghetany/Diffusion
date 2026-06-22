@@ -1,0 +1,29 @@
+_target_: discrete_diffusion.algorithms.block_diffusion.BlockDiffusion
+name: block_diffusion
+backbone: block-dit
+parameterization: subs
+time_conditioning: False
+T: 0
+causal_attention: False
+dropout: 0.0
+ignore_bos: True
+cross_attn: True
+var_min: True
+clip_search_delta: 0.05
+clip_search_widths: []
+fix_clipping: False
+loss_type: elbo
+zero_recon_loss: True
+
+noise_schedule:
+  name: log_linear
+  eps: ${noise.eps}
+
+sampler:
+  _target_: discrete_diffusion.sampling.block_diffusion.BlockDiffusionSampler
+
+data:
+  insert_train_eos: False
+  insert_valid_eos: False
+  insert_train_special: False
+  insert_valid_special: False

@@ -13,6 +13,11 @@ import omegaconf
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from ..compat.triton_shim import ensure_triton_attrs_descriptor
+
+ensure_triton_attrs_descriptor()
+
 from .common import (
   bias_dropout_add_scale,
   get_bias_dropout_add_scale,
@@ -86,9 +91,67 @@ def block_diff_mask(b, h, q_idx, kv_idx, block_size=None, n=None):  # noqa: D401
   return block_diagonal | offset_block_causal | block_causal
 
 
-@torch.compile(fullgraph=True, mode="max-autotune-no-cudagraphs")  # type: ignore[misc]
-def fused_flex_attention(q, k, v, mask=None):  # pragma: no cover - requires flex attention runtime
+def _flex_attention_eager(q, k, v, mask=None):
+  from torch.nn.attention.flex_attention import _identity
+  from torch._higher_order_ops.flex_attention import math_attention
+
+  scale = 1.0 / math.sqrt(q.shape[-1])
+  block_tuple = mask.as_tuple() if mask is not None else None
+  if block_tuple is None:
+    from torch.nn.attention.flex_attention import _create_empty_block_mask
+    block_tuple = _create_empty_block_mask(q, k).as_tuple()
+  out, _lse = math_attention(
+    q, k, v, _identity, block_tuple, scale, {}, (), ())
+  return out
+
+
+def _flex_attention_inductor(q, k, v, mask=None):
   return flex_attention(q, k, v, block_mask=mask)
+
+
+_FLEX_RUNTIME = None  # None | 'inductor' | 'math'
+_compiled_flex_attention = None
+_flex_runtime_warned = False
+
+
+def _warn_flex_math_fallback() -> None:
+  global _flex_runtime_warned
+  if _flex_runtime_warned:
+    return
+  _flex_runtime_warned = True
+  import logging
+  logging.getLogger(__name__).warning(
+      "flex_attention Triton kernels unavailable; using eager flex math_attention fallback")
+
+
+def fused_flex_attention(q, k, v, mask=None):  # pragma: no cover - requires flex attention runtime
+  """Block-masked flex attention (Triton/inductor when available, else eager math)."""
+  global _compiled_flex_attention, _FLEX_RUNTIME
+  if _FLEX_RUNTIME == 'math':
+    return _flex_attention_eager(q, k, v, mask=mask)
+
+  try:
+    if _compiled_flex_attention is None:
+      ensure_triton_attrs_descriptor()
+      _compiled_flex_attention = torch.compile(  # type: ignore[misc]
+        _flex_attention_inductor,
+        fullgraph=True,
+        mode="max-autotune-no-cudagraphs",
+      )
+    out = _compiled_flex_attention(q, k, v, mask=mask)
+    if _FLEX_RUNTIME is None:
+      _FLEX_RUNTIME = 'inductor'
+    return out
+  except Exception:
+    _FLEX_RUNTIME = 'math'
+    _compiled_flex_attention = None
+    _warn_flex_math_fallback()
+    return _flex_attention_eager(q, k, v, mask=mask)
+
+
+def get_flex_runtime() -> str:
+  """Return flex backend after at least one forward, or 'unknown'."""
+  return _FLEX_RUNTIME or 'unknown'
 
 
 

@@ -1,0 +1,7 @@
+defaults:
+  - block_diffusion
+  - /forward_process: uniform
+
+name: block_diffusion_uniform
+parameterization: subs
+zero_recon_loss: True

@@ -1,0 +1,6 @@
+defaults:
+  - block_diffusion
+  - /forward_process: absorbing
+
+name: block_diffusion_masked
+parameterization: subs

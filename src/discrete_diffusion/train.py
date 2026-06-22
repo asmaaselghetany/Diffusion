@@ -10,6 +10,7 @@ import torch
 from .data import get_dataloaders, get_tokenizer
 from . import utils
 from .callbacks.ddp_static_graph import DDPStaticGraphCallback
+from .training.pretrained import load_matching_weights, resolve_pretrained_source
 
 
 def train(config):
@@ -63,15 +64,26 @@ def train(config):
   # Lightning callbacks
   callbacks = [hydra.utils.instantiate(cb) for _, cb in config.callbacks.items()] if 'callbacks' in config else []
 
-  if config.training.finetune_path != '':
+  cache_dir = omegaconf.OmegaConf.select(config, 'data.cache_dir', default='')
+  pretrain_source = resolve_pretrained_source(
+    finetune_path=str(config.training.get('finetune_path', '') or ''),
+    from_pretrained=str(config.training.get('from_pretrained', '') or ''),
+    cache_dir=str(cache_dir or ''),
+  )
+
+  model = algo_cls(config, tokenizer=tokenizer)
+
+  if pretrain_source:
+    logger.info('Initializing from pretrained weights: %s', pretrain_source)
+    load_matching_weights(model, pretrain_source, logger=logger)
+  elif config.training.finetune_path != '':
+    # Legacy path: finetune_path only (local .ckpt)
     assert utils.fsspec_exists(config.training.finetune_path)
-    # Custom loading that handles size mismatches (e.g., different decoder architecture)
-    checkpoint = torch.load(config.training.finetune_path, map_location='cpu', weights_only=False)
-    model = algo_cls(config, tokenizer=tokenizer)
+    checkpoint = torch.load(
+      config.training.finetune_path, map_location='cpu', weights_only=False)
     model_state = model.state_dict()
     ckpt_state = checkpoint.get('state_dict', checkpoint)
-    
-    # Filter checkpoint: only load keys with matching shapes
+
     filtered_state = {}
     skipped_keys = []
     for key, value in ckpt_state.items():
@@ -79,19 +91,20 @@ def train(config):
         if model_state[key].shape == value.shape:
           filtered_state[key] = value
         else:
-          skipped_keys.append(f"{key}: ckpt{list(value.shape)} vs model{list(model_state[key].shape)}")
-    
+          skipped_keys.append(
+            f"{key}: ckpt{list(value.shape)} vs model{list(model_state[key].shape)}")
+
     if skipped_keys:
-      logger.info(f"Skipped {len(skipped_keys)} keys due to shape mismatch (new decoder architecture):")
+      logger.info(
+        'Skipped %d keys due to shape mismatch (new decoder architecture):',
+        len(skipped_keys))
       for k in skipped_keys[:5]:
-        logger.info(f"  {k}")
+        logger.info('  %s', k)
       if len(skipped_keys) > 5:
-        logger.info(f"  ... and {len(skipped_keys) - 5} more")
-    
+        logger.info('  ... and %d more', len(skipped_keys) - 5)
+
     model.load_state_dict(filtered_state, strict=False)
-    logger.info(f"Loaded {len(filtered_state)}/{len(ckpt_state)} checkpoint keys")
-  else:
-    model = algo_cls(config, tokenizer=tokenizer)
+    logger.info('Loaded %d/%d checkpoint keys', len(filtered_state), len(ckpt_state))
 
   # Torch compile if enabled
   if omegaconf.OmegaConf.select(config, 'training.torch_compile', default=False):

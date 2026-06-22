@@ -7,6 +7,10 @@ Usage:
 import os
 from pathlib import Path
 
+from .compat.triton_shim import ensure_triton_attrs_descriptor
+
+ensure_triton_attrs_descriptor()
+
 import hydra
 import lightning as L
 import omegaconf
