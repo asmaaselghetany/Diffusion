@@ -41,6 +41,10 @@ training:
   finetune_path: ''
   # Hugging Face id, local .ckpt, or sentinel: true/default/bd3lm/owt (uses data.cache_dir checkpoint)
   from_pretrained: ''
+  # ar | bd3lm | block_diffusion | auto (infer from from_pretrained / checkpoint keys)
+  pretrain_profile: auto
+  # Fail training if fewer than this fraction of checkpoint keys load into the model.
+  pretrain_min_load_fraction: 0.5
   torch_compile: false
   resample: False
   sampling_eps: 1e-3

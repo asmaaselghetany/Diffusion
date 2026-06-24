@@ -442,14 +442,14 @@ class BlockDiT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
     self.config = config
     self.n = config.model.length
     self.causal = getattr(config.model, 'causal_attention', config.algo.parameterization == 'ar')
-    self.adaLN = (not self.causal) or getattr(config.model, 'adaln', False)
+    self.adaLN = bool(getattr(config.model, 'adaln', False))
     self.vocab_size = vocab_size
     self.block_size = getattr(config, 'block_size', config.model.length)
     dim = config.model.hidden_size
     cond_dim = config.model.cond_dim
     self.n_heads = config.model.n_heads
     self.vocab_embed = EmbeddingLayer(dim, vocab_size)
-    if self.adaLN or not self.causal:
+    if self.adaLN:
       self.sigma_map = TimestepEmbedder(cond_dim)
     self.rotary_emb = Rotary(dim // config.model.n_heads)
     self.attn_backend = getattr(config.model, 'attn_backend', 'flash_attn')
@@ -523,10 +523,12 @@ class BlockDiT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
 
   def forward(self, indices, sigma, sample_mode=False, store_kv=False):
     x = self.vocab_embed(indices)
-    if sigma is None:
-      t_cond = None
-    else:
+    if self.adaLN and sigma is not None:
+      if not getattr(self.config.algo, 'time_conditioning', False):
+        sigma = torch.zeros_like(sigma)
       t_cond = F.silu(self.sigma_map(sigma))
+    else:
+      t_cond = None
 
     cross_attn = hasattr(self, 'block_diff_mask')
     if cross_attn:

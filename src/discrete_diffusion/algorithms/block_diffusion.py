@@ -62,6 +62,11 @@ class BlockDiffusion(Diffusion):
       raise ValueError('Uniform block diffusion requires UniformForwardProcess')
 
     self._init_block_diffusion(config)
+    if self.config.model.length % self.block_size != 0:
+      raise ValueError(
+        f'model.length ({self.config.model.length}) must be divisible by '
+        f'block_size ({self.block_size})'
+      )
     self._validate_configuration()
 
   def _init_block_diffusion(self, config):

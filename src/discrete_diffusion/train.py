@@ -10,7 +10,11 @@ import torch
 from .data import get_dataloaders, get_tokenizer
 from . import utils
 from .callbacks.ddp_static_graph import DDPStaticGraphCallback
-from .training.pretrained import load_matching_weights, resolve_pretrained_source
+from .training.pretrained import (
+  configure_pretrain_init,
+  load_matching_weights,
+  resolve_pretrained_source,
+)
 
 
 def train(config):
@@ -71,11 +75,29 @@ def train(config):
     cache_dir=str(cache_dir or ''),
   )
 
+  pretrain_state = None
+  if pretrain_source:
+    pretrain_state = configure_pretrain_init(
+      config,
+      pretrain_source=pretrain_source,
+      logger=logger,
+    )
+
   model = algo_cls(config, tokenizer=tokenizer)
 
   if pretrain_source:
     logger.info('Initializing from pretrained weights: %s', pretrain_source)
-    load_matching_weights(model, pretrain_source, logger=logger)
+    min_load_fraction = float(
+      omegaconf.OmegaConf.select(
+        config, 'training.pretrain_min_load_fraction', default=0.5)
+    )
+    load_matching_weights(
+      model,
+      pretrain_source,
+      logger=logger,
+      min_load_fraction=min_load_fraction,
+      state_dict=pretrain_state,
+    )
   elif config.training.finetune_path != '':
     # Legacy path: finetune_path only (local .ckpt)
     assert utils.fsspec_exists(config.training.finetune_path)

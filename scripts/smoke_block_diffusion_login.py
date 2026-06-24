@@ -114,13 +114,18 @@ def check_checkpoint(cache_dir: Path, ckpt_name: str, download_hint: str) -> Che
   return _ok("checkpoint", str(path))
 
 
-def check_pretrained_load(repo_root: Path, ckpt: Path) -> CheckResult:
+def check_pretrained_load(repo_root: Path, ckpt: Path, *, ar: bool) -> CheckResult:
   from hydra import compose, initialize_config_dir
   from hydra.core.global_hydra import GlobalHydra
 
   from discrete_diffusion.data import get_tokenizer
-  from discrete_diffusion.training.pretrained import load_matching_weights
+  from discrete_diffusion.training.pretrained import (
+    apply_pretrain_profile,
+    configure_pretrain_init,
+    load_matching_weights,
+  )
 
+  profile = 'ar' if ar else 'bd3lm'
   GlobalHydra.instance().clear()
   config_dir = str(repo_root / "configs")
   with initialize_config_dir(config_dir=config_dir, version_base=None):
@@ -133,19 +138,27 @@ def check_pretrained_load(repo_root: Path, ckpt: Path) -> CheckResult:
         f"data.cache_dir={repo_root / 'data_cache'}",
         "model.length=128",
         "block_size=16",
-        "model.adaln=True",
-        "algo.cross_attn=False",
-        "model.attn_backend=sdpa",
         f"training.from_pretrained={ckpt}",
+        f"training.pretrain_profile={profile}",
+        "model.attn_backend=sdpa",
+        "training.pretrain_min_load_fraction=0.5",
       ],
     )
+  configure_pretrain_init(cfg, pretrain_source=str(ckpt))
   tok = get_tokenizer(cfg)
-  import torch
   from discrete_diffusion.algorithms.block_diffusion import BlockDiffusion
 
   model = BlockDiffusion(cfg, tok)
-  loaded, total, _skipped = load_matching_weights(model, str(ckpt))
-  return _ok("pretrained_load", f"loaded={loaded}/{total}")
+  try:
+    loaded, total, _skipped = load_matching_weights(
+      model, str(ckpt), min_load_fraction=0.5)
+  except RuntimeError as exc:
+    return _fail("pretrained_load", str(exc))
+  return _ok(
+    "pretrained_load",
+    f"profile={profile} loaded={loaded}/{total} "
+    f"causal={cfg.model.causal_attention} adaln={cfg.model.adaln}",
+  )
 
 
 def check_forward_pass(
@@ -381,7 +394,7 @@ def profile_owt_pretrain(
     lambda: check_data_cache(cache, scratch=False, pretrain=True),
     lambda: check_data_cache(compute_cache, scratch=False, pretrain=True),
     lambda: check_checkpoint(cache, ckpt, dl),
-    lambda: check_pretrained_load(repo_root, cache / "checkpoints" / ckpt),
+    lambda: check_pretrained_load(repo_root, cache / "checkpoints" / ckpt, ar=ar),
     lambda: check_forward_pass(
       repo_root,
       attn_backend="flex",

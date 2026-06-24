@@ -230,7 +230,9 @@ if [[ -n "${FROM_PRETRAINED:-}" ]]; then
   fi
   TRAIN_ARGS+=(
     "training.from_pretrained=${PRETRAIN_CKPT}"
+    "training.pretrain_profile=bd3lm"
     "model.adaln=True"
+    "model.causal_attention=False"
   )
   _pretrain_data_args
 elif [[ -n "${FROM_AR_PRETRAINED:-}" ]]; then
@@ -248,12 +250,16 @@ elif [[ -n "${FROM_AR_PRETRAINED:-}" ]]; then
   fi
   TRAIN_ARGS+=(
     "training.from_pretrained=${PRETRAIN_CKPT}"
+    "training.pretrain_profile=ar"
     "model.adaln=False"
+    "model.causal_attention=True"
   )
   _pretrain_data_args
 else
   TRAIN_ARGS+=(
+    "training.pretrain_profile=block_diffusion"
     "model.adaln=False"
+    "model.causal_attention=False"
     "algo.cross_attn=True"
   )
 fi
