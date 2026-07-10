@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "uni-d2"
 version = "0.1.0"
-description = "A modular framework for discrete diffusion models including MDLM, SEDD, UDLM, BD3LM, GIDD, and more"
+description = "A modular framework for discrete diffusion models including MDLM, SEDD, UDLM, BD3LM, GIDD, BlockTrainer (Qwen block path), and more"
 readme = "README.md"
 requires-python = ">=3.9"
 license = {text = "MIT"}
@@ -99,4 +99,11 @@ where = ["src"]
 include = ["discrete_diffusion*"]
 namespaces = false
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra"
+markers = [
+    "qwen: downloads/loads a Qwen checkpoint (skip unless RUN_QWEN_TESTS=1)",
+]
 

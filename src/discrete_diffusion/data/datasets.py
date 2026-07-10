@@ -40,25 +40,31 @@ def _generate_synthetic_data(dataset_size, seq_len, vocab_size):
   return dataset
 
 
+def _collate_tensor_dict(batch):
+  """Stack dict batches to torch tensors (avoids HF torch formatter / torchvision)."""
+  keys = batch[0].keys()
+  return {
+      key: torch.stack([torch.as_tensor(item[key]) for item in batch])
+      for key in keys
+  }
+
+
 def generate_synthetic_dataset(train_dataset_size, validation_dataset_size,
                                seq_len, vocab_size):
   np.random.seed(42)
-  train_data = torch.from_numpy(
-    _generate_synthetic_data(train_dataset_size, seq_len, vocab_size))
+  train_data = _generate_synthetic_data(train_dataset_size, seq_len, vocab_size)
   train_dataset = datasets.Dataset.from_dict({
-    'input_ids': train_data,
-    'attention_mask': torch.ones_like(train_data),
+    'input_ids': train_data.tolist(),
+    'attention_mask': np.ones_like(train_data, dtype=np.int64).tolist(),
   })
-  train_dataset.set_format(type='torch')
 
   np.random.seed(41)
-  validation_data = torch.from_numpy(
-    _generate_synthetic_data(validation_dataset_size, seq_len, vocab_size))
+  validation_data = _generate_synthetic_data(
+      validation_dataset_size, seq_len, vocab_size)
   validation_dataset = datasets.Dataset.from_dict({
-    'input_ids': validation_data,
-    'attention_mask': torch.ones_like(validation_data),
+    'input_ids': validation_data.tolist(),
+    'attention_mask': np.ones_like(validation_data, dtype=np.int64).tolist(),
   })
-  validation_dataset.set_format(type='torch')
 
   return {
     'train': train_dataset,

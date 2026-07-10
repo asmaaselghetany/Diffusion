@@ -9,8 +9,8 @@
 Moving beyond the constraints of autoregressive modeling, UNI-D² brings the benefits of iterative refinement—data efficiency, bidirectional context, and parallel decoding—to the text domain. This library serves as the missing foundation for this rapidly growing space, featuring an easily extendible architecture that supports multiple modular training methods. Our unified pipeline facilitates rapid experimentation, enables comparable evaluation, and standardizes benchmarks across the field.
 
 ## Highlights
-- Hydra + Lightning entry point (`python -m discrete_diffusion`) for experimenting with MDLM, UDLM, BD3LM, FlexMDM, GIDD, SEDD, PartitionMDLM, and CANDI papers.
-- Sampling helpers that cover absorbing, BD3LM, GIDD, partition, uniform, autoregressive, FlexMDM, CANDI, and Entropy-Bounded (EB) samplers plus a reusable `scripts/generate_samples.sh` wrapper.
+- Hydra + Lightning entry point (`python -m discrete_diffusion`) for experimenting with MDLM, UDLM, BD3LM, FlexMDM, GIDD, SEDD, PartitionMDLM, CANDI, and the **Qwen block path** (`BlockTrainer`: `algo=block_masked` | `block_uniform`).
+- Sampling helpers that cover absorbing, BD3LM, **block (Qwen)**, GIDD, partition, uniform, autoregressive, FlexMDM, CANDI, and Entropy-Bounded (EB) samplers plus a reusable `scripts/generate_samples.sh` wrapper.
 - Scripts that reproduce training recipes for datasets such as LM1B, OWT, and Text8.
 
 ## Getting Started
@@ -72,7 +72,21 @@ PYTHONPATH=src python -u -m discrete_diffusion \
   trainer.devices=8 \
   hydra.run.dir=./outputs/owt/mdlm
 ```
-The `examples/` directory contains dataset-specific recipes (e.g., `bd3lm/owt.sh`, `udlm/text8.sh`). Override any Hydra config key by appending `key=value` pairs on the command line.
+The `examples/` directory contains dataset-specific recipes (e.g., `bd3lm/owt.sh`, `udlm/text8.sh`, **`block_qwen/smoke.sh`**). Override any Hydra config key by appending `key=value` pairs on the command line.
+
+### Qwen block diffusion (thesis path)
+
+See [docs/BLOCK_PATH.md](docs/BLOCK_PATH.md). Minimal train on a GPU node:
+
+```bash
+PYTHONPATH=src python -m discrete_diffusion \
+  experiment=block_qwen \
+  algo=block_masked \
+  model.hub_id=Qwen/Qwen2.5-0.5B \
+  data.tokenizer_name_or_path=Qwen/Qwen2.5-0.5B
+```
+
+Verification: `bash examples/block_qwen/smoke.sh` or `sbatch examples/block_qwen/slurm_verify.sh`.
 
 ### Generating samples
 Once you have a checkpoint, use the evaluation script:

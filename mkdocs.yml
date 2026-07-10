@@ -36,8 +36,12 @@ extra_javascript:
 nav:
   - Home: index.md
   - Architecture: architecture.md
+  - Block path (Qwen): BLOCK_PATH.md
+  - Baseline: BASELINE.md
+  - Verification: VERIFICATION.md
   - Contributing: contributing.md
   - Examples:
+      - Block Qwen: examples/block_qwen.md
       - CANDI: examples/candi.md
       - MDLM: examples/mdlm.md
       - PGM: examples/pgm.md
@@ -60,6 +64,7 @@ nav:
           - UDLM: reference/algorithms/udlm.md
           - AR: reference/algorithms/ar.md
           - BD3LM: reference/algorithms/bd3lm.md
+          - Block Trainer: reference/algorithms/block_trainer.md
           - FlexMDM: reference/algorithms/flexmdm.md
           - GIDD: reference/algorithms/gidd.md
           - Partition: reference/algorithms/partition_mdlm.md
@@ -69,6 +74,7 @@ nav:
           - CANDI DiT: reference/models/dit_candi.md
           - Common Layers: reference/models/common.md
           - Block DiT: reference/models/block_dit.md
+          - Qwen Block: reference/models/qwen_block.md
           - EMA: reference/models/ema.md
           - Encoder-Decoder: reference/models/encoder_decoder.md
           - FlexMDM Transformer: reference/models/flexmdm.md
@@ -77,6 +83,8 @@ nav:
           - Base: reference/forward_process/base.md
           - Absorbing: reference/forward_process/absorbing.md
           - Block Absorbing: reference/forward_process/block_absorbing.md
+          - Block Masked: reference/forward_process/block_masked.md
+          - Block Uniform: reference/forward_process/block_uniform.md
           - CANDI Hybrid: reference/forward_process/candi_hybrid.md
           - Uniform: reference/forward_process/uniform.md
           - FlexMDM: reference/forward_process/flexmdm.md
@@ -94,12 +102,15 @@ nav:
           - Absorbing: reference/sampling/absorbing.md
           - AR: reference/sampling/ar.md
           - BD3LM: reference/sampling/bd3lm.md
+          - Block: reference/sampling/block.md
           - CANDI: reference/sampling/candi.md
           - EB: reference/sampling/eb.md
           - FlexMDM: reference/sampling/flexmdm.md
           - GIDD: reference/sampling/gidd.md
           - Partition: reference/sampling/partition.md
           - Uniform: reference/sampling/uniform.md
+      - Losses:
+          - Block ELBO: reference/losses/block_elbo.md
       - Evaluations:
           - Metrics: reference/evaluations/metrics.md
           - Generative PPL: reference/evaluations/generative_ppl.md

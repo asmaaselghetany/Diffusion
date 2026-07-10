@@ -13,6 +13,7 @@ import transformers
 
 from .. import utils
 from .datasets import (
+    _collate_tensor_dict,
     generate_synthetic_dataset,
     get_lambada_test_dataset,
     get_text8_dataset,
@@ -31,6 +32,13 @@ from .flex_chunking import chunk_documents
 
 LOGGER = utils.get_logger(__name__)
 
+
+def _default_num_proc() -> int:
+  if hasattr(os, 'sched_getaffinity'):
+    return len(os.sched_getaffinity(0))
+  return os.cpu_count() or 1
+
+
 __all__ = [
     "get_tokenizer",
     "get_dataset",
@@ -46,7 +54,7 @@ def get_dataset(dataset_name,
                 insert_eos=True,
                 insert_special_tokens=True,
                 block_size=1024,
-                num_proc=len(os.sched_getaffinity(0)),
+                num_proc=_default_num_proc(),
                 streaming=False,
                 revision: Optional[str] = None,
                 min_length: int = 0,
@@ -150,8 +158,8 @@ def get_dataset(dataset_name,
     dataset = generate_synthetic_dataset(
       train_dataset_size=100000,
       validation_dataset_size=1024,
-      seq_len=32,
-      vocab_size=256,
+      seq_len=block_size,
+      vocab_size=len(tokenizer),
     )
   else:
     dataset = datasets.load_dataset(
@@ -315,11 +323,14 @@ def get_tokenizer(config):
         (tokenizer.bos_token, tokenizer.bos_token_id),
         (tokenizer.eos_token, tokenizer.eos_token_id)))
   if tokenizer.bos_token is None:
-    if tokenizer.cls_token is None:
+    if tokenizer.cls_token is not None:
+      tokenizer.bos_token = tokenizer.cls_token
+    elif tokenizer.eos_token is not None:
+      tokenizer.bos_token = tokenizer.eos_token
+    else:
       raise AttributeError(
         "Tokenizer must have a bos_token or "
         f"cls_token: {tokenizer}")
-    tokenizer.bos_token = tokenizer.cls_token
   if tokenizer.eos_token is None:
     if tokenizer.sep_token is None:
       raise AttributeError(
@@ -336,6 +347,9 @@ def get_tokenizer(config):
 def get_dataloaders(config, tokenizer, skip_train=False,
                     skip_valid=False, valid_seed=None):
   num_gpus = torch.cuda.device_count()
+  if num_gpus < 1:
+    raise RuntimeError(
+        'No CUDA devices visible. Launch training on a GPU node (e.g. via Slurm).')
   assert (config.loader.global_batch_size
           == (config.loader.batch_size
               * config.trainer.num_nodes
@@ -400,6 +414,10 @@ def get_dataloaders(config, tokenizer, skip_train=False,
       min_length=valid_min_length,
       chunking=valid_chunking)
 
+  use_synthetic_collate = (
+      config.data.train == 'synthetic' or config.data.valid == 'synthetic')
+  collate_fn = _collate_tensor_dict if use_synthetic_collate else None
+
   if skip_train:
     train_loader = None
   else:
@@ -409,7 +427,8 @@ def get_dataloaders(config, tokenizer, skip_train=False,
       num_workers=config.loader.num_workers,
       pin_memory=config.loader.pin_memory,
       shuffle=not config.data.streaming,
-      persistent_workers=True)
+      persistent_workers=config.loader.num_workers > 0,
+      collate_fn=collate_fn)
     train_loader.tokenizer = tokenizer
   if skip_valid:
     valid_loader = None
@@ -427,7 +446,8 @@ def get_dataloaders(config, tokenizer, skip_train=False,
       pin_memory=config.loader.pin_memory,
       shuffle=shuffle_valid,
       generator=generator,
-      persistent_workers=True)
+      persistent_workers=config.loader.num_workers > 0,
+      collate_fn=collate_fn)
     valid_loader.tokenizer = tokenizer
 
   return train_loader, valid_loader

@@ -1,0 +1,8 @@
+# Fast-dLLM Qwen block backbone
+_target_: discrete_diffusion.models.qwen.modeling.QwenBlockForCausalLM
+
+name: qwen-block
+hub_id: Qwen/Qwen2.5-0.5B
+length: 128
+forward_mode: block_diff
+attn_implementation: eager

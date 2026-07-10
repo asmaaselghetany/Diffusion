@@ -6,7 +6,7 @@ This repository centralizes tooling, datasets, experiments, and evaluation pipel
 
 ## Highlights
 
-*   **Unified Entry Point:** Hydra + Lightning workflow for experimenting with MDLM, UDLM, BD3LM, FlexMDM, GIDD, SEDD, PartitionMDLM, and CANDI.
+*   **Unified Entry Point:** Hydra + Lightning workflow for MDLM, UDLM, BD3LM, FlexMDM, GIDD, SEDD, PartitionMDLM, CANDI, and the **Qwen block path** ([BLOCK_PATH.md](BLOCK_PATH.md)).
 *   **Comprehensive Sampling:** Helpers for absorbing, autoregressive, block, and flexible sampling strategies.
 *   **Reproducibility:** Scripts to reproduce training recipes for datasets like LM1B, OpenWebText, and Text8.
 

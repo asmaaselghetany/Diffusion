@@ -1,4 +1,2 @@
-# Alias → block_masked (Fast-dLLM per-block masking)
 _target_: discrete_diffusion.forward_process.block_masked.BlockMaskedForwardProcess
-name: block_absorbing
-
+name: block_masked

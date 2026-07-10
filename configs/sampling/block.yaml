@@ -1,0 +1,10 @@
+# BlockTrainer sampling defaults (masked | uniform share sampler)
+predictor: ddpm_cache
+steps: 32
+inject_bos: True
+use_float64: False
+p_nucleus: 1.0
+num_sample_batches: 1
+num_sample_log: 2
+sampler:
+  _target_: discrete_diffusion.sampling.block_sampler.BlockSampler

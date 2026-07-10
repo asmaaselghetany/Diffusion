@@ -10,35 +10,17 @@ from pathlib import Path
 import hydra
 import lightning as L
 import omegaconf
-import torch
 import fsspec
 import rich.syntax
 import rich.tree
 
-from .train import train as train_function
+from .train import register_config_resolvers, train as train_function
 from . import utils
 
 
 CONFIG_PATH = (Path(__file__).resolve().parents[2] / 'configs').as_posix()
 
-
-def _register_resolver(name, resolver):
-  if omegaconf.OmegaConf.has_resolver(name):
-    return
-  omegaconf.OmegaConf.register_new_resolver(name, resolver)
-
-
-def _mul_resolver(*args):
-  import functools, operator
-  return functools.reduce(operator.mul, args) if args else ValueError('`mul` resolver requires at least one argument.')
-
-
-# Register OmegaConf resolvers for Hydra configs
-_register_resolver('cwd', os.getcwd)
-_register_resolver('device_count', torch.cuda.device_count)
-_register_resolver('div_up', lambda x, y: (x + y - 1) // y)
-_register_resolver('mul', _mul_resolver)
-_register_resolver('sub', lambda x, y: x - y)
+register_config_resolvers()
 
 
 @L.pytorch.utilities.rank_zero_only

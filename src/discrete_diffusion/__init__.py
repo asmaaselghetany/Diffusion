@@ -1,7 +1,7 @@
 """UNI-D² Library
 
 A modular framework for discrete diffusion models including MDLM, SEDD, UDLM, 
-BD3LM, GIDD, and more. Built on PyTorch Lightning with Hydra configuration.
+BD3LM, GIDD, BlockTrainer (Qwen block path), and more. Built on PyTorch Lightning with Hydra configuration.
 
 Main Components:
     - algorithms: Discrete diffusion algorithm implementations

@@ -1,0 +1,13 @@
+defaults:
+  - /forward_process: block_uniform
+  - /sampling: block
+  - /noise: log-linear
+
+_target_: discrete_diffusion.algorithms.block_trainer.BlockTrainer
+name: block_uniform
+forward_process_name: uniform
+parameterization: subs
+time_conditioning: False
+T: 0
+loss_type: elbo
+ignore_bos: True

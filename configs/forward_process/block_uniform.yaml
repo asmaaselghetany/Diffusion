@@ -1,0 +1,2 @@
+_target_: discrete_diffusion.forward_process.block_uniform.BlockUniformForwardProcess
+name: block_uniform

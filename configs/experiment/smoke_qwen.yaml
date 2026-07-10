@@ -1,0 +1,29 @@
+# @package _global_
+defaults:
+  - override /data: synthetic
+  - override /model: qwen_block
+  - override /algo: block_masked
+  - override /noise: log-linear
+  - override /strategy: single-device
+
+block_size: 16
+model.length: 64
+
+trainer:
+  max_steps: 2
+  devices: 1
+  accelerator: cuda
+  num_sanity_val_steps: 0
+
+loader:
+  batch_size: 2
+  num_workers: 0
+  global_batch_size: 2
+
+eval:
+  generate_samples: false
+
+wandb: null
+callbacks: {}
+checkpointing:
+  resume_from_ckpt: false

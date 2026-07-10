@@ -11,6 +11,61 @@ from .data import get_dataloaders, get_tokenizer
 from . import utils
 
 
+def register_config_resolvers():
+  """Register OmegaConf resolvers used in Hydra YAML (also needed for script compose)."""
+  import functools
+  import operator
+
+  def _mul(*args):
+    return functools.reduce(operator.mul, args) if args else 1
+
+  def _default_device():
+    if not torch.cuda.is_available():
+      raise RuntimeError(
+          'CUDA is required for training. Run on a GPU node (e.g. via Slurm).')
+    return 'cuda:0'
+
+  for name, fn in [
+      ('cwd', os.getcwd),
+      ('device_count', lambda: torch.cuda.device_count()),
+      ('default_device', _default_device),
+      ('div_up', lambda x, y: (x + y - 1) // y),
+      ('mul', _mul),
+      ('sub', lambda x, y: x - y),
+  ]:
+    if not omegaconf.OmegaConf.has_resolver(name):
+      omegaconf.OmegaConf.register_new_resolver(name, fn)
+
+
+def _resolve_accelerator(config) -> str:
+  accel = omegaconf.OmegaConf.select(config, 'trainer.accelerator', default='auto')
+  if accel not in ('auto', 'cuda', 'gpu'):
+    if accel in ('cpu', 'mps'):
+      raise ValueError(
+          f'trainer.accelerator={accel!r} is not supported; use cuda on cluster GPUs.')
+    return accel
+  if not torch.cuda.is_available():
+    raise RuntimeError(
+        'CUDA is required for training. Run on a GPU node (e.g. via Slurm).')
+  return 'cuda'
+
+
+def _strategy_device(accel: str) -> str:
+  if accel == 'cuda':
+    return 'cuda:0'
+  return accel
+
+
+def _align_strategy_device(config, accel: str) -> None:
+  if not omegaconf.OmegaConf.is_config(config.get('strategy', None)):
+    return
+  if 'device' not in config.strategy:
+    return
+  omegaconf.OmegaConf.set_struct(config.strategy, False)
+  config.strategy.device = _strategy_device(accel)
+  omegaconf.OmegaConf.set_struct(config.strategy, True)
+
+
 def train(config):
   """Main training API.
   
@@ -20,6 +75,7 @@ def train(config):
   Returns:
     None. Model checkpoints are saved according to config.checkpointing.
   """
+  register_config_resolvers()
   # Set matmul precision to 'high' (TF32) to match FlexMDM
   torch.set_float32_matmul_precision("high")
   
@@ -29,10 +85,16 @@ def train(config):
   tokenizer = get_tokenizer(config)
   algo_cls = hydra.utils.get_class(config.algo._target_)
   
+  accel = _resolve_accelerator(config)
+  omegaconf.OmegaConf.set_struct(config.trainer, False)
+  config.trainer.accelerator = accel
+  omegaconf.OmegaConf.set_struct(config.trainer, True)
+  _align_strategy_device(config, accel)
+
   # Ensure dataset processing happens on rank 0 first
   fabric = L.Fabric(num_nodes=config.trainer.num_nodes,
                     devices=config.trainer.devices,
-                    accelerator='cuda')
+                    accelerator=accel)
   fabric.launch()
   with fabric.rank_zero_first():
     train_ds, valid_ds = get_dataloaders(config, tokenizer)
@@ -40,9 +102,13 @@ def train(config):
   del fabric
   
   # WandB logger
+  wandb_cfg = config.get('wandb', None)
+  use_wandb = wandb_cfg is not None and not omegaconf.OmegaConf.is_missing(wandb_cfg) and wandb_cfg is not None
+  if use_wandb and omegaconf.OmegaConf.is_config(wandb_cfg):
+    use_wandb = not omegaconf.OmegaConf.is_none(wandb_cfg)
   wandb_logger = L.pytorch.loggers.WandbLogger(
     config=omegaconf.OmegaConf.to_object(config), **config.wandb
-  ) if config.get('wandb', None) is not None else None
+  ) if use_wandb else None
 
   # Resume checkpoint path
   ckpt_path = config.checkpointing.resume_ckpt_path if (
@@ -52,7 +118,16 @@ def train(config):
   ) else None
 
   # Lightning callbacks
-  callbacks = [hydra.utils.instantiate(cb) for _, cb in config.callbacks.items()] if 'callbacks' in config else []
+  callbacks_cfg = config.get('callbacks', None)
+  if (
+      callbacks_cfg is None
+      or omegaconf.OmegaConf.is_none(callbacks_cfg)
+      or (omegaconf.OmegaConf.is_list(callbacks_cfg) and len(callbacks_cfg) == 0)
+  ):
+    callbacks = []
+  else:
+    callbacks = [
+        hydra.utils.instantiate(cb) for _, cb in callbacks_cfg.items()]
 
   if config.training.finetune_path != '':
     assert utils.fsspec_exists(config.training.finetune_path)
@@ -71,5 +146,6 @@ def train(config):
 
   trainer = L.Trainer(
     **config.trainer, default_root_dir=os.getcwd(), callbacks=callbacks,
-    strategy=hydra.utils.instantiate(config.strategy), logger=wandb_logger)
+    strategy=hydra.utils.instantiate(config.strategy),
+    logger=wandb_logger if use_wandb else False)
   trainer.fit(model, train_ds, valid_ds, ckpt_path=ckpt_path)
