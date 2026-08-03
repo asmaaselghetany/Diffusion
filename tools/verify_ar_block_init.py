@@ -15,7 +15,7 @@ from discrete_diffusion.training.init import compute_ar_block_init_metrics
 
 def main() -> int:
   parser = argparse.ArgumentParser()
-  parser.add_argument('--hub', default='Qwen/Qwen2.5-0.5B')
+  parser.add_argument('--hub', default='Qwen/Qwen2.5-1.5B-Instruct')
   parser.add_argument('--length', type=int, default=64)
   parser.add_argument('--block-size', type=int, default=16)
   parser.add_argument('--min-load', type=float, default=0.99)

@@ -19,29 +19,26 @@ Verified **AR-init block diffusion** on Qwen2: one trainer (`BlockTrainer`), two
 ## Train (cluster GPU)
 
 ```bash
-export PYTHONPATH=src
+source /fast/project/HFMI_SynergyUnit/asmaa.elsayed/env.sh
+cd "$REPO_ROOT"
 
 # Masked arm
 python -m discrete_diffusion \
-  experiment=block_qwen \
-  algo=block_masked \
-  model.hub_id=Qwen/Qwen2.5-0.5B \
-  data.tokenizer_name_or_path=Qwen/Qwen2.5-0.5B
+  +experiment=block_qwen \
+  algo=block_masked
 
 # Uniform arm — only algo changes
 python -m discrete_diffusion \
-  experiment=block_qwen \
-  algo=block_uniform \
-  model.hub_id=Qwen/Qwen2.5-0.5B \
-  data.tokenizer_name_or_path=Qwen/Qwen2.5-0.5B
+  +experiment=block_qwen \
+  algo=block_uniform
 ```
 
-Or use `bash examples/block_qwen/smoke.sh` / `slurm_verify.sh`.
+Or use `bash examples/block_qwen/smoke.sh` or `sbatch scripts/train_block_qwen_verify.sbatch`.
 
 ## Verification
 
-See [VERIFICATION.md](VERIFICATION.md). Tier-0: `pytest tests/ -q -m "not qwen"`. Tier-1+: GPU scripts under `scripts/`.
+See [VERIFICATION.md](VERIFICATION.md). Tier-0: `pytest tests/ -q -m "not qwen"`. Tier-1+: GPU utilities under `tools/`.
 
 ## References
 
-- [BASELINE.md](BASELINE.md) — what we adopt from Fast-dLLM vs BlockGen
+- [BASELINE.md](BASELINE.md) — masked vs uniform block diffusion baselines

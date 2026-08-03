@@ -68,6 +68,6 @@ def log_ar_block_init_metrics(module: Any, metrics: dict[str, float]) -> None:
   for key, value in metrics.items():
     name = f'init/{key}'
     if hasattr(module, 'log'):
-      module.log(name, value, on_step=True, on_epoch=False, sync_dist=False)
+      module.log(name, value, on_step=False, on_epoch=True, sync_dist=False)
     else:
       print(f'{name}={value:.6f}')

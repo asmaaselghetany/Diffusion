@@ -11,3 +11,8 @@ time_conditioning: False
 T: 0
 loss_type: elbo
 ignore_bos: True
+# Neutral defaults (match block_masked hook keys; masked-only hooks ignored).
+shift_loss_targets: False
+complementary_masks: False
+block_size_mixture: []
+stratified_gamma: null

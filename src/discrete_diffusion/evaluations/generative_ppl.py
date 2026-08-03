@@ -23,6 +23,16 @@ import torch
 import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+from ..data.tokenizers import Text8Tokenizer
+
+
+def _decode_samples(model_tokenizer, z_ts: np.ndarray) -> List[str]:
+  if isinstance(model_tokenizer, Text8Tokenizer):
+    return [
+        model_tokenizer.decode_ids_to_text(row, skip_special_tokens=True)
+        for row in z_ts]
+  return model_tokenizer.batch_decode(z_ts, skip_special_tokens=True)
+
 
 def _load_samples(samples_path: str) -> np.ndarray:
   path = Path(hydra.utils.to_absolute_path(samples_path))
@@ -87,7 +97,8 @@ def main(cfg):
   torch.set_grad_enabled(False)
 
   # Decode tokens (from diffusion model) to text using its tokenizer
-  model_tokenizer = AutoTokenizer.from_pretrained(cfg.model_tokenizer)
+  from discrete_diffusion.data import load_tokenizer_by_name
+  model_tokenizer = load_tokenizer_by_name(str(cfg.model_tokenizer))
 
   eval_model = AutoModelForCausalLM.from_pretrained(cfg.pretrained_model, device_map="auto")
   eval_tokenizer = AutoTokenizer.from_pretrained(cfg.pretrained_model)
@@ -101,7 +112,31 @@ def main(cfg):
   z_ts = _load_samples(cfg.samples_path)
   if z_ts.ndim != 2:
     raise ValueError(f"Expected 2D [N, T] tokens array, got {z_ts.shape}")
-  texts = model_tokenizer.batch_decode(z_ts, skip_special_tokens=True)
+  texts = _decode_samples(model_tokenizer, z_ts)
+  nonempty = sum(1 for t in texts if t.strip())
+  if nonempty == 0:
+    print('WARNING: all decoded samples are empty; writing null gen-PPL metrics.')
+    metrics = {
+        "file": Path(cfg.samples_path).stem,
+        "pretrained_model": cfg.pretrained_model,
+        "model_tokenizer": str(cfg.model_tokenizer),
+        "warning": "all_decoded_samples_empty",
+        "num_samples": int(len(texts)),
+        "median_nll": None,
+        "avg_nll": None,
+        "ppl": None,
+        "acc": None,
+        "tokens": 0,
+        "retokenize": bool(cfg.retokenize),
+        "first_chunk_only": bool(cfg.first_chunk_only),
+    }
+    print(json.dumps(metrics, indent=2))
+    out_path = Path(hydra.utils.to_absolute_path(cfg.metrics_path))
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, 'w') as f:
+      json.dump(metrics, f)
+    print(f"Saved metrics to: {out_path}")
+    return
 
   total_acc = 0.0
   total_nll = 0.0
@@ -110,7 +145,9 @@ def main(cfg):
 
   with torch.no_grad():
     for i in range(0, len(texts), cfg.batch_size):
-      xs = texts[i:i + cfg.batch_size]
+      xs = [t for t in texts[i:i + cfg.batch_size] if t.strip()]
+      if not xs:
+        continue
 
       if cfg.retokenize:
         input_ids, attn_mask, context_size = _retokenize(

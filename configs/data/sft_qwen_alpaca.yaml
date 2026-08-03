@@ -1,0 +1,17 @@
+# Legacy Alpaca SFT proxy (collapsed under block_qwen @ 7.5k steps).
+# Prefer configs/data/sft_qwen.yaml (Nemotron). Use only for ablations:
+#   HYDRA_OVERRIDES='...' with override /data: sft_qwen_alpaca
+train: alpaca-train
+valid: alpaca-valid
+tokenizer_name_or_path: Qwen/Qwen2.5-1.5B-Instruct
+cache_dir: ${scratch_dir}/block_qwen_sft
+wrap: True
+chunking: none
+streaming: False
+insert_train_eos: True
+insert_valid_eos: True
+insert_train_special: True
+insert_valid_special: True
+min_length: 0
+train_min_length: 0
+valid_min_length: 0

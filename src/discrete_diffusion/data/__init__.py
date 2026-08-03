@@ -9,6 +9,7 @@ from .loaders import (
     get_dataset,
     get_dataloaders,
     get_tokenizer,
+    load_tokenizer_by_name,
 )
 from .processing import (
     _apply_detokenizer,
@@ -35,6 +36,7 @@ __all__ = [
     "_apply_detokenizer",
     "_group_texts",
     "get_tokenizer",
+    "load_tokenizer_by_name",
     "get_dataset",
     "get_dataloaders",
     "DiscreteDiffusionDataModule",

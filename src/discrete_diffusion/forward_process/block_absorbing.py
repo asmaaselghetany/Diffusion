@@ -1,4 +1,4 @@
-"""Deprecated alias — use :mod:`block_masked` (Fast-dLLM per-block masking)."""
+"""Deprecated alias — use :mod:`block_masked` (per-block masking)."""
 
 from .block_masked import BlockMaskedForwardProcess as BlockAbsorbingForwardProcess
 

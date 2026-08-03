@@ -11,10 +11,16 @@ import torch.nn.functional as F
 import transformers
 
 from ..evaluations import Metrics
+from ..evaluations.collapse import samples_collapsed
 from ..models import create_ema
 from .. import utils
 import omegaconf
 from ..forward_process.utils import _effective_vocab_size, _unsqueeze
+
+
+class CollapseEarlyStop(RuntimeError):
+  """Raised when validation samples look mode-collapsed (loop / junk)."""
+  pass
 
 
 def ensure_mask_token(tokenizer):
@@ -94,6 +100,88 @@ class TrainerBase(L.LightningModule):
       raise ValueError(f"neg_infinity_mode must be 'large-finite' or 'true-inf', got '{config.neg_infinity_mode}'")
     self.fast_forward_epochs = None
     self.fast_forward_batches = None
+    self._collapse_streak = 0
+
+  def _maybe_collapse_early_stop(self, text_samples: list[str]) -> None:
+    """Fail training if validation samples look mode-collapsed (loops)."""
+    eval_cfg = self.config.eval
+    if not bool(getattr(eval_cfg, 'collapse_early_stop', False)):
+      return
+    if self.trainer.sanity_checking:
+      return
+    min_step = int(getattr(eval_cfg, 'collapse_min_step', 500))
+    if int(self.global_step) < min_step:
+      return
+
+    uniq_max = float(getattr(eval_cfg, 'collapse_uniq_ratio_max', 0.05))
+    top_min = float(getattr(eval_cfg, 'collapse_top_frac_min', 0.5))
+    min_frac = float(getattr(eval_cfg, 'collapse_min_fraction', 0.5))
+    patience = int(getattr(eval_cfg, 'collapse_patience', 2))
+
+    # Rank 0 scores texts; broadcast decision so DDP ranks stay in sync.
+    device = self.device
+    collapsed_local = torch.zeros(1, device=device, dtype=torch.long)
+    detail = ''
+    if self.trainer.global_rank == 0:
+      is_bad, stats = samples_collapsed(
+          list(text_samples),
+          uniq_ratio_max=uniq_max,
+          top_frac_min=top_min,
+          min_fraction=min_frac,
+      )
+      collapsed_local[0] = 1 if is_bad else 0
+      n_bad = sum(1 for s in stats if s['collapsed'])
+      detail = (
+          f'step={self.global_step} collapsed={n_bad}/{len(stats)} '
+          f'previews={[s.get("preview", "")[:80] for s in stats[:3]]}'
+      )
+      self.log(
+          'val/collapse_fraction',
+          float(n_bad) / max(len(stats), 1),
+          on_epoch=True, on_step=False, sync_dist=False)
+
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+      torch.distributed.broadcast(collapsed_local, src=0)
+
+    if collapsed_local.item() == 0:
+      self._collapse_streak = 0
+      return
+
+    self._collapse_streak += 1
+    msg = (
+        f'Collapse detected ({self._collapse_streak}/{patience}). {detail}'
+    )
+    print(msg, flush=True)
+    self.log(
+        'val/collapse_streak',
+        float(self._collapse_streak),
+        on_epoch=True, on_step=False, sync_dist=True)
+
+    if self._collapse_streak < patience:
+      return
+
+    # Persist a small breadcrumb for post-mortems (rank 0).
+    if self.trainer.global_rank == 0:
+      try:
+        out = Path(os.getcwd()) / 'collapse_early_stop.json'
+        import json
+        out.write_text(json.dumps({
+            'global_step': int(self.global_step),
+            'streak': int(self._collapse_streak),
+            'detail': detail,
+            'uniq_ratio_max': uniq_max,
+            'top_frac_min': top_min,
+            'min_fraction': min_frac,
+            'patience': patience,
+        }, indent=2), encoding='utf-8')
+      except Exception as e:
+        print(f'WARNING: failed to write collapse_early_stop.json: {e}',
+              flush=True)
+
+    raise CollapseEarlyStop(
+        f'Mode collapse early-stop at step {self.global_step} '
+        f'(patience={patience}). {detail}'
+    )
 
   def _prepare_ema(self):
     if self.config.training.ema > 0:
@@ -285,15 +373,32 @@ class TrainerBase(L.LightningModule):
           # For logging and optional saving only
           text_samples = self.tokenizer.batch_decode(samples)
         if text_samples is not None:
-          if self.trainer.global_rank == 0 and hasattr(
-            self.trainer.logger, 'log_table'):
-            # Log the last generated samples
-            text_samples = text_samples[
+          # Collapse gate uses the full batch; WandB table may log a subset.
+          self._maybe_collapse_early_stop(list(text_samples))
+
+          # One WandB table panel per val step (samples@global_stepN), matching
+          # the pre-rebuild UI. Also keep a stable val/samples alias.
+          if self.trainer.global_rank == 0:
+            logged = text_samples[
               : self.config.sampling.num_sample_log]
-            self.trainer.logger.log_table(
-              key=f'samples@global_step{self.global_step}',
-              columns=['Generated Samples'],
-              data=[[s] for s in text_samples])
+            rows = [[s] for s in logged]
+            cols = ['Generated Samples']
+            step_key = f'samples@global_step{int(self.global_step)}'
+            logger = self.trainer.logger
+            if logger is not None and hasattr(logger, 'log_table'):
+              logger.log_table(key=step_key, columns=cols, data=rows)
+              logger.log_table(key='val/samples', columns=cols, data=rows)
+            try:
+              import wandb
+              exp = getattr(logger, 'experiment', None)
+              if exp is not None and hasattr(exp, 'log'):
+                table = wandb.Table(columns=cols, data=rows)
+                exp.log(
+                    {step_key: table, 'val/samples': table},
+                    step=int(self.global_step),
+                )
+            except Exception as log_exc:
+              print(f'WandB sample log failed: {log_exc}', flush=True)
           # Always log sample entropy (cheap and useful)
           self.log('val/sample_entropy', self.metrics.sample_entropy.compute(), on_epoch=True, on_step=False, sync_dist=True)
 
@@ -303,6 +408,8 @@ class TrainerBase(L.LightningModule):
             save_dir.mkdir(parents=True, exist_ok=True)
             save_path = save_dir / f'step_{self.global_step}.pt'
             torch.save(samples.detach().cpu(), save_path.as_posix())
+      except CollapseEarlyStop:
+        raise
       except Exception as e:
         print(f"Sampling failed at step {self.global_step}: {e}")
     self._train_mode()

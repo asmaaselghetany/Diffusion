@@ -1,4 +1,4 @@
-"""Block-diffusion attention masks (Fast-dLLM v2 semantics)."""
+"""Block-diffusion attention masks."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ def block_diff_mask(
 ) -> torch.Tensor:
   """Boolean allow-mask for concat(xt, x0) with length ``2n``.
 
-  Three components (Fast-dLLM v2 / block diffusion literature):
+  Three components (block diffusion literature):
   - block-diagonal within xt and within x0
   - offset block-causal: xt attends to previous x0 blocks
   - block-causal among x0 tokens

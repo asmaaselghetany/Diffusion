@@ -121,3 +121,22 @@ class Text8Tokenizer(transformers.PreTrainedTokenizer):
 
   def get_vocab(self) -> Dict[str, int]:
     return self._vocab_str_to_int
+
+  def decode_ids_to_text(self, token_ids, *, skip_special_tokens: bool = True) -> str:
+    """Decode a 1D token sequence; char ids are >= 8 in the text8 vocab."""
+    if hasattr(token_ids, 'tolist'):
+      token_ids = token_ids.tolist()
+    chars: list[str] = []
+    for tid in token_ids:
+      tid = int(tid)
+      if skip_special_tokens and tid < 8:
+        if tid == self.eos_token_id:
+          break
+        continue
+      tok = self._convert_id_to_token(tid)
+      if tok.startswith('<redacted_') or tok.startswith('['):
+        if tid == self.eos_token_id:
+          break
+        continue
+      chars.append(tok)
+    return ''.join(chars)

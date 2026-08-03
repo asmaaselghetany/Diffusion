@@ -1,0 +1,9 @@
+# Full block_qwen eval defaults (used by tools/run_block_qwen_eval.py via CLI overrides).
+checkpoint_path: ???
+run_dir: null
+num_samples: 64
+gen_batch_size: 16
+gen_steps: 32
+depbench_count: 16
+elbo_max_batches: 50
+block_sizes: "1,4,16,32"

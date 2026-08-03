@@ -1,0 +1,22 @@
+# Instruction SFT data for Qwen block diffusion.
+# Default: Llama-Nemotron post-training SFT (Fast-dLLM-style).
+# Rollback to Alpaca: override /data: sft_qwen_alpaca
+#
+# Default splits: chat + safety + science (~0.8M rows).
+# Optional env:
+#   NEMOTRON_SFT_SPLITS=chat,safety,science,code,math
+#   NEMOTRON_SFT_MAX_PER_SPLIT=code=100000,math=100000
+train: nemotron-sft-train
+valid: nemotron-sft-valid
+tokenizer_name_or_path: Qwen/Qwen2.5-1.5B-Instruct
+cache_dir: ${scratch_dir}/block_qwen_sft_nemotron
+wrap: True
+chunking: none
+streaming: False
+insert_train_eos: True
+insert_valid_eos: True
+insert_train_special: True
+insert_valid_special: True
+min_length: 0
+train_min_length: 0
+valid_min_length: 0

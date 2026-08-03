@@ -1,4 +1,4 @@
-"""Qwen2 backbone for Fast-dLLM block-diffusion training."""
+"""Qwen2 backbone for block-diffusion training."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from .config import ForwardMode, QwenBlockConfig
 
 
 class QwenBlockForCausalLM(nn.Module):
-  """HF Qwen2 weights + Fast-dLLM block attention.
+  """HF Qwen2 weights + block-diffusion attention.
 
   block_diff training: input ``[B, 2n]`` = concat(xt, x0) → logits ``[B, n, V]``.
   causal mode: standard HF forward for AR parity checks (G1).
@@ -25,7 +25,7 @@ class QwenBlockForCausalLM(nn.Module):
     model_cfg = config.model
 
     self.qwen_cfg = QwenBlockConfig(
-        hub_id=getattr(model_cfg, 'hub_id', 'Qwen/Qwen2.5-0.5B'),
+        hub_id=getattr(model_cfg, 'hub_id', 'Qwen/Qwen2.5-1.5B-Instruct'),
         block_size=int(getattr(config, 'block_size', 16)),
         length=int(getattr(model_cfg, 'length', 128)),
         forward_mode=getattr(model_cfg, 'forward_mode', 'block_diff'),
@@ -38,8 +38,16 @@ class QwenBlockForCausalLM(nn.Module):
     from transformers import AutoConfig, AutoModelForCausalLM
     hf_config = AutoConfig.from_pretrained(self.qwen_cfg.hub_id)
     hf_config._attn_implementation = self.qwen_cfg.attn_implementation
-    self.model = AutoModelForCausalLM.from_pretrained(
-        self.qwen_cfg.hub_id, config=hf_config)
+    load_pretrained = bool(getattr(model_cfg, 'load_pretrained', True))
+    if load_pretrained:
+      self.model = AutoModelForCausalLM.from_pretrained(
+          self.qwen_cfg.hub_id, config=hf_config)
+    else:
+      # Pipeline 2 (pure block diffusion): same architecture, random init.
+      self.model = AutoModelForCausalLM.from_config(hf_config)
+
+    if getattr(model_cfg, 'gradient_checkpointing', False):
+      self.model.gradient_checkpointing_enable()
 
     if vocab_size > 0 and vocab_size != self.model.config.vocab_size:
       self.model.resize_token_embeddings(vocab_size)
@@ -50,7 +58,8 @@ class QwenBlockForCausalLM(nn.Module):
     matched = own & other
     return len(matched) / max(len(own), 1), sorted(own - other), sorted(other - own)
 
-  def forward(self, indices, sigma=None, sample_mode=False, store_kv=False):
+  def forward(self, indices, sigma=None, sample_mode=False, store_kv=False,
+              block_size: int | None = None):
     del sigma, sample_mode, store_kv
     if self.forward_mode == 'causal':
       return self.model(input_ids=indices, use_cache=False).logits
@@ -59,9 +68,9 @@ class QwenBlockForCausalLM(nn.Module):
     if indices.shape[1] != 2 * n:
       raise ValueError(f'Expected seq len {2 * n}, got {indices.shape[1]}')
 
+    bs = int(block_size) if block_size is not None else self.block_size
     dtype = next(self.model.parameters()).dtype
-    with block_diff_attention_mask(
-        self.model, n, self.block_size, indices.device, dtype):
+    with block_diff_attention_mask(self.model, n, bs, indices.device, dtype):
       out = self.model(input_ids=indices, use_cache=False)
     return out.logits[:, :n, :]
 

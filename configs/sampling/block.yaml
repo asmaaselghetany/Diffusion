@@ -6,5 +6,8 @@ use_float64: False
 p_nucleus: 1.0
 num_sample_batches: 1
 num_sample_log: 2
+use_arpc: False
+arpc_prefix_frac: 0.25
+arpc_resample_tau: 0.5
 sampler:
   _target_: discrete_diffusion.sampling.block_sampler.BlockSampler

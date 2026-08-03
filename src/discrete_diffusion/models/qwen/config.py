@@ -8,7 +8,7 @@ ForwardMode = Literal['causal', 'block_diff']
 
 @dataclass
 class QwenBlockConfig:
-  hub_id: str = 'Qwen/Qwen2.5-0.5B'
+  hub_id: str = 'Qwen/Qwen2.5-1.5B-Instruct'
   block_size: int = 16
   length: int = 128
   forward_mode: ForwardMode = 'block_diff'

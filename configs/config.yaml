@@ -55,6 +55,13 @@ eval:
   generated_samples_path: ${cwd:}/samples.json
   results_json_path: null
   npz_path: null
+  # Mode-collapse early stop (off by default; enable in block_qwen).
+  collapse_early_stop: false
+  collapse_min_step: 500
+  collapse_patience: 2
+  collapse_uniq_ratio_max: 0.05
+  collapse_top_frac_min: 0.5
+  collapse_min_fraction: 0.5
 
 optim:
   weight_decay: 0

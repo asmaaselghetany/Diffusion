@@ -1,0 +1,3 @@
+# Linear warmup for first 500 optimizer steps (block Qwen SFT recipe).
+_target_: transformers.get_constant_schedule_with_warmup
+num_warmup_steps: 500

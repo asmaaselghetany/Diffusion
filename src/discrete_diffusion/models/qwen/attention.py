@@ -1,4 +1,4 @@
-"""Fast-dLLM-style block mask injection for Qwen2 attention."""
+"""Block mask injection for Qwen2 attention."""
 
 from __future__ import annotations
 

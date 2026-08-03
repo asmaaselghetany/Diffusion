@@ -101,14 +101,20 @@ def train(config):
   fabric.barrier()
   del fabric
   
-  # WandB logger
-  wandb_cfg = config.get('wandb', None)
-  use_wandb = wandb_cfg is not None and not omegaconf.OmegaConf.is_missing(wandb_cfg) and wandb_cfg is not None
-  if use_wandb and omegaconf.OmegaConf.is_config(wandb_cfg):
-    use_wandb = not omegaconf.OmegaConf.is_none(wandb_cfg)
-  wandb_logger = L.pytorch.loggers.WandbLogger(
-    config=omegaconf.OmegaConf.to_object(config), **config.wandb
-  ) if use_wandb else None
+  # WandB only on global rank 0 under external DDP (srun). Creating WandbLogger
+  # on all ranks blocks rank0 in wandb.init while rank1 waits on NCCL.
+  # Non-zero ranks still need *some* logger — LearningRateMonitor crashes with
+  # "Trainer that has no logger" if logger=False.
+  global_rank = int(os.environ.get('RANK', os.environ.get('SLURM_PROCID', '0')))
+  want_wandb = omegaconf.OmegaConf.select(config, 'wandb') is not None
+  if want_wandb and global_rank == 0:
+    train_logger = L.pytorch.loggers.WandbLogger(
+        config=omegaconf.OmegaConf.to_object(config), **config.wandb)
+  elif want_wandb:
+    train_logger = L.pytorch.loggers.CSVLogger(
+        save_dir=os.getcwd(), name='lightning_logs', version=f'rank{global_rank}')
+  else:
+    train_logger = False
 
   # Resume checkpoint path
   ckpt_path = config.checkpointing.resume_ckpt_path if (
@@ -121,7 +127,6 @@ def train(config):
   callbacks_cfg = config.get('callbacks', None)
   if (
       callbacks_cfg is None
-      or omegaconf.OmegaConf.is_none(callbacks_cfg)
       or (omegaconf.OmegaConf.is_list(callbacks_cfg) and len(callbacks_cfg) == 0)
   ):
     callbacks = []
@@ -147,5 +152,5 @@ def train(config):
   trainer = L.Trainer(
     **config.trainer, default_root_dir=os.getcwd(), callbacks=callbacks,
     strategy=hydra.utils.instantiate(config.strategy),
-    logger=wandb_logger if use_wandb else False)
+    logger=train_logger)
   trainer.fit(model, train_ds, valid_ds, ckpt_path=ckpt_path)

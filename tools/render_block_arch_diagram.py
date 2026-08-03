@@ -102,7 +102,7 @@ def render(path: Path) -> None:
         (0.35, 1.35),
         4.0,
         1.1,
-        "Masked arm (Fast-dLLM)\nBlockMaskedForward · per-block t\nSUBS ELBO",
+        "Masked arm\nBlockMaskedForward · per-block t\nSUBS ELBO",
         c_masked,
         fontsize=9,
     )

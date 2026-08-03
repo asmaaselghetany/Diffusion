@@ -32,11 +32,134 @@ from .flex_chunking import chunk_documents
 
 LOGGER = utils.get_logger(__name__)
 
+# Llama-Nemotron post-training SFT (Fast-dLLM-style data). Full code+math is
+# tens of millions of rows / ~100GB+; default to chat+safety+science and allow
+# optional capped code/math via NEMOTRON_SFT_SPLITS / NEMOTRON_SFT_MAX_PER_SPLIT.
+_NEMOTRON_HUB = 'nvidia/Llama-Nemotron-Post-Training-Dataset'
+_NEMOTRON_CONFIG = 'SFT'
+_NEMOTRON_DEFAULT_SPLITS = ('chat', 'safety', 'science')
+_NEMOTRON_VALID_SIZE = 5000
+_NEMOTRON_DEFAULT_MAX_PER_SPLIT = {
+    'chat': None,
+    'safety': None,
+    'science': None,
+    # Caps only apply when these splits are explicitly enabled.
+    'code': 100_000,
+    'math': 100_000,
+}
+
 
 def _default_num_proc() -> int:
   if hasattr(os, 'sched_getaffinity'):
     return len(os.sched_getaffinity(0))
   return os.cpu_count() or 1
+
+
+def _nemotron_split_list() -> list[str]:
+  raw = os.environ.get('NEMOTRON_SFT_SPLITS', '').strip()
+  if not raw:
+    return list(_NEMOTRON_DEFAULT_SPLITS)
+  splits = [s.strip() for s in raw.split(',') if s.strip()]
+  if not splits:
+    raise ValueError('NEMOTRON_SFT_SPLITS is set but empty')
+  return splits
+
+
+def _nemotron_max_for_split(split: str) -> int | None:
+  raw = os.environ.get('NEMOTRON_SFT_MAX_PER_SPLIT', '').strip()
+  overrides: dict[str, int | None] = {}
+  if raw:
+    for part in raw.split(','):
+      if not part.strip():
+        continue
+      if '=' not in part:
+        raise ValueError(
+            f'NEMOTRON_SFT_MAX_PER_SPLIT entries must be split=N, got {part!r}')
+      key, val = part.split('=', 1)
+      key = key.strip()
+      val = val.strip().lower()
+      overrides[key] = None if val in {'none', 'all', ''} else int(val)
+  if split in overrides:
+    return overrides[split]
+  return _NEMOTRON_DEFAULT_MAX_PER_SPLIT.get(split)
+
+
+def _nemotron_to_text(example: dict) -> dict:
+  """Flatten Nemotron SFT chat rows into a single text field for wrapping."""
+  parts: list[str] = []
+  sys_p = (example.get('system_prompt') or '').strip()
+  if sys_p:
+    parts.append(f'### System:\n{sys_p}')
+
+  msgs = example.get('input') or []
+  user_bits: list[str] = []
+  if isinstance(msgs, list):
+    for m in msgs:
+      if isinstance(m, dict):
+        role = (m.get('role') or 'user').lower()
+        content = (m.get('content') or '').strip()
+        if not content:
+          continue
+        if role == 'system' and not sys_p:
+          parts.insert(0, f'### System:\n{content}')
+        else:
+          user_bits.append(content)
+      else:
+        user_bits.append(str(m).strip())
+  elif msgs:
+    user_bits.append(str(msgs).strip())
+
+  instruction = '\n'.join(b for b in user_bits if b).strip()
+  output = (example.get('output') or '').strip()
+  parts.append(f'### Instruction:\n{instruction}')
+  parts.append(f'### Response:\n{output}')
+  return {'text': '\n\n'.join(parts)}
+
+
+def _load_nemotron_sft(
+    *,
+    cache_dir: str,
+    num_proc: int,
+    revision: Optional[str],
+) -> datasets.Dataset:
+  splits = _nemotron_split_list()
+  pieces: list[datasets.Dataset] = []
+  for split in splits:
+    LOGGER.info('Loading Nemotron SFT split=%s from %s', split, _NEMOTRON_HUB)
+    ds = datasets.load_dataset(
+        _NEMOTRON_HUB,
+        _NEMOTRON_CONFIG,
+        split=split,
+        cache_dir=cache_dir,
+        revision=revision,
+        trust_remote_code=True,
+    )
+    cap = _nemotron_max_for_split(split)
+    if cap is not None and len(ds) > cap:
+      LOGGER.info('Subsampling Nemotron split=%s: %s -> %s', split, len(ds), cap)
+      ds = ds.shuffle(seed=0).select(range(cap))
+    pieces.append(ds)
+
+  if len(pieces) == 1:
+    full = pieces[0]
+  else:
+    # Align columns across splits (safety/chat/science share the SFT schema).
+    cols = set(pieces[0].column_names)
+    for p in pieces[1:]:
+      cols &= set(p.column_names)
+    cols = sorted(cols)
+    pieces = [p.remove_columns([c for c in p.column_names if c not in cols])
+              for p in pieces]
+    full = datasets.concatenate_datasets(pieces)
+
+  full = full.shuffle(seed=0)
+  mapped = full.map(
+      _nemotron_to_text,
+      remove_columns=full.column_names,
+      num_proc=num_proc,
+      desc='Nemotron SFT to text',
+  )
+  return mapped
 
 
 __all__ = [
@@ -132,6 +255,50 @@ def get_dataset(dataset_name,
       streaming=False,
       num_proc=num_proc,
       trust_remote_code=True)
+  elif dataset_name in ("alpaca-train", "alpaca-valid"):
+    _alpaca_valid_size = 2000
+    _full = datasets.load_dataset(
+        "yahma/alpaca-cleaned",
+        split="train",
+        cache_dir=cache_dir,
+        trust_remote_code=True)
+    _n = len(_full)
+    _split = max(_n - _alpaca_valid_size, 1)
+    if dataset_name == "alpaca-train":
+      dataset = _full.select(range(_split))
+    else:
+      dataset = _full.select(range(_split, _n))
+
+    def _alpaca_to_text(example):
+      inp = (example.get("input") or "").strip()
+      if inp:
+        text = (
+            f"### Instruction:\n{example['instruction']}\n\n"
+            f"### Input:\n{inp}\n\n"
+            f"### Response:\n{example['output']}")
+      else:
+        text = (
+            f"### Instruction:\n{example['instruction']}\n\n"
+            f"### Response:\n{example['output']}")
+      return {"text": text}
+
+    dataset = dataset.map(
+        _alpaca_to_text,
+        remove_columns=_full.column_names,
+        num_proc=num_proc,
+        desc="Alpaca to text")
+  elif dataset_name in ("nemotron-sft-train", "nemotron-sft-valid"):
+    _full = _load_nemotron_sft(
+        cache_dir=cache_dir, num_proc=num_proc, revision=revision)
+    _n = len(_full)
+    _split = max(_n - _NEMOTRON_VALID_SIZE, 1)
+    if dataset_name == "nemotron-sft-train":
+      dataset = _full.select(range(_split))
+    else:
+      dataset = _full.select(range(_split, _n))
+    LOGGER.info(
+        'Nemotron SFT %s size=%s (full=%s, splits=%s)',
+        dataset_name, len(dataset), _n, _nemotron_split_list())
   elif dataset_name == "scientific_papers_arxiv":
     dataset = datasets.load_dataset(
       "scientific_papers", "arxiv",
@@ -169,8 +336,11 @@ def get_dataset(dataset_name,
       trust_remote_code=True,
       revision=revision)
 
-  if dataset_name in ["lambada", "openwebtext-train",
-                      "openwebtext-valid"]:
+  if dataset_name in [
+      "lambada", "openwebtext-train", "openwebtext-valid",
+      "alpaca-train", "alpaca-valid",
+      "nemotron-sft-train", "nemotron-sft-valid",
+  ]:
     data = dataset
   else:
     data = dataset[mode]
@@ -305,17 +475,8 @@ def get_dataset(dataset_name,
   return chunked_dataset
 
 
-def get_tokenizer(config):
-  if config.data.tokenizer_name_or_path == "text8":
-    tokenizer = Text8Tokenizer()
-  elif config.data.tokenizer_name_or_path == "bert-base-uncased":
-    tokenizer = transformers.BertTokenizer.from_pretrained(
-      "bert-base-uncased")
-  elif config.data.tokenizer_name_or_path == "synthetic":
-    tokenizer = SyntheticTokenizer(vocab_size=256)
-  else:
-    tokenizer = transformers.AutoTokenizer.from_pretrained(
-      config.data.tokenizer_name_or_path)
+def _finalize_tokenizer(tokenizer):
+  """Ensure special tokens exist (shared by get_tokenizer / load_tokenizer_by_name)."""
   if isinstance(tokenizer, (transformers.GPT2TokenizerFast,
                             transformers.GPT2Tokenizer)):
     tokenizer._tokenizer.post_processor = (
@@ -344,17 +505,49 @@ def get_tokenizer(config):
   return tokenizer
 
 
+def load_tokenizer_by_name(name_or_path: str):
+  """Load a tokenizer by HF id or local alias (text8, synthetic, …)."""
+  if name_or_path == "text8":
+    tokenizer = Text8Tokenizer()
+  elif name_or_path == "bert-base-uncased":
+    tokenizer = transformers.BertTokenizer.from_pretrained("bert-base-uncased")
+  elif name_or_path == "synthetic":
+    tokenizer = SyntheticTokenizer(vocab_size=256)
+  else:
+    tokenizer = transformers.AutoTokenizer.from_pretrained(
+        name_or_path, use_fast=True)
+  return _finalize_tokenizer(tokenizer)
+
+
+def get_tokenizer(config):
+  return load_tokenizer_by_name(config.data.tokenizer_name_or_path)
+
+
 def get_dataloaders(config, tokenizer, skip_train=False,
                     skip_valid=False, valid_seed=None):
-  num_gpus = torch.cuda.device_count()
-  if num_gpus < 1:
+  # Prefer distributed world size (Slurm/torchrun DDP: 1 visible GPU per
+  # process). Fall back to local CUDA count for single-process multi-GPU.
+  num_gpus = 1
+  for key in ('WORLD_SIZE', 'SLURM_NTASKS', 'SLURM_NPROCS'):
+    raw = os.environ.get(key)
+    if raw is not None and str(raw).strip().isdigit() and int(raw) > 0:
+      num_gpus = int(raw)
+      break
+  else:
+    num_gpus = torch.cuda.device_count()
+  if torch.cuda.device_count() < 1:
     raise RuntimeError(
         'No CUDA devices visible. Launch training on a GPU node (e.g. via Slurm).')
   assert (config.loader.global_batch_size
           == (config.loader.batch_size
               * config.trainer.num_nodes
               * num_gpus
-              * config.trainer.accumulate_grad_batches))
+              * config.trainer.accumulate_grad_batches)), (
+      f'global_batch_size={config.loader.global_batch_size} != '
+      f'batch_size({config.loader.batch_size}) * nodes('
+      f'{config.trainer.num_nodes}) * world({num_gpus}) * accum('
+      f'{config.trainer.accumulate_grad_batches})'
+  )
   if config.loader.global_batch_size % (
     num_gpus * config.trainer.accumulate_grad_batches) != 0:
     raise ValueError(
@@ -363,7 +556,7 @@ def get_dataloaders(config, tokenizer, skip_train=False,
       f"{config.trainer.accumulate_grad_batches}.")
   if config.loader.eval_global_batch_size % num_gpus != 0:
     raise ValueError(
-      f"Eval Batch Size for {config.eval.batch_size} "
+      f"Eval Global Batch Size {config.loader.eval_global_batch_size} "
       f"not divisible by {num_gpus}.")
   default_chunking = config.data.get("chunking", "none")
   train_chunking = config.data.get("train_chunking", default_chunking)

@@ -16,7 +16,7 @@ class BlockSampler(Sampler):
   diffusion steps using ``concat(xt, x0)`` through the Qwen block backbone.
 
   Mode is taken from ``config.algo.forward_process_name``:
-  - ``masked``: absorbing unmask steps (Fast-dLLM path)
+  - ``masked``: absorbing unmask steps
   - ``uniform``: uniform-state redraw steps (BlockGen path)
   """
 
@@ -24,6 +24,10 @@ class BlockSampler(Sampler):
     del forward_process
     self.config = config
     self.mode = getattr(config.algo, 'forward_process_name', 'masked')
+    sampling = getattr(config, 'sampling', None)
+    self.use_arpc = bool(getattr(sampling, 'use_arpc', False))
+    self.arpc_prefix_frac = float(getattr(sampling, 'arpc_prefix_frac', 0.25))
+    self.arpc_resample_tau = float(getattr(sampling, 'arpc_resample_tau', 0.5))
 
   @property
   def is_masked(self) -> bool:
@@ -54,6 +58,11 @@ class BlockSampler(Sampler):
       alpha_s = self._expand_alpha(model, t_prev, seq_len)
 
     logits = self._logits(model, xt, x0)
+    # Match training SUBS: never sample the mask token as content.
+    if getattr(model, 'mask_id', None) is not None:
+      logits = logits.clone()
+      neg = float(getattr(model, 'neg_infinity', -1e6))
+      logits[..., model.mask_id] = neg
     p_x0 = F.log_softmax(logits, dim=-1).exp()
     sampled = sample_categorical(p_x0)
     prob_denoise = (alpha_s - alpha_t) / (1 - alpha_t).clamp(min=1e-8)
@@ -99,6 +108,54 @@ class BlockSampler(Sampler):
     q_xs = numerator / denom.clamp(min=1e-12)
     return sample_categorical(q_xs)
 
+  def _arpc_prefix_fill(
+      self,
+      model,
+      xt: torch.Tensor,
+      x0: torch.Tensor,
+      start: int,
+      end: int,
+  ) -> tuple[torch.Tensor, torch.Tensor]:
+    """AR-informed prefix inside the current block (BlockGen ARPC)."""
+    block_len = end - start
+    prefix_len = max(1, int(block_len * self.arpc_prefix_frac))
+    if start > 0:
+      context = x0[:, :start]
+      for pos in range(start, start + prefix_len):
+        logits = model.backbone.causal_logits(context)
+        next_tok = logits[:, -1, :].argmax(dim=-1)
+        xt[:, pos] = next_tok
+        x0[:, pos] = next_tok
+        context = torch.cat([context, next_tok.unsqueeze(-1)], dim=-1)
+    else:
+      for pos in range(1, min(prefix_len, block_len)):
+        logits = model.backbone.causal_logits(x0[:, :pos])
+        next_tok = logits[:, -1, :].argmax(dim=-1)
+        xt[:, pos] = next_tok
+        x0[:, pos] = next_tok
+    return xt, x0
+
+  def _arpc_correct_block(
+      self,
+      model,
+      xt: torch.Tensor,
+      x0: torch.Tensor,
+      start: int,
+      end: int,
+  ) -> torch.Tensor:
+    """Resample low-confidence tokens after block denoising."""
+    logits = self._logits(model, xt, x0)[:, start:end]
+    probs = F.log_softmax(logits, dim=-1).exp()
+    conf = probs.gather(-1, xt[:, start:end].unsqueeze(-1)).squeeze(-1)
+    low = conf < self.arpc_resample_tau
+    if not low.any():
+      return xt
+    sampled = sample_categorical(probs)
+    block = xt[:, start:end].clone()
+    block = torch.where(low, sampled, block)
+    xt[:, start:end] = block
+    return xt
+
   def _init_block(
       self,
       model,
@@ -113,7 +170,18 @@ class BlockSampler(Sampler):
       xt[:, start:end] = torch.randint(
           0, model.vocab_size, (xt.shape[0], end - start),
           device=xt.device, dtype=xt.dtype)
+    # Keep position-0 BOS when training uses ignore_bos (never corrupts / never
+    # trains index 0). Wiping it left block 0 fully masked → unconstrained prior.
+    ignore_bos = bool(getattr(model, 'ignore_bos', False)) or bool(
+        getattr(getattr(model, 'config', None), 'algo', None)
+        and getattr(model.config.algo, 'ignore_bos', False))
+    if ignore_bos and start == 0:
+      bos = model.tokenizer.bos_token_id
+      if bos is not None:
+        xt[:, 0] = bos
     x0 = xt.clone()
+    if self.use_arpc and not self.is_masked:
+      xt, x0 = self._arpc_prefix_fill(model, xt, x0, start, end)
     return xt, x0
 
   def _denoise_block(
@@ -168,6 +236,8 @@ class BlockSampler(Sampler):
       end = start + bs
       xt, x0 = self._init_block(model, xt, x0, start, end)
       xt = self._denoise_block(model, xt, x0, start, end, num_steps, eps)
+      if self.use_arpc and not self.is_masked:
+        xt = self._arpc_correct_block(model, xt, x0, start, end)
       x0 = xt.clone()
 
     return xt

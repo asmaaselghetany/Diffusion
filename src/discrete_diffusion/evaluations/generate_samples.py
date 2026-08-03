@@ -99,7 +99,13 @@ def main(cfg):
 
     if cfg.get("save_text", False):
         print("Decoding samples to text...")
-        texts = tokenizer.batch_decode(all_samples, skip_special_tokens=True)
+        from discrete_diffusion.data.tokenizers import Text8Tokenizer
+        if isinstance(tokenizer, Text8Tokenizer):
+            texts = [
+                tokenizer.decode_ids_to_text(s, skip_special_tokens=True)
+                for s in all_samples]
+        else:
+            texts = tokenizer.batch_decode(all_samples, skip_special_tokens=True)
         text_path = out_path.with_suffix('.txt')
         with open(text_path, 'w', encoding='utf-8') as f:
             for i, text in enumerate(texts):

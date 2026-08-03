@@ -1,4 +1,4 @@
-"""Per-block absorbing (masked) forward process — Fast-dLLM / BlockGen-absorb."""
+"""Per-block absorbing (masked) forward process."""
 
 from __future__ import annotations
 
@@ -23,16 +23,24 @@ class BlockMaskedForwardProcess(ForwardProcess):
       t: torch.Tensor,
       *,
       block_size: int,
+      complementary: bool = False,
   ):
     """Args:
       input_ids: ``[B, L]``
       t: ``[B, L]`` per-position times (constant within each block)
+      complementary: alternate per-block mask polarity
     Returns:
       xt, p_mask (both ``[B, L]``)
     """
     alpha_t = self.schedule.alpha_t(t)
     p_mask = (1.0 - alpha_t).to(dtype=torch.float32)
     move_mask = torch.rand_like(input_ids, dtype=torch.float32) < p_mask
+    if complementary:
+      num_blocks = input_ids.shape[1] // block_size
+      phase = torch.randint(
+          0, 2, (input_ids.shape[0], num_blocks), device=input_ids.device)
+      phase = phase.repeat_interleave(block_size, dim=-1)
+      move_mask = torch.where(phase == 0, move_mask, ~move_mask)
     xt = torch.where(
         move_mask,
         torch.tensor(self.mask_id, device=input_ids.device, dtype=input_ids.dtype),
@@ -48,10 +56,19 @@ def sample_block_timesteps(
     *,
     sampling_eps: float = 1e-3,
     antithetic: bool = False,
+    stratified_gamma: float | None = None,
 ) -> torch.Tensor:
   """Sample one ``t`` per block, broadcast to token positions."""
   num_blocks = seq_len // block_size
-  eps = torch.rand((batch_size, num_blocks), device=device)
+  if stratified_gamma is not None:
+    grid = torch.linspace(0, 1, num_blocks + 1, device=device)[:-1]
+    offset = torch.rand((batch_size, 1), device=device)
+    strat = (grid.unsqueeze(0) + offset) % 1.0
+    rand = torch.rand((batch_size, num_blocks), device=device)
+    gamma = float(stratified_gamma)
+    eps = gamma * strat + (1.0 - gamma) * rand
+  else:
+    eps = torch.rand((batch_size, num_blocks), device=device)
   if antithetic:
     offset = torch.arange(batch_size * num_blocks, device=device)
     offset = (offset / (batch_size * num_blocks)).view(batch_size, num_blocks)

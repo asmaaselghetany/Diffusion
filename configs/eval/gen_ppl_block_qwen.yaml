@@ -1,0 +1,8 @@
+# BlockGen-compatible gen-PPL defaults for block_qwen checkpoints.
+defaults:
+  - gen_ppl
+
+samples_path: ???
+model_tokenizer: Qwen/Qwen2.5-1.5B-Instruct
+pretrained_model: gpt2-large
+metrics_path: gen_ppl_metrics.json

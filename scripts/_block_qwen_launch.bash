@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+# Launch one Qwen block arm (block_qwen experiment).
+#
+# LINE (required via env, or inferred from RUN_ROOT basename):
+#   ar2block  — Pipeline 1: AR→block (from_pretrained Qwen)
+#   block     — Pipeline 2: pure block diffusion (scratch init)
+#   blockgen  — legacy alias for block (old run dirs blockgen_*)
+#
+# Usage (from repo root, after sourcing _block_qwen_env.bash):
+#   LINE=ar2block scripts/_block_qwen_launch.bash masked
+#   LINE=block scripts/_block_qwen_launch.bash uniform
+
+set -euo pipefail
+
+ARM="${1:?Usage: _block_qwen_launch.bash <masked|uniform>}"
+
+case "${ARM}" in
+  masked)  ALGO=block_masked ;;
+  uniform) ALGO=block_uniform ;;
+  *)
+    echo "Unknown arm: ${ARM} (expected masked or uniform)" >&2
+    exit 1
+    ;;
+esac
+
+# Infer LINE from RUN_ROOT if already pinned (resume), else require LINE.
+if [[ -z "${LINE:-}" && -n "${RUN_ROOT:-}" ]]; then
+  _base="$(basename "${RUN_ROOT}")"
+  if [[ "${_base}" =~ ^(ar2block|block|blockgen)_ ]]; then
+    LINE="${BASH_REMATCH[1]}"
+  elif [[ "${_base}" =~ ^(masked|uniform)_ ]]; then
+    # Legacy neutral dirs are Pipeline 1 (AR init).
+    LINE="ar2block"
+  fi
+fi
+
+LINE="${LINE:-ar2block}"
+case "${LINE}" in
+  ar2block|block|blockgen) ;;
+  *)
+    echo "Unknown LINE=${LINE} (expected ar2block|block|blockgen)" >&2
+    exit 1
+    ;;
+esac
+
+EXPERIMENT=block_qwen
+DATA_CACHE="${DATA_CACHE:-${ASMAA_WORKSPACE}/.cache/discrete_diffusion/block_qwen_sft_nemotron}"
+RUN_ROOT="${RUN_ROOT:-${REPO_ROOT}/outputs/block_qwen/${LINE}_${ARM}_${SLURM_JOB_ID:-local}}"
+WANDB_PROJECT=block_qwen
+NUM_GPUS="${NUM_GPUS:-2}"
+
+mkdir -p "${RUN_ROOT}" "${RUN_ROOT}/hydra" "${DATA_CACHE}" slurm_logs
+echo "Dataset cache at ${DATA_CACHE} (built on first train epoch)."
+
+_append_override() {
+  local key="$1"
+  local value="$2"
+  if [[ "${HYDRA_OVERRIDES:-}" != *"${key}="* ]]; then
+    HYDRA_OVERRIDES="${HYDRA_OVERRIDES:+${HYDRA_OVERRIDES} }${key}=${value}"
+  fi
+}
+
+# Multi-GPU under Slurm (Lightning-compatible):
+#   --ntasks-per-node=NUM_GPUS  (NOT plain --ntasks)
+#   --gres=gpu:NUM_GPUS
+#   trainer.devices=NUM_GPUS
+# Do NOT pass --gpus-per-task=1: that remaps each task to only GPU [0], which
+# breaks devices=NUM_GPUS. Lightning binds ranks via LOCAL_RANK instead.
+_append_override "trainer.devices" "${NUM_GPUS}"
+if [[ "${NUM_GPUS}" -gt 1 ]]; then
+  _append_override "strategy" "ddp"
+fi
+# Fair paired compare: same validation batch on both arms (= NUM_GPUS).
+_append_override "loader.eval_global_batch_size" "${NUM_GPUS}"
+# Keep yaml log_every_n_steps (50); do not force 10 — sync/wandb overhead.
+# Pipeline 2: random init (architecture from hub config only).
+if [[ "${LINE}" == "block" || "${LINE}" == "blockgen" ]]; then
+  _append_override "model.load_pretrained" "false"
+fi
+
+RUN_BASENAME="$(basename "${RUN_ROOT}")"
+# One stable WandB run per experiment arm (not per Slurm job).
+# Canonical live ids (v8): train/* backfilled from trainer/loss for full curves.
+WANDB_RUN_NAME="${WANDB_RUN_NAME:-${LINE}_${ARM}}"
+WANDB_RUN_ID="${WANDB_RUN_ID:-${LINE}_${ARM}_v8}"
+echo "=== block_qwen launch ==="
+echo "  line:       ${LINE}"
+echo "  arm:        ${ARM} (${ALGO})"
+echo "  experiment: ${EXPERIMENT}"
+echo "  run_root:   ${RUN_ROOT}"
+echo "  data_cache: ${DATA_CACHE}"
+echo "  num_gpus:   ${NUM_GPUS}"
+echo "  wandb_name: ${WANDB_RUN_NAME}"
+echo "  wandb_id:   ${WANDB_RUN_ID}"
+echo "  wandb_mode: ${WANDB_MODE:-unset} (key=${WANDB_API_KEY:+set})"
+if [[ "${LINE}" == "block" || "${LINE}" == "blockgen" ]]; then
+  echo "  init:       scratch (model.load_pretrained=false)"
+else
+  echo "  init:       AR pretrained (model.load_pretrained=true)"
+fi
+
+EXTRA_OVERRIDES=()
+if [[ -n "${HYDRA_OVERRIDES:-}" ]]; then
+  mapfile -t EXTRA_OVERRIDES < <(
+    python - "${HYDRA_OVERRIDES}" <<'PY'
+import shlex
+import sys
+for token in shlex.split(sys.argv[1]):
+  print(token)
+PY
+  )
+fi
+
+TRAIN_RC=0
+# One Slurm task per GPU so Lightning DDP sees world_size=NUM_GPUS
+# (ntasks=1 + devices=2 → MEMBER 1/1 and a wasted GPU).
+srun --ntasks-per-node="${NUM_GPUS}" --cpu-bind=cores \
+  python -u -m discrete_diffusion "+experiment=${EXPERIMENT}" "algo=${ALGO}" \
+  data.cache_dir="${DATA_CACHE}" \
+  checkpointing.save_dir="${RUN_ROOT}" \
+  checkpointing.resume_from_ckpt="${RESUME_FROM_CKPT:-true}" \
+  hydra.run.dir="${RUN_ROOT}/hydra" \
+  "wandb.project=${WANDB_PROJECT}" \
+  "wandb.name=${WANDB_RUN_NAME}" \
+  "wandb.id=${WANDB_RUN_ID}" \
+  "wandb.resume=allow" \
+  "${EXTRA_OVERRIDES[@]}" || TRAIN_RC=$?
+
+# After a clean finish, submit eval only if the *highest-step* prepared ckpt
+# is at trainer.max_steps. Never trust a raw/stale last.ckpt (Lightning often
+# writes last-v1 while last stays old). Disable with: RUN_FULL_EVAL=false
+# shellcheck disable=SC1091
+source "${REPO_ROOT}/scripts/_block_qwen_ckpt.bash"
+if [[ "${RUN_FULL_EVAL:-true}" == "true" && "${TRAIN_RC}" -eq 0 ]]; then
+  CKPT_DIR="${RUN_ROOT}/checkpoints"
+  MAX_STEPS="$(_block_qwen_max_steps)"
+  CKPT=""
+  STEP=-1
+  if CKPT="$(_block_qwen_prepare_last_ckpt "${CKPT_DIR}")"; then
+    STEP="$(_block_qwen_ckpt_global_step "${CKPT}" || echo -1)"
+  fi
+  if [[ -n "${CKPT}" && "${STEP}" -ge "${MAX_STEPS}" ]]; then
+    echo "=== Training finished at step ${STEP} (>= max_steps=${MAX_STEPS}); submitting eval for ${CKPT} ==="
+    sbatch scripts/slurm/eval_checkpoint.sbatch "${CKPT}" \
+      || echo "WARNING: failed to submit eval job for ${CKPT}" >&2
+  elif [[ -n "${CKPT}" ]]; then
+    echo "WARNING: prepared ckpt at step ${STEP} < max_steps=${MAX_STEPS}; NOT submitting eval." >&2
+    echo "  Trainer may have exited without saving the final step (last-v* / NFS)." >&2
+    echo "  Resume: ./scripts/resume_block_qwen.sh ${RUN_ROOT}" >&2
+  else
+    echo "WARNING: no valid checkpoint under ${CKPT_DIR}; skipping full eval" >&2
+  fi
+elif [[ "${TRAIN_RC}" -ne 0 ]]; then
+  echo "Training exited ${TRAIN_RC} (timeout/crash). Full eval not auto-submitted."
+  echo "  Resume: ./scripts/resume_block_qwen.sh ${RUN_ROOT}"
+fi
+
+exit "${TRAIN_RC}"

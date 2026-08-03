@@ -80,13 +80,11 @@ See [docs/BLOCK_PATH.md](docs/BLOCK_PATH.md). Minimal train on a GPU node:
 
 ```bash
 PYTHONPATH=src python -m discrete_diffusion \
-  experiment=block_qwen \
-  algo=block_masked \
-  model.hub_id=Qwen/Qwen2.5-0.5B \
-  data.tokenizer_name_or_path=Qwen/Qwen2.5-0.5B
+  +experiment=block_qwen \
+  algo=block_masked
 ```
 
-Verification: `bash examples/block_qwen/smoke.sh` or `sbatch examples/block_qwen/slurm_verify.sh`.
+Verification: `bash examples/block_qwen/smoke.sh` or `sbatch scripts/train_block_qwen_verify.sbatch`.
 
 ### Generating samples
 Once you have a checkpoint, use the evaluation script:
