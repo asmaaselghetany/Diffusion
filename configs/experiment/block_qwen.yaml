@@ -72,6 +72,9 @@ eval:
   generate_samples: false
   save_validation_samples: false
   compute_perplexity_on_sanity: false
+  # Layer-3 Track 1 diagnostic: log val NLL by α band (AR-init cliff).
+  # Off by default for full 7500; enable on micros via HYDRA_OVERRIDES.
+  t_bucketed_nll: false
   collapse_early_stop: false
   collapse_min_step: 500
   collapse_patience: 2

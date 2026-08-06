@@ -8,7 +8,9 @@ Block diffusion fine-tune of **Qwen2.5-Instruct** on instruction SFT data.
 
 The `block_qwen` experiment is a **controlled comparison**: both arms share the same model, data, sequence length, block size, optimizer, steps, batch, noise schedule, and sampler defaults. The **only** intentional difference is the forward corruption type (`masked` absorbing vs `uniform` over vocabulary).
 
-All optional training / sampling hooks are **off** in both `configs/algo/block_*.yaml`:
+All optional training / sampling hooks are **off** in both `configs/algo/block_*.yaml`.
+Lever promotion is tracked in [`LEVERS.md`](LEVERS.md) — do not enable a paper hook
+on the neutral recipe without a row + go/no-go there.
 
 | Hook | Config key | Neutral value | Used in literature |
 |------|------------|---------------|-------------------|

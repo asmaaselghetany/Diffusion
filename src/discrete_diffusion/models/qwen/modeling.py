@@ -6,6 +6,7 @@ import omegaconf
 import torch
 import torch.nn as nn
 
+from ...contracts.attention_hook import assert_block_attention_hook_compatible
 from .attention import block_diff_attention_mask
 from .config import ForwardMode, QwenBlockConfig
 
@@ -45,6 +46,10 @@ class QwenBlockForCausalLM(nn.Module):
     else:
       # Pipeline 2 (pure block diffusion): same architecture, random init.
       self.model = AutoModelForCausalLM.from_config(hf_config)
+
+    # Layer 2: fail at construction if transformers lacks the hook point
+    # (jobs 137328/137329 class — do not wait for mid-train NCCL abort).
+    assert_block_attention_hook_compatible(self.model)
 
     if getattr(model_cfg, 'gradient_checkpointing', False):
       self.model.gradient_checkpointing_enable()

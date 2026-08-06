@@ -46,7 +46,8 @@ esac
 EXPERIMENT=block_qwen
 DATA_CACHE="${DATA_CACHE:-${ASMAA_WORKSPACE}/.cache/discrete_diffusion/block_qwen_sft_nemotron}"
 RUN_ROOT="${RUN_ROOT:-${REPO_ROOT}/outputs/block_qwen/${LINE}_${ARM}_${SLURM_JOB_ID:-local}}"
-WANDB_PROJECT=block_qwen
+# Paper curves live in block_qwen. Track 1/2 micros set WANDB_PROJECT=block_qwen_trials.
+WANDB_PROJECT="${WANDB_PROJECT:-block_qwen}"
 NUM_GPUS="${NUM_GPUS:-2}"
 
 mkdir -p "${RUN_ROOT}" "${RUN_ROOT}/hydra" "${DATA_CACHE}" slurm_logs
@@ -79,10 +80,37 @@ if [[ "${LINE}" == "block" || "${LINE}" == "blockgen" ]]; then
 fi
 
 RUN_BASENAME="$(basename "${RUN_ROOT}")"
-# One stable WandB run per experiment arm (not per Slurm job).
-# Canonical live ids (v8): train/* backfilled from trainer/loss for full curves.
-WANDB_RUN_NAME="${WANDB_RUN_NAME:-${LINE}_${ARM}}"
-WANDB_RUN_ID="${WANDB_RUN_ID:-${LINE}_${ARM}_v8}"
+# Canonical 7500-step paper arms → stable ids in project block_qwen (*_v9).
+# Everything else (Track 1/2 micros, ad-hoc) → job-unique id, never resume/append.
+_CANONICAL_ROOTS=(
+  ar2block_masked_131655
+  ar2block_uniform_133161
+  block_masked_133150
+  block_uniform_133151
+)
+_is_canonical=0
+for _root in "${_CANONICAL_ROOTS[@]}"; do
+  if [[ "${RUN_BASENAME}" == "${_root}" ]]; then
+    _is_canonical=1
+    break
+  fi
+done
+if [[ -n "${WANDB_RUN_ID:-}" ]]; then
+  : # explicit override wins (callers must pass a unique id + WANDB_RESUME)
+elif [[ "${_is_canonical}" -eq 1 ]]; then
+  WANDB_RUN_NAME="${WANDB_RUN_NAME:-${LINE}_${ARM}}"
+  WANDB_RUN_ID="${LINE}_${ARM}_v9"
+  WANDB_RESUME="${WANDB_RESUME:-allow}"
+else
+  _wid_suffix="${SLURM_JOB_ID:-$$}"
+  # Always suffix job id so names never collide in the trials UI.
+  _base_name="${WANDB_RUN_NAME:-${LINE}_${ARM}}"
+  WANDB_RUN_NAME="${_base_name}_${_wid_suffix}"
+  WANDB_RUN_ID="${_base_name}_${_wid_suffix}"
+  # never append into an existing cloud run — collision must fail loudly
+  WANDB_RESUME="${WANDB_RESUME:-never}"
+fi
+WANDB_RESUME="${WANDB_RESUME:-allow}"
 echo "=== block_qwen launch ==="
 echo "  line:       ${LINE}"
 echo "  arm:        ${ARM} (${ALGO})"
@@ -90,8 +118,10 @@ echo "  experiment: ${EXPERIMENT}"
 echo "  run_root:   ${RUN_ROOT}"
 echo "  data_cache: ${DATA_CACHE}"
 echo "  num_gpus:   ${NUM_GPUS}"
+echo "  wandb_project: ${WANDB_PROJECT}"
 echo "  wandb_name: ${WANDB_RUN_NAME}"
 echo "  wandb_id:   ${WANDB_RUN_ID}"
+echo "  wandb_resume: ${WANDB_RESUME}"
 echo "  wandb_mode: ${WANDB_MODE:-unset} (key=${WANDB_API_KEY:+set})"
 if [[ "${LINE}" == "block" || "${LINE}" == "blockgen" ]]; then
   echo "  init:       scratch (model.load_pretrained=false)"
@@ -123,7 +153,7 @@ srun --ntasks-per-node="${NUM_GPUS}" --cpu-bind=cores \
   "wandb.project=${WANDB_PROJECT}" \
   "wandb.name=${WANDB_RUN_NAME}" \
   "wandb.id=${WANDB_RUN_ID}" \
-  "wandb.resume=allow" \
+  "wandb.resume=${WANDB_RESUME}" \
   "${EXTRA_OVERRIDES[@]}" || TRAIN_RC=$?
 
 # After a clean finish, submit eval only if the *highest-step* prepared ckpt

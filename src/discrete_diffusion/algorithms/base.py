@@ -24,16 +24,13 @@ class CollapseEarlyStop(RuntimeError):
 
 
 def ensure_mask_token(tokenizer):
-  """Return mask token id and vocab size, ensuring the tokenizer exposes the mask."""
-  vocab_size = _effective_vocab_size(tokenizer)
-  if getattr(tokenizer, 'mask_token', None) is None:
-    mask_id = vocab_size
-    vocab_size += 1
-  else:
-    mask_id = tokenizer.mask_token_id
-  if getattr(tokenizer, 'mask_token_id', None) is None:
-    setattr(tokenizer, 'mask_token_id', int(mask_id))
-  return int(mask_id), vocab_size
+  """Return mask token id and vocab size, ensuring the tokenizer exposes the mask.
+
+  Delegates to Layer-0 ``ensure_special_tokens`` (single source of truth).
+  """
+  from ..contracts.special_tokens import ensure_special_tokens
+  ids = ensure_special_tokens(tokenizer)
+  return ids.mask_id, ids.vocab_size
 
 @dataclass
 class Loss:

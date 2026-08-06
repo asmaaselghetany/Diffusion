@@ -20,6 +20,11 @@ from ..forward_process.block_masked import (
 from ..forward_process.block_uniform import BlockUniformForwardProcess
 from ..noise_schedules import LogLinear
 from .base import Loss, TrainerBase, ensure_mask_token
+from ..contracts.special_tokens import (
+    SpecialTokenIds,
+    assert_same_mask_id,
+    ensure_special_tokens,
+)
 from ..losses.block_elbo import (
     masked_block_nll_per_token,
     subs_log_probs,
@@ -27,11 +32,37 @@ from ..losses.block_elbo import (
 )
 
 
+# Layer 3 — standing symmetry audit (see tests/test_loss_symmetry.py).
+# Every training special-case that touches `_masked_loss` / `nll` must appear
+# here with an explicit uniform decision. Adding a masked-only hook without
+# updating this dict must fail CI.
+LOSS_SPECIAL_CASE_POLICY: dict[str, str] = {
+    # Fast-dLLM shift: masked-only; Unif(V) DUO has no AR next-token shift.
+    'shift_loss_targets': 'masked_only',
+    # Absorbing polarity flip; N/A for uniform replacement FP.
+    'complementary_masks': 'masked_only',
+    # SUBS log-probs / mask-site NLL — absorbing parameterization.
+    'subs_log_probs': 'masked_only',
+    # Applied in nll() for both corruptions after the per-corruption loss.
+    'ignore_bos': 'shared',
+    # valid_tokens trim to T-1 only when shift shortens masked loss.
+    'valid_tokens_shift_trim': 'masked_only_when_shift',
+}
+
+
 class BlockTrainer(TrainerBase):
   """Single Lightning trainer for Qwen block diffusion (masked | uniform)."""
 
   def __init__(self, config, tokenizer):
-    self.mask_id, vocab_size = ensure_mask_token(tokenizer)
+    self.token_ids: SpecialTokenIds = ensure_special_tokens(tokenizer)
+    self.mask_id, vocab_size = self.token_ids.mask_id, self.token_ids.vocab_size
+    # Keep ensure_mask_token path warm (same values) for callers/tests.
+    mid, vs = ensure_mask_token(tokenizer)
+    assert_same_mask_id(self.mask_id, mid, where='ensure_mask_token')
+    if vs != vocab_size:
+      raise AssertionError(
+          f'L0 vocab_size mismatch: special_tokens={vocab_size} '
+          f'ensure_mask_token={vs}')
     omegaconf.OmegaConf.set_struct(config.algo, False)
     config.algo.parameterization = 'subs'
     omegaconf.OmegaConf.set_struct(config.algo, True)
@@ -99,6 +130,11 @@ class BlockTrainer(TrainerBase):
       fp = BlockMaskedForwardProcess(
           tokenizer=self.tokenizer, schedule=self.noise, name='block_masked')
     self._forward_process = fp
+    # L0: FP mask id must match trainer (masked path).
+    fp_mask = getattr(fp, 'mask_id', None)
+    if fp_mask is not None:
+      assert_same_mask_id(
+          self.mask_id, int(fp_mask), where='forward_process.mask_id')
 
   def _validate_configuration(self):
     if self.time_conditioning:
@@ -111,6 +147,20 @@ class BlockTrainer(TrainerBase):
       if self.num_tokens % bs != 0:
         raise ValueError(
             f'model.length must be divisible by block_size_mixture entry {bs}')
+    # Uniform must not silently inherit masked-only hooks (symmetry policy).
+    if self.forward_process_name == 'uniform':
+      if (self.shift_loss_targets
+          and LOSS_SPECIAL_CASE_POLICY.get('shift_loss_targets')
+          == 'masked_only'):
+        raise ValueError(
+            'algo.shift_loss_targets=true is masked-only '
+            '(LOSS_SPECIAL_CASE_POLICY); refuse on uniform arm')
+      if (self.complementary_masks
+          and LOSS_SPECIAL_CASE_POLICY.get('complementary_masks')
+          == 'masked_only'):
+        raise ValueError(
+            'algo.complementary_masks=true is masked-only '
+            '(LOSS_SPECIAL_CASE_POLICY); refuse on uniform arm')
 
   def _sample_training_block_size(self) -> int:
     if not self.block_size_mixture:
@@ -140,16 +190,34 @@ class BlockTrainer(TrainerBase):
     return self.backbone(x_in, sigma=None, block_size=block_size)
 
   def _masked_loss(self, logits, xt, x0, alpha_t, dalpha_t):
-    log_probs = subs_log_probs(logits, xt, self.mask_id, self.neg_infinity)
+    # Shift must mirror Diffusion.nll (base.py): raw next-token CE on
+    # mask positions only. Applying SUBS *then* shifting scores x0[i+1]
+    # under a one-hot on xt[i] for unmasked i → ~neg_infinity NLL and
+    # trainer/loss ~1e6 (Track 2 jobs 138068 / 138098).
     if self.shift_loss_targets:
-      log_probs = log_probs[:, :-1]
+      logits = logits[:, :-1]
       x0 = x0[:, 1:]
       xt = xt[:, 1:]
       alpha_t = alpha_t[:, 1:]
       dalpha_t = dalpha_t[:, 1:]
+      ce = -logits.log_softmax(-1).gather(
+          -1, x0.unsqueeze(-1)).squeeze(-1)
+      mask_positions = (xt == self.mask_id).to(ce.dtype)
+      masked_neg_ce = mask_positions * (-ce)
+      weighting = dalpha_t / (1.0 - alpha_t)
+      return weighting * masked_neg_ce
+    log_probs = subs_log_probs(logits, xt, self.mask_id, self.neg_infinity)
     return masked_block_nll_per_token(log_probs, x0, alpha_t, dalpha_t)
 
   def _uniform_loss(self, logits, xt, x0, alpha_t, dalpha_t):
+    """DUO/UDLM closed-form uniform NLL (explicit ``x0==xt`` handled inside).
+
+    Intentional non-applications vs ``_masked_loss`` (see
+    ``LOSS_SPECIAL_CASE_POLICY``):
+    - ``shift_loss_targets``: masked-only (Fast-dLLM AR alignment).
+    - ``subs_log_probs`` / mask-site CE: absorbing parameterization only.
+    - ``complementary_masks``: applied in ``_corrupt`` for masked FP only.
+    """
     log_probs = F.log_softmax(logits, dim=-1)
     return uniform_block_nll_per_token(
         log_probs, xt, x0, alpha_t, dalpha_t, self.vocab_size)
@@ -183,6 +251,11 @@ class BlockTrainer(TrainerBase):
       loss[:, 0] = 0
       valid_tokens = valid_tokens.clone()
       valid_tokens[:, 0] = 0
+    # Mirror base.py: shift_loss_targets shortens loss to T-1 in _masked_loss;
+    # trim the pad mask so multiply / BPD denom stay aligned.
+    if (self.shift_loss_targets
+        and valid_tokens.size(-1) == loss.size(-1) + 1):
+      valid_tokens = valid_tokens[:, 1:]
     return loss * valid_tokens
 
   def _loss(self, x0, valid_tokens, current_accumulation_step=None, train_mode=False):
@@ -195,6 +268,11 @@ class BlockTrainer(TrainerBase):
     # count used as the aggregation weight. Using a per-position tensor
     # here would broadcast the scalar weight across positions and mis-scale
     # val/bpd (and train/bpd as a side effect).
+    # Same shift trim as nll() / base Diffusion._loss so num_tokens matches
+    # the T-1 loss grid when shift_loss_targets is on.
+    if (self.shift_loss_targets
+        and valid_tokens.size(-1) == nlls.size(-1) + 1):
+      valid_tokens = valid_tokens[:, 1:]
     nll_sum = nlls.sum()
     num_tokens = valid_tokens.sum()
     token_nll = nll_sum / num_tokens.clamp(min=1)
@@ -224,7 +302,56 @@ class BlockTrainer(TrainerBase):
     del batch_idx
     losses = self._loss(batch['input_ids'], batch['attention_mask'])
     self.metrics.update_valid(losses.nlls, losses.num_tokens)
+    if bool(getattr(self.config.eval, 't_bucketed_nll', False)):
+      self._log_t_bucketed_nll(batch['input_ids'], batch['attention_mask'])
     return losses.loss
+
+  @torch.no_grad()
+  def _log_t_bucketed_nll(self, x0: torch.Tensor, valid_tokens: torch.Tensor):
+    """Layer-3 diagnostic: NLL vs corruption level (AR-init cliff detector).
+
+    Logs ``val/nll_alpha_{lo}_{hi}`` for fixed α bands. Aggregate val/nll
+    alone can hide a high-t cliff on ar2block_uniform.
+    """
+    x0, valid_tokens = self._process_model_input(x0, valid_tokens)
+    bsz, seq = x0.shape
+    bs = self.block_size
+    # α bands: high α = low corruption. Use midpoints via LogLinear inverse.
+    bands = ((0.05, 0.2), (0.2, 0.4), (0.4, 0.6), (0.6, 0.8), (0.8, 0.95))
+    eps = float(self.noise.eps)
+    for lo, hi in bands:
+      alpha_mid = 0.5 * (lo + hi)
+      # alpha = 1 - (1-eps)*t  →  t = (1-alpha)/(1-eps)
+      t_val = (1.0 - alpha_mid) / max(1.0 - eps, 1e-8)
+      t = torch.full((bsz, seq), t_val, device=self.device, dtype=torch.float32)
+      # Constant within each block (match training geometry).
+      n_blocks = seq // bs
+      for bi in range(n_blocks):
+        sl = slice(bi * bs, (bi + 1) * bs)
+        t[:, sl] = t[:, bi * bs: bi * bs + 1]
+      alpha_t = self.noise.alpha_t(t)
+      dalpha_t = self.noise.alpha_prime_t(t)
+      xt = self._corrupt(x0, t, block_size=bs)
+      logits = self._backbone_logits(xt, x0, block_size=bs)
+      if self.forward_process_name == 'uniform':
+        loss = self._uniform_loss(logits, xt, x0, alpha_t, dalpha_t)
+      else:
+        loss = self._masked_loss(logits, xt, x0, alpha_t, dalpha_t)
+      vt = valid_tokens
+      if self.ignore_bos:
+        loss = loss.clone()
+        loss[:, 0] = 0
+        vt = valid_tokens.clone()
+        vt[:, 0] = 0
+      # Mirror nll(): shift shortens masked loss to T-1 — trim pad mask
+      # (Track 2 crash 138103: 511 vs 512 in loss * vt).
+      if (self.shift_loss_targets
+          and vt.size(-1) == loss.size(-1) + 1):
+        vt = vt[:, 1:]
+      weighted = loss * vt
+      nll = weighted.sum() / vt.sum().clamp(min=1)
+      key = f'val/nll_alpha_{lo:.2f}_{hi:.2f}'.replace('.', 'p')
+      self.log(key, nll, on_step=False, on_epoch=True, sync_dist=True)
 
 
 __all__ = ['BlockTrainer']

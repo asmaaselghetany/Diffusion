@@ -7,6 +7,7 @@ from typing import Iterator
 
 import torch
 
+from ...contracts.attention_hook import assert_block_attention_hook_compatible
 from ..block_mask import build_sdpa_mask
 
 
@@ -18,6 +19,7 @@ def block_diff_attention_mask(
     device: torch.device,
     dtype: torch.dtype,
 ) -> Iterator[None]:
+  assert_block_attention_hook_compatible(model)
   inner = model.model if hasattr(model, 'model') else model
   additive = build_sdpa_mask(n, block_size, device=device, dtype=dtype)
   original = inner._update_causal_mask
