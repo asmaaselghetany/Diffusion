@@ -18,7 +18,11 @@ slurm_scripts/
 .cache/
 *.sh
 !examples/**/*.sh
+!scripts/**/*.sh
+!scripts/**/*.bash
 tests/
+!tests/test_block*.py
+!tests/test_qwen*.py
 plans/
 
 gifs/
@@ -41,6 +45,12 @@ slurm_logs/
 *.safetensors
 wandb/
 *.wandb
+
+# Local / ephemeral (not part of the fork tree)
+artifacts/
+media/
+.pytest_cache/
+.cursor/
 
 # Temporary files
 tmp*/

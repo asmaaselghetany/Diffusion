@@ -48,8 +48,8 @@ Verify in the SLURM log that flags appear **inside** the `algo:` struct, not as 
 | Block size | 32 | 32 |
 | LR | 2×10⁻⁵ | same |
 | Warmup | 500 steps | same |
-| Global batch | 256 (64× A100, ZeRO-3) | **128** (1 GPU × grad_accum) |
-| Steps | ~6000 (paper) | **7500** (~2B tokens) |
+| Global batch | 256 (64× A100, ZeRO-3) | **256** (grad_accum on local GPUs) |
+| Steps | ~6000 (paper) | **6000** (~3.15B tokens @ 256×2048) |
 
 Fast-dLLM reports shift + complementary masks on top of this recipe; BlockGen reports mixture + stratified γ + ARPC for its uniform instantiation. Those are **not** part of the neutral `block_qwen` comparison.
 
@@ -75,7 +75,7 @@ Two pipelines (hooks off). Within each pipeline only corruption differs (masked 
 | Pipeline | Intent | Init | Scripts | Outputs |
 |----------|--------|------|---------|---------|
 | **1. ar2block** | AR→block (Fast-dLLM style) | pretrained Qwen Instruct | `ar2block_{masked,uniform}.sbatch` | `ar2block_{masked,uniform}_<jobid>/` |
-| **2. blockgen** | Pure block diffusion (BlockGen style) | scratch (same Qwen arch) | `blockgen_{masked,uniform}.sbatch` | `blockgen_{masked,uniform}_<jobid>/` |
+| **2. block** | Pure / scratch block diffusion | scratch (same Qwen arch) | `block_{masked,uniform}.sbatch` | `block_{masked,uniform}_<jobid>/` |
 
 ```bash
 source env.sh && cd "$REPO_ROOT"
@@ -84,7 +84,7 @@ source env.sh && cd "$REPO_ROOT"
 ./scripts/submit_ar2block.sh both
 
 # Pipeline 2 — pure block diffusion
-./scripts/submit_blockgen.sh both
+./scripts/submit_block.sh both
 ```
 
 Optional paper hooks (not for the neutral compare) can still be passed via `HYDRA_OVERRIDES` — see above.
@@ -96,7 +96,7 @@ A new `sbatch` gets a **new job id** and a **new output folder** unless you pin 
 ```bash
 ./scripts/resume_block_qwen.sh outputs/block_qwen/masked_126234
 ./scripts/resume_block_qwen.sh outputs/block_qwen/uniform_126242
-./scripts/resume_block_qwen.sh outputs/block_qwen/blockgen_masked_<jobid>
+./scripts/resume_block_qwen.sh outputs/block_qwen/block_masked_<jobid>
 ```
 
 This sets `RUN_ROOT` to the existing folder and loads `checkpoints/last.ckpt`.
@@ -137,12 +137,17 @@ TIME LIMIT / crash / prepared step &lt; `max_steps` → no auto-eval (`./scripts
 ```bash
 sbatch scripts/slurm/eval_checkpoint.sbatch masked <jobid>
 sbatch scripts/slurm/eval_checkpoint.sbatch ar2block masked <jobid>
-sbatch scripts/slurm/eval_checkpoint.sbatch blockgen uniform <jobid>
+sbatch scripts/slurm/eval_checkpoint.sbatch block uniform <jobid>
 sbatch scripts/slurm/eval_checkpoint.sbatch \
   outputs/block_qwen/masked_<jobid>/checkpoints/last.ckpt
 ```
 
-**Not included:** Fast-dLLM task benches (GSM8K / MMLU / HumanEval) — different harness; not wired here yet.
+**Task benches + tok/s (wired):** `examples/block_qwen/lm_eval.sh`
+→ accuracy on MMLU / GPQA / GSM8K / Minerva Math / IFEval / HumanEval, plus
+`tok_s.json` (dedicated) and `tok_s_lm_eval.json` (during generation).
+See `<run>/lm_eval/SUMMARY.md`.
+
+**Not included:** EvalPlus HumanEval+/MBPP+ (optional separate CLI later).
 
 ## Local (no SLURM)
 

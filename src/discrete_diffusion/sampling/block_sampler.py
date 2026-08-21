@@ -156,6 +156,13 @@ class BlockSampler(Sampler):
     xt[:, start:end] = block
     return xt
 
+  @staticmethod
+  def _ignore_bos(model) -> bool:
+    if bool(getattr(model, 'ignore_bos', False)):
+      return True
+    algo = getattr(getattr(model, 'config', None), 'algo', None)
+    return bool(algo is not None and getattr(algo, 'ignore_bos', False))
+
   def _init_block(
       self,
       model,
@@ -164,6 +171,8 @@ class BlockSampler(Sampler):
       start: int,
       end: int,
   ) -> tuple[torch.Tensor, torch.Tensor]:
+    # Keep already-committed prefix; only reset the active block to prior.
+    committed = x0[:, :start].clone()
     if self.is_masked:
       xt[:, start:end] = model.mask_id
     else:
@@ -172,14 +181,14 @@ class BlockSampler(Sampler):
           device=xt.device, dtype=xt.dtype)
     # Keep position-0 BOS when training uses ignore_bos (never corrupts / never
     # trains index 0). Wiping it left block 0 fully masked → unconstrained prior.
-    ignore_bos = bool(getattr(model, 'ignore_bos', False)) or bool(
-        getattr(getattr(model, 'config', None), 'algo', None)
-        and getattr(model.config.algo, 'ignore_bos', False))
-    if ignore_bos and start == 0:
+    if self._ignore_bos(model) and start == 0:
       bos = model.tokenizer.bos_token_id
       if bos is not None:
         xt[:, 0] = bos
-    x0 = xt.clone()
+        x0[:, 0] = bos
+    xt[:, :start] = committed
+    x0[:, :start] = committed
+    x0[:, start:end] = xt[:, start:end]
     if self.use_arpc and not self.is_masked:
       xt, x0 = self._arpc_prefix_fill(model, xt, x0, start, end)
     return xt, x0
@@ -193,24 +202,70 @@ class BlockSampler(Sampler):
       end: int,
       num_steps: int,
       eps: float,
-  ) -> torch.Tensor:
+  ) -> tuple[torch.Tensor, torch.Tensor]:
+    """Reverse-diffuse only ``[start:end]``; freeze prefix and future.
+
+    Uniform reverse draws the full sequence; writing that back into ``x0``
+    used to re-noise committed blocks. BlockGen generates
+    ``[clean prefix | current xt]`` only.
+    """
     step_fn = self._masked_step if self.is_masked else self._uniform_step
     timesteps = torch.linspace(1.0, eps, num_steps + 1, device=xt.device)
     dt = (1.0 - eps) / max(num_steps, 1)
+    prefix = xt[:, :start].clone()
+    future = xt[:, end:].clone()
+    bos_id = None
+    if self._ignore_bos(model) and start == 0:
+      bos = model.tokenizer.bos_token_id
+      if bos is not None:
+        bos_id = bos
+
+    def _restore() -> None:
+      xt[:, :start] = prefix
+      x0[:, :start] = prefix
+      xt[:, end:] = future
+      x0[:, end:] = future
+      if bos_id is not None:
+        xt[:, 0] = bos_id
+        x0[:, 0] = bos_id
+
+    def _apply(t_scalar: torch.Tensor, step_dt: float | None) -> None:
+      _restore()
+      x0[:, start:end] = xt[:, start:end]
+      xt_new = step_fn(model, xt, x0, t_scalar, step_dt)
+      xt[:, start:end] = xt_new[:, start:end]
+      _restore()
+      x0[:, start:end] = xt[:, start:end]
 
     for i in range(num_steps):
-      xt[:, :start] = x0[:, :start]
       t = timesteps[i].expand(xt.shape[0])
-      xt = step_fn(model, xt, x0, t, dt)
-      x0 = xt.clone()
+      _apply(t, dt)
 
-    xt[:, :start] = x0[:, :start]
     t_final = timesteps[-1].expand(xt.shape[0])
-    xt = step_fn(model, xt, x0, t_final, None)
-    return xt
+    _apply(t_final, None)
+    return xt, x0
 
   @torch.no_grad()
-  def generate(self, model, *, num_samples, num_steps, eps, inject_bos):
+  def generate(
+      self,
+      model,
+      *,
+      num_samples,
+      num_steps,
+      eps,
+      inject_bos,
+      prefix_ids: torch.Tensor | None = None,
+      max_new_tokens: int | None = None,
+  ):
+    """Block-wise free-gen, optionally conditioned on a clean ``prefix_ids``.
+
+    ``prefix_ids`` shape ``(B, L)`` or ``(L,)`` is written into the sequence and
+    frozen; generation continues from the first unfinished position (Fast-dLLM-
+    style prompt continuation for lm-eval).
+
+    If ``max_new_tokens`` is set, only enough trailing blocks to cover that
+    many new tokens are denoised (rounded up to ``block_size``).
+    """
     if num_steps is None:
       num_steps = int(self.config.sampling.steps)
     if eps is None:
@@ -226,19 +281,48 @@ class BlockSampler(Sampler):
 
     xt = model.prior_sample(num_samples, n)
     x0 = xt.clone()
-    if inject_bos:
+    prefix_len = 0
+    if prefix_ids is not None:
+      if prefix_ids.dim() == 1:
+        prefix_ids = prefix_ids.unsqueeze(0).expand(num_samples, -1)
+      if prefix_ids.shape[0] != num_samples:
+        raise ValueError(
+            f'prefix_ids batch {prefix_ids.shape[0]} != num_samples={num_samples}')
+      # Leave at least one token free so we can generate a continuation.
+      prefix_len = int(min(prefix_ids.shape[1], n - 1))
+      if prefix_len > 0:
+        xt[:, :prefix_len] = prefix_ids[:, :prefix_len].to(xt.device)
+        x0[:, :prefix_len] = xt[:, :prefix_len]
+    elif inject_bos:
       bos = model.tokenizer.bos_token_id
       xt[:, 0] = bos
       x0[:, 0] = bos
 
-    for block_idx in range(num_blocks):
+    first_block = prefix_len // bs
+    if max_new_tokens is not None and max_new_tokens > 0:
+      target_end = min(n, prefix_len + int(max_new_tokens))
+      # Round up to a block boundary so the last partial block is fully decoded.
+      last_block = (target_end + bs - 1) // bs
+      last_block = min(last_block, num_blocks)
+    else:
+      last_block = num_blocks
+
+    for block_idx in range(first_block, last_block):
       start = block_idx * bs
       end = start + bs
-      xt, x0 = self._init_block(model, xt, x0, start, end)
-      xt = self._denoise_block(model, xt, x0, start, end, num_steps, eps)
+      denoise_start = max(start, prefix_len)
+      if denoise_start >= end:
+        continue
+      xt, x0 = self._init_block(model, xt, x0, denoise_start, end)
+      xt, x0 = self._denoise_block(
+          model, xt, x0, denoise_start, end, num_steps, eps)
       if self.use_arpc and not self.is_masked:
-        xt = self._arpc_correct_block(model, xt, x0, start, end)
-      x0 = xt.clone()
+        xt = self._arpc_correct_block(model, xt, x0, denoise_start, end)
+        x0[:, denoise_start:end] = xt[:, denoise_start:end]
+      x0[:, :end] = xt[:, :end]
+      if prefix_len > 0:
+        xt[:, :prefix_len] = prefix_ids[:, :prefix_len].to(xt.device)
+        x0[:, :prefix_len] = xt[:, :prefix_len]
 
     return xt
 

@@ -11,6 +11,21 @@ from .attention import block_diff_attention_mask
 from .config import ForwardMode, QwenBlockConfig
 
 
+def shared_block_position_ids(
+    n: int,
+    device: torch.device | str,
+    batch_size: int = 1,
+) -> torch.Tensor:
+  """RoPE ids for ``concat(xt, x0)`` of length ``2n``.
+
+  Fast-dLLM and BlockGen apply the *same* ``0..n-1`` positions to both
+  halves so previous-block ``x0`` is nearby in RoPE space. Stock HF
+  defaults to ``0..2n-1``, which puts clean context at offset ``n``.
+  """
+  pos = torch.arange(n, device=device)
+  return pos.repeat(2).unsqueeze(0).expand(batch_size, 2 * n).contiguous()
+
+
 class QwenBlockForCausalLM(nn.Module):
   """HF Qwen2 weights + block-diffusion attention.
 
@@ -75,8 +90,11 @@ class QwenBlockForCausalLM(nn.Module):
 
     bs = int(block_size) if block_size is not None else self.block_size
     dtype = next(self.model.parameters()).dtype
+    position_ids = shared_block_position_ids(
+        n, indices.device, batch_size=indices.shape[0])
     with block_diff_attention_mask(self.model, n, bs, indices.device, dtype):
-      out = self.model(input_ids=indices, use_cache=False)
+      out = self.model(
+          input_ids=indices, position_ids=position_ids, use_cache=False)
     return out.logits[:, :n, :]
 
   @torch.no_grad()

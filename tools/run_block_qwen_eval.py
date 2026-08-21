@@ -1,5 +1,15 @@
 #!/usr/bin/env python3
-"""End-to-end block_qwen eval: samples → gen-PPL → DepBench → ELBO sweep."""
+"""Block_qwen eval orchestrator.
+
+Prefer the upstream-only path first::
+
+  bash examples/block_qwen/eval.sh <checkpoint.ckpt>
+
+That uses UNI-D² ``generate_samples`` + ``generative_ppl`` only.
+
+This script wraps those same modules and optionally adds fork extras
+(DepBench, block ELBO sweep). Use ``--upstream-only`` to skip extras.
+"""
 
 from __future__ import annotations
 
@@ -36,10 +46,14 @@ def _run(
 
 
 def main(argv: list[str] | None = None) -> int:
-  parser = argparse.ArgumentParser(description='Run block_qwen eval suite')
+  parser = argparse.ArgumentParser(
+      description=(
+          'Run block_qwen eval (upstream generate_samples/gen-PPL + '
+          'optional extras)'))
   parser.add_argument('--checkpoint', required=True)
-  parser.add_argument('--run-dir', default=None,
-                      help='Output directory (default: <ckpt_parent>/../eval)')
+  parser.add_argument(
+      '--run-dir', default=None,
+      help='Output directory (default: <ckpt_parent>/../eval)')
   parser.add_argument('--num-samples', type=int, default=64)
   # seq 2048 × Qwen-1.5B block sampling OOMs at batch 16 on H100 80GB;
   # keep 1 (same constraint as training eval_global_batch_size).
@@ -47,6 +61,10 @@ def main(argv: list[str] | None = None) -> int:
   parser.add_argument('--gen-steps', type=int, default=32)
   parser.add_argument('--skip-samples', action='store_true')
   parser.add_argument('--skip-gen-ppl', action='store_true')
+  parser.add_argument(
+      '--upstream-only',
+      action='store_true',
+      help='Only UNI-D² generate_samples + generative_ppl (skip DepBench/ELBO).')
   parser.add_argument('--skip-depbench', action='store_true')
   parser.add_argument('--skip-elbo', action='store_true')
   parser.add_argument('--depbench-count', type=int, default=16)
@@ -59,6 +77,10 @@ def main(argv: list[str] | None = None) -> int:
   parser.add_argument('--block-sizes', default='1,4,16,32')
   args = parser.parse_args(argv)
 
+  if args.upstream_only:
+    args.skip_depbench = True
+    args.skip_elbo = True
+
   repo = _repo_root()
   workspace = _workspace_root()
   checkpoint = Path(args.checkpoint).resolve()
@@ -66,7 +88,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f'Checkpoint not found: {checkpoint}', file=sys.stderr)
     return 1
 
-  run_dir = Path(args.run_dir) if args.run_dir else checkpoint.parent.parent / 'eval'
+  run_dir = (
+      Path(args.run_dir) if args.run_dir
+      else checkpoint.parent.parent / 'eval')
   run_dir.mkdir(parents=True, exist_ok=True)
 
   samples_path = run_dir / 'samples.pt'
@@ -81,34 +105,31 @@ def main(argv: list[str] | None = None) -> int:
     if samples_path.exists():
       print(f'Samples already exist at {samples_path}; skipping generation.')
     else:
+      # UNI-D² evaluations.generate_samples (same as examples/block_qwen/eval.sh).
       _run([
-        py, '-m', 'discrete_diffusion.evaluations.generate_samples',
-        f'checkpoint_path={checkpoint}',
-        f'samples_path={samples_path}',
-        f'num_samples={args.num_samples}',
-        f'batch_size={args.gen_batch_size}',
-        f'num_steps={args.gen_steps}',
-        'save_text=true',
-        'device=cuda',
+          py, '-m', 'discrete_diffusion.evaluations.generate_samples',
+          f'checkpoint_path={checkpoint}',
+          f'samples_path={samples_path}',
+          f'num_samples={args.num_samples}',
+          f'batch_size={args.gen_batch_size}',
+          f'num_steps={args.gen_steps}',
+          'save_text=true',
+          'device=cuda',
       ], cwd=repo)
 
   if not args.skip_gen_ppl:
-    import torch
-    ckpt = torch.load(checkpoint, map_location='cpu', weights_only=False)
-    config = ckpt['hyper_parameters']['config']
-    tokenizer_name = str(getattr(config.data, 'tokenizer_name_or_path', 'gpt2'))
+    # UNI-D² generative_ppl with block_qwen tokenizer defaults.
     rc = _run([
         py, '-m', 'discrete_diffusion.evaluations.generative_ppl',
+        '--config-name=gen_ppl_block_qwen',
         f'samples_path={samples_path}',
-        f'model_tokenizer={tokenizer_name}',
-        'pretrained_model=gpt2-large',
         f'metrics_path={gen_ppl_path}',
+        'pretrained_model=gpt2-large',
         'retokenize=true',
         'first_chunk_only=true',
     ], cwd=repo, check=False)
     if rc != 0:
-      print(f'WARNING: gen-PPL exited {rc}; continuing to DepBench/ELBO.',
-            file=sys.stderr)
+      print(f'WARNING: gen-PPL exited {rc}; continuing.', file=sys.stderr)
 
   if not args.skip_elbo:
     rc = _run([
@@ -119,8 +140,7 @@ def main(argv: list[str] | None = None) -> int:
         '--output', str(elbo_path),
     ], cwd=repo, check=False)
     if rc != 0:
-      print(f'WARNING: ELBO sweep exited {rc}; continuing to DepBench.',
-            file=sys.stderr)
+      print(f'WARNING: ELBO sweep exited {rc}; continuing.', file=sys.stderr)
 
   if not args.skip_depbench:
     import os
@@ -133,14 +153,12 @@ def main(argv: list[str] | None = None) -> int:
     if not depbench_script.exists():
       print(
           f'DepBench script not found at {depbench_script}. '
-          'Set --depbench-root or DEPBENCH_ROOT.',
+          'Set --depbench-root or DEPBENCH_ROOT, or pass --skip-depbench / '
+          '--upstream-only.',
           file=sys.stderr,
       )
       return 1
-    import os as _os
-    depbench_env = _os.environ.copy()
-    # Make `import depbench` work without editable install (pyproject's
-    # uni-d2 file: URL resolves to the wrong path on this cluster layout).
+    depbench_env = os.environ.copy()
     prev = depbench_env.get('PYTHONPATH', '')
     depbench_env['PYTHONPATH'] = (
         f'{depbench_root}{(":" + prev) if prev else ""}'

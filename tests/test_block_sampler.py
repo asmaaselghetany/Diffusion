@@ -71,3 +71,120 @@ def test_block_sampler_uniform_shape():
   sampler = BlockSampler(_config('uniform'))
   out = sampler.generate(model, num_samples=1, num_steps=4, eps=1e-3, inject_bos=False)
   assert out.shape == (1, 16)
+
+
+def test_block_sampler_prefix_frozen():
+  """Conditional gen keeps the prompt tokens unchanged (lm-eval path)."""
+  model = _MockBlockTrainer(mode='masked', n=16)
+  sampler = BlockSampler(_config('masked'))
+  prefix = torch.tensor([[1, 2, 3, 4]], dtype=torch.long)
+  out = sampler.generate(
+      model,
+      num_samples=1,
+      num_steps=4,
+      eps=1e-3,
+      inject_bos=False,
+      prefix_ids=prefix,
+  )
+  assert out.shape == (1, 16)
+  assert torch.equal(out[:, :4], prefix)
+
+
+def test_block_sampler_max_new_tokens_limits_blocks():
+  model = _MockBlockTrainer(mode='masked', n=32)
+  model.block_size = 8
+  sampler = BlockSampler(_config('masked'))
+  prefix = torch.tensor([[1, 2, 3, 4]], dtype=torch.long)
+  # Only enough for ~8 new tokens → should stop after completing block covering pos 4..12
+  out = sampler.generate(
+      model,
+      num_samples=1,
+      num_steps=2,
+      eps=1e-3,
+      inject_bos=False,
+      prefix_ids=prefix,
+      max_new_tokens=8,
+  )
+  assert out.shape == (1, 32)
+  assert torch.equal(out[:, :4], prefix)
+  # Later untouched prior region stays mask-filled for masked mode.
+  assert (out[:, 16:] == model.mask_id).all()
+
+
+def test_shared_block_position_ids_duplicate_halves():
+  from discrete_diffusion.models.qwen.modeling import shared_block_position_ids
+  n, bsz = 8, 2
+  ids = shared_block_position_ids(n, 'cpu', batch_size=bsz)
+  assert ids.shape == (bsz, 2 * n)
+  assert torch.equal(ids[0, :n], torch.arange(n))
+  assert torch.equal(ids[0, n:], torch.arange(n))
+  assert torch.equal(ids[0], ids[1])
+
+
+def test_uniform_denoise_freezes_prefix_and_future():
+  """Uniform reverse may redraw the full seq; only the active block is kept."""
+  model = _MockBlockTrainer(mode='uniform')
+  sampler = BlockSampler(_config('uniform'))
+  n, bs = 16, 8
+  start, end = bs, 2 * bs
+  prefix = torch.arange(bs).unsqueeze(0).expand(2, -1)
+  future = torch.full((2, n - end), 3)
+  current = torch.full((2, bs), 5)
+  xt = torch.cat([prefix, current, future], dim=-1)
+  x0 = xt.clone()
+
+  def scribble(_model, xt_in, _x0, _t, _dt):
+    del _model, _x0, _t, _dt
+    return torch.full_like(xt_in, 7)
+
+  sampler._uniform_step = scribble
+  out, x0_out = sampler._denoise_block(
+      model, xt.clone(), x0.clone(), start, end, num_steps=3, eps=1e-3)
+  assert torch.equal(out[:, :start], prefix)
+  assert torch.equal(x0_out[:, :start], prefix)
+  assert (out[:, start:end] == 7).all()
+  assert torch.equal(out[:, end:], future)
+  assert torch.equal(x0_out[:, end:], future)
+
+
+def test_masked_denoise_freezes_prefix_and_future():
+  model = _MockBlockTrainer(mode='masked')
+  sampler = BlockSampler(_config('masked'))
+  n, bs = 16, 8
+  start, end = bs, 2 * bs
+  prefix = torch.arange(bs).unsqueeze(0).expand(2, -1)
+  future = torch.full((2, n - end), model.mask_id)
+  current = torch.full((2, bs), model.mask_id)
+  xt = torch.cat([prefix, current, future], dim=-1)
+  x0 = xt.clone()
+
+  def scribble(_model, xt_in, _x0, _t, _dt):
+    del _model, _x0, _t, _dt
+    return torch.full_like(xt_in, 7)
+
+  sampler._masked_step = scribble
+  out, _ = sampler._denoise_block(
+      model, xt.clone(), x0.clone(), start, end, num_steps=2, eps=1e-3)
+  assert torch.equal(out[:, :start], prefix)
+  assert (out[:, start:end] == 7).all()
+  assert torch.equal(out[:, end:], future)
+
+
+def test_ignore_bos_frozen_in_block0():
+  model = _MockBlockTrainer(mode='uniform')
+  model.ignore_bos = True
+  sampler = BlockSampler(_config('uniform'))
+  n, bs = 16, 8
+  xt = torch.randint(1, model.vocab_size, (1, n))
+  xt[:, 0] = 0
+  x0 = xt.clone()
+
+  def scribble(_model, xt_in, _x0, _t, _dt):
+    del _model, _x0, _t, _dt
+    return torch.full_like(xt_in, 7)
+
+  sampler._uniform_step = scribble
+  out, _ = sampler._denoise_block(
+      model, xt.clone(), x0.clone(), 0, bs, num_steps=2, eps=1e-3)
+  assert int(out[0, 0].item()) == 0
+  assert (out[:, 1:bs] == 7).all()

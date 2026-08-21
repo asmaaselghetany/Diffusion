@@ -88,76 +88,88 @@ except Exception:
 PY
 }
 
-# Resolve trainer.max_steps from env / HYDRA_OVERRIDES (default 7500).
+# Resolve trainer.max_steps from env / HYDRA_OVERRIDES (default 6000).
 _block_qwen_max_steps() {
-  local max_steps="${BLOCK_QWEN_MAX_STEPS:-7500}"
+  local max_steps="${BLOCK_QWEN_MAX_STEPS:-6000}"
   if [[ "${HYDRA_OVERRIDES:-}" =~ trainer\.max_steps=([0-9]+) ]]; then
     max_steps="${BASH_REMATCH[1]}"
   fi
   echo "${max_steps}"
 }
 
-# Pick highest-global_step valid ckpt under ckpt_dir among last*.ckpt, best.ckpt,
-# and periodics. If last.ckpt is missing/corrupt/stale, cp that source → last.ckpt
-# (never link). Prints absolute path of last.ckpt on success.
-_block_qwen_prepare_last_ckpt() {
+# Print ``<abs_path>\t<global_step>`` for the highest-step valid ckpt (no copy).
+# Periodics use the step in ``0-N.ckpt``; last/best are torch-loaded.
+_block_qwen_pick_highest_ckpt() {
   local ckpt_dir="$1"
-  local last="${ckpt_dir}/last.ckpt"
-  mkdir -p "${ckpt_dir}"
-  _block_qwen_prune_periodics "${ckpt_dir}"
-
-  local src
-  src="$(
-    python - "${ckpt_dir}" <<'PY'
-import sys, zipfile, gc
+  # Silence transformers FutureWarning etc. so stdout stays machine-parseable.
+  PYTHONWARNINGS=ignore python - "${ckpt_dir}" <<'PY'
+import re, sys, zipfile, gc, warnings
+warnings.filterwarnings('ignore')
 from pathlib import Path
 
 ckpt_dir = Path(sys.argv[1])
 cands = []
-for p in ckpt_dir.glob("*.ckpt"):
+# Lightning ModelCheckpoint default: ``{epoch}-{step}.ckpt`` (epoch may be 0 or 1+).
+step_re = re.compile(r'^\d+-(\d+)\.ckpt$')
+for p in ckpt_dir.glob('*.ckpt'):
   if p.is_symlink():
     continue
   try:
     zipfile.ZipFile(p)
   except Exception:
     continue
-  try:
-    import torch
-    obj = torch.load(p, map_location="cpu", weights_only=False, mmap=True)
-    step = int(obj.get("global_step") or -1)
-    del obj
-    gc.collect()
-  except Exception:
-    continue
-  # Prefer last-v* / last over best / periodics on ties (same step).
   name = p.name
-  if name == "last.ckpt":
+  m = step_re.match(name)
+  if m:
+    step = int(m.group(1))
+  else:
+    try:
+      import torch
+      obj = torch.load(p, map_location='cpu', weights_only=False, mmap=True)
+      step = int(obj.get('global_step') or -1)
+      del obj
+      gc.collect()
+    except Exception:
+      continue
+  if name == 'last.ckpt':
     prio = 3
-  elif name.startswith("last"):
+  elif name.startswith('last'):
     prio = 2
-  elif name == "best.ckpt":
+  elif name == 'best.ckpt':
     prio = 1
   else:
     prio = 0
-  cands.append((step, prio, str(p)))
+  cands.append((step, prio, str(p.resolve())))
 
 if not cands:
   raise SystemExit(1)
 cands.sort(reverse=True)
-print(cands[0][2])
+print(f"{cands[0][2]}\t{cands[0][0]}")
 PY
-  )" || {
+}
+
+# Optional: materialize highest ckpt as last.ckpt via cp (never link).
+# Prefer pick + checkpointing.resume_ckpt_path override to avoid Lustre copies.
+_block_qwen_prepare_last_ckpt() {
+  local ckpt_dir="$1"
+  local last="${ckpt_dir}/last.ckpt"
+  mkdir -p "${ckpt_dir}"
+  _block_qwen_prune_periodics "${ckpt_dir}"
+
+  local src pick
+  pick="$(_block_qwen_pick_highest_ckpt "${ckpt_dir}")" || {
     echo "ERROR: no valid checkpoint in ${ckpt_dir}" >&2
     return 1
   }
+  src="${pick%%$'\t'*}"
 
-  if [[ "${src}" == "${last}" ]]; then
+  if [[ "${src}" == "$(readlink -f "${last}" 2>/dev/null || echo "${last}")" ]] \
+      || [[ "${src}" == "${last}" ]]; then
     echo "ckpt: using valid last.ckpt (highest step)" >&2
     echo "${last}"
     return 0
   fi
 
-  # Drop stale/broken last so Lightning does not keep writing last-vN forever.
   if [[ -e "${last}" || -L "${last}" ]]; then
     echo "ckpt: replacing stale/invalid last.ckpt with $(basename "${src}")" >&2
     rm -f "${last}"

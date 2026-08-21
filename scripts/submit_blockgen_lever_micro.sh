@@ -60,7 +60,7 @@ export HYDRA_OVERRIDES="trainer.max_steps=${MAX_STEPS} model.length=${SEQ_LEN} b
 
 echo "BlockGen lever micro LEVER=${LEVER} TAG=${TAG}"
 echo "HYDRA_OVERRIDES=${HYDRA_OVERRIDES}"
-echo "See docs/BLOCKGEN_LEVERS.md — directional launch OK; tax needs harness-PASS; promote-to-default needs AND."
+echo "See docs/research/BLOCKGEN_LEVERS.md — directional launch OK; tax needs harness-PASS; promote-to-default needs AND."
 
 submit() {
   local arm="$1"

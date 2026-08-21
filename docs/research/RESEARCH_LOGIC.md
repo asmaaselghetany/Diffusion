@@ -78,7 +78,7 @@ The actual difference inside `nll()`:
 - **Masked:** gather log-probs at `x0` indices; cheap at validation batch 8.
 - **Uniform:** materialize vocab-sized intermediate tensors; blows up GPU memory at eval batch 8 on 1.5B + seq 2048 (we learned this the hard way on jobs 126237/126240).
 
-Training uses `batch_size: 1` with `global_batch_size: 128` (gradient accumulation). Validation uses `eval_global_batch_size: 1` on **both** masked and uniform for a fair paired compare (uniform OOMs at 8 on 1.5B + 2048).
+Training uses `batch_size: 1` with `global_batch_size: 256` (gradient accumulation). Validation uses `eval_global_batch_size: 1` on **both** masked and uniform for a fair paired compare (uniform OOMs at 8 on 1.5B + 2048).
 
 ### Neutral baseline: what is off on purpose
 
@@ -102,7 +102,7 @@ You can turn them on via `HYDRA_OVERRIDES` at launch for a "replicate paper reci
 | Data | Nemotron post-training SFT (`sft_qwen`; default chat+safety+science) | Alpaca kept as `sft_qwen_alpaca` ablation only |
 | Seq length | 2048 | Paper recipe |
 | Block size | 32 | Paper recipe; matches semi-AR chunk in DepBench default sweeps |
-| Steps | 7500 @ effective batch 128 | ~2B tokens on one GPU; paper uses 64 GPUs we do not have |
+| Steps | 6000 @ effective batch 256 | ~3.15B tokens; matches Fast-dLLM 1.5B schedule |
 | Attention | SDPA + gradient checkpointing | Fits 1.5B + 4096 effective length (concat doubles seq) on 80GB |
 | Val every | 500 steps | Faster feedback; eval batch 1 on both arms |
 
@@ -227,7 +227,7 @@ DepBench does not need Commitment. Commitment does not need GrowBlock. But they 
 1. **Hydra dot-keys** like `algo.shift_loss_targets: true` at experiment root do not merge into `config.algo`. Use CLI overrides or set keys inside `configs/algo/block_*.yaml`.
 2. **Uniform validation OOM** on 1.5B / 2048 / eval batch 8. Fix: `loader.eval_global_batch_size=1` on **both** arms (now default in `block_qwen.yaml`).
 3. **Do not stack two training jobs on one GPU** (masked + uniform on the same node). Contention causes random OOM during attention, not just validation.
-4. **7500 steps may not fit one 24h SLURM slot** — use `./scripts/resume_block_qwen.sh outputs/block_qwen/<run_dir>` to continue from `last.ckpt` (a bare resubmit creates a new job id and new folder).
+4. **6000 steps may not fit one 24h SLURM slot** — use `./scripts/resume_block_qwen.sh outputs/block_qwen/<run_dir>` to continue from `last.ckpt` (a bare resubmit creates a new job id and new folder).
 
 ---
 

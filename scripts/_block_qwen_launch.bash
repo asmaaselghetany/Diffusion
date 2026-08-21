@@ -80,7 +80,7 @@ if [[ "${LINE}" == "block" || "${LINE}" == "blockgen" ]]; then
 fi
 
 RUN_BASENAME="$(basename "${RUN_ROOT}")"
-# Canonical 7500-step paper arms → stable ids in project block_qwen (*_v9).
+# Canonical 6000-step paper arms → stable ids in project block_qwen.
 # Everything else (Track 1/2 micros, ad-hoc) → job-unique id, never resume/append.
 _CANONICAL_ROOTS=(
   ar2block_masked_131655
@@ -156,33 +156,40 @@ srun --ntasks-per-node="${NUM_GPUS}" --cpu-bind=cores \
   "wandb.resume=${WANDB_RESUME}" \
   "${EXTRA_OVERRIDES[@]}" || TRAIN_RC=$?
 
-# After a clean finish, submit eval only if the *highest-step* prepared ckpt
-# is at trainer.max_steps. Never trust a raw/stale last.ckpt (Lightning often
-# writes last-v1 while last stays old). Disable with: RUN_FULL_EVAL=false
+# After training: eval if highest valid ckpt reached max_steps; otherwise
+# auto-resubmit resume (partition MaxTime is 24h). Set AUTO_RESUME=0 to disable.
 # shellcheck disable=SC1091
 source "${REPO_ROOT}/scripts/_block_qwen_ckpt.bash"
-if [[ "${RUN_FULL_EVAL:-true}" == "true" && "${TRAIN_RC}" -eq 0 ]]; then
-  CKPT_DIR="${RUN_ROOT}/checkpoints"
-  MAX_STEPS="$(_block_qwen_max_steps)"
-  CKPT=""
-  STEP=-1
-  if CKPT="$(_block_qwen_prepare_last_ckpt "${CKPT_DIR}")"; then
-    STEP="$(_block_qwen_ckpt_global_step "${CKPT}" || echo -1)"
-  fi
-  if [[ -n "${CKPT}" && "${STEP}" -ge "${MAX_STEPS}" ]]; then
+CKPT_DIR="${RUN_ROOT}/checkpoints"
+MAX_STEPS="$(_block_qwen_max_steps)"
+CKPT=""
+STEP=-1
+if PICK="$(_block_qwen_pick_highest_ckpt "${CKPT_DIR}" 2>/dev/null)"; then
+  CKPT="${PICK%%$'\t'*}"
+  STEP="${PICK#*$'\t'}"
+fi
+
+if [[ -n "${CKPT}" && "${STEP}" =~ ^[0-9]+$ && "${STEP}" -ge "${MAX_STEPS}" ]]; then
+  if [[ "${RUN_FULL_EVAL:-true}" == "true" ]]; then
     echo "=== Training finished at step ${STEP} (>= max_steps=${MAX_STEPS}); submitting eval for ${CKPT} ==="
     sbatch scripts/slurm/eval_checkpoint.sbatch "${CKPT}" \
       || echo "WARNING: failed to submit eval job for ${CKPT}" >&2
-  elif [[ -n "${CKPT}" ]]; then
-    echo "WARNING: prepared ckpt at step ${STEP} < max_steps=${MAX_STEPS}; NOT submitting eval." >&2
-    echo "  Trainer may have exited without saving the final step (last-v* / NFS)." >&2
-    echo "  Resume: ./scripts/resume_block_qwen.sh ${RUN_ROOT}" >&2
+  fi
+elif [[ -n "${CKPT}" && "${STEP}" =~ ^[0-9]+$ && "${STEP}" -lt "${MAX_STEPS}" ]]; then
+  echo "=== Incomplete: step ${STEP} < max_steps=${MAX_STEPS} (train_rc=${TRAIN_RC}) ==="
+  if [[ "${AUTO_RESUME:-1}" == "1" ]]; then
+    echo "AUTO_RESUME=1 → submitting next chunk into ${RUN_ROOT}"
+    # Preserve sample/wandb env; resume script re-pins RUN_ROOT + highest ckpt.
+    "${REPO_ROOT}/scripts/resume_block_qwen.sh" "${RUN_ROOT}" \
+      || echo "WARNING: auto-resume submit failed" >&2
   else
-    echo "WARNING: no valid checkpoint under ${CKPT_DIR}; skipping full eval" >&2
+    echo "  Resume manually: ./scripts/resume_block_qwen.sh ${RUN_ROOT}" >&2
   fi
 elif [[ "${TRAIN_RC}" -ne 0 ]]; then
-  echo "Training exited ${TRAIN_RC} (timeout/crash). Full eval not auto-submitted."
+  echo "Training exited ${TRAIN_RC}; no valid ckpt under ${CKPT_DIR}."
   echo "  Resume: ./scripts/resume_block_qwen.sh ${RUN_ROOT}"
+else
+  echo "WARNING: no valid checkpoint under ${CKPT_DIR}; skipping eval/resume" >&2
 fi
 
 exit "${TRAIN_RC}"

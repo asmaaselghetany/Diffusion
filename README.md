@@ -2,6 +2,9 @@
 
 [![Documentation](https://img.shields.io/badge/docs-online-blue)](https://nkalyanv99.github.io/UNI-D2/)
 
+> **Fork note.** This tree is based on [nkalyanv99/UNI-D2](https://github.com/nkalyanv99/UNI-D2).  
+> Our additions are the **Qwen four-arm block path** (AR/scratch × masked/uniform). See [docs/BLOCK_PATH.md](docs/BLOCK_PATH.md) and [examples/block_qwen/](examples/block_qwen/).
+
 <p align="center">
   <img src="docs/assets/Logo_Uni_D2.jpeg" width="700">
 </p>
@@ -10,8 +13,8 @@ Moving beyond the constraints of autoregressive modeling, UNI-D² brings the ben
 
 ## Highlights
 - Hydra + Lightning entry point (`python -m discrete_diffusion`) for experimenting with MDLM, UDLM, BD3LM, FlexMDM, GIDD, SEDD, PartitionMDLM, CANDI, and the **Qwen block path** (`BlockTrainer`: `algo=block_masked` | `block_uniform`).
-- Sampling helpers that cover absorbing, BD3LM, **block (Qwen)**, GIDD, partition, uniform, autoregressive, FlexMDM, CANDI, and Entropy-Bounded (EB) samplers plus a reusable `scripts/generate_samples.sh` wrapper.
-- Scripts that reproduce training recipes for datasets such as LM1B, OWT, and Text8.
+- Sampling helpers that cover absorbing, BD3LM, **block (Qwen)**, GIDD, partition, uniform, autoregressive, FlexMDM, CANDI, and Entropy-Bounded (EB) samplers.
+- Scripts that reproduce training recipes for datasets such as LM1B, OWT, and Text8; plus four-arm Qwen launchers under `scripts/` / `examples/block_qwen/`.
 
 ## Getting Started
 
@@ -74,9 +77,9 @@ PYTHONPATH=src python -u -m discrete_diffusion \
 ```
 The `examples/` directory contains dataset-specific recipes (e.g., `bd3lm/owt.sh`, `udlm/text8.sh`, **`block_qwen/smoke.sh`**). Override any Hydra config key by appending `key=value` pairs on the command line.
 
-### Qwen block diffusion (thesis path)
+### Qwen block diffusion (four arms)
 
-See [docs/BLOCK_PATH.md](docs/BLOCK_PATH.md). Minimal train on a GPU node:
+See [docs/BLOCK_PATH.md](docs/BLOCK_PATH.md) and [examples/block_qwen/README.md](examples/block_qwen/README.md).
 
 ```bash
 PYTHONPATH=src python -m discrete_diffusion \
@@ -84,7 +87,7 @@ PYTHONPATH=src python -m discrete_diffusion \
   algo=block_masked
 ```
 
-Verification: `bash examples/block_qwen/smoke.sh` or `sbatch scripts/train_block_qwen_verify.sbatch`.
+Smoke: `bash examples/block_qwen/smoke.sh`. Cluster verify: `sbatch scripts/train_block_qwen_verify.sbatch`.
 
 ### Generating samples
 Once you have a checkpoint, use the evaluation script:
@@ -95,13 +98,15 @@ PYTHONPATH=src python -m discrete_diffusion.evaluations.generate_samples \
   num_steps=2000
 ```
 
+For the Qwen block path, prefer `tools/run_block_qwen_eval.py` (samples + gen-PPL + DepBench + ELBO).
 
 ## Repository Structure
 - `configs/`: Hydra configuration tree for datasets, models, and learners.
 - `examples/`: Scripts and notebooks that reproduce experiments and visualizations.
 - `src/discrete_diffusion`: Entry points, Hydra CLI, and the discrete diffusion training API.
-- `outputs/`: Default Hydra root for logged checkpoints and metrics.
-- `docs/`: Supporting documentation for research artifacts.
+- `outputs/`: Default Hydra root for logged checkpoints and metrics (gitignored).
+- `docs/`: Library docs; fork-specific block path + optional `docs/research/`.
+- `scripts/`, `tools/`: Cluster launchers and eval/sanity utilities for the four arms.
 - `pyproject.toml` / `requirements.txt`: Dependency and tooling metadata.
 
 ## Papers Implemented

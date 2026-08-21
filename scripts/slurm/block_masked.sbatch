@@ -17,7 +17,7 @@
 # Pair with block_uniform.sbatch.
 #
 # Submit: sbatch scripts/slurm/block_masked.sbatch
-#   or:   ./scripts/submit_blockgen.sh both
+#   or:   ./scripts/submit_block.sh both
 
 set -euo pipefail
 

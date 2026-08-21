@@ -1,0 +1,2 @@
+seed_checkpoint_resume_step:
+  _target_: src.discrete_diffusion.callbacks.save_last_on_train_end.SeedCheckpointResumeStep

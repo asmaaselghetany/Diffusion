@@ -37,8 +37,7 @@ nav:
   - Home: index.md
   - Architecture: architecture.md
   - Block path (Qwen): BLOCK_PATH.md
-  - Baseline: BASELINE.md
-  - Verification: VERIFICATION.md
+  - Research notes: research/README.md
   - Contributing: contributing.md
   - Examples:
       - Block Qwen: examples/block_qwen.md
@@ -115,6 +114,8 @@ nav:
           - Metrics: reference/evaluations/metrics.md
           - Generative PPL: reference/evaluations/generative_ppl.md
           - Harness: reference/evaluations/harness.md
+          - Block Qwen lm-eval: reference/evaluations/block_qwen_lm_eval.md
+          - Decode throughput: reference/evaluations/decode_throughput.md
       - Callbacks:
           - Sample Saver: reference/callbacks/sample_saver.md
           - Training Latency: reference/callbacks/latency.md

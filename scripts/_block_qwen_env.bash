@@ -13,7 +13,7 @@ source .venv/bin/activate
 # CRITICAL: Slurm propagates the submitter's env. A polluted PYTHONPATH that
 # prefixes projects/depbench/.deps-fastdllm (transformers 4.53) breaks the
 # Qwen block-attn monkeypatch — 4.53 Qwen2Model has no _update_causal_mask
-# (Track 1 micros 137328/137329). Original 7500-step arms used clean venv
+# (Track 1 micros 137328/137329). Original paper arms used clean venv
 # 4.45. Always reset to uni-d2 src only after activate.
 export PYTHONPATH="${REPO_ROOT}/src"
 

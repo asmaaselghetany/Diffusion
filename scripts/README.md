@@ -1,31 +1,31 @@
 # scripts/
 
-SLURM job launchers (Kalyan-style `.sbatch` templates).
+Cluster launchers for the Qwen **four-arm** bakeoff (on top of UNI-D²).
 
-## Qwen block training — two pipelines
+## Four arms
 
-| Pipeline | Scripts | Submit |
-|----------|---------|--------|
-| **1. AR→block** (pretrained Qwen) | `slurm/ar2block_{masked,uniform}.sbatch` | `./scripts/submit_ar2block.sh both` |
-| **2. Pure block** (scratch init) | `slurm/blockgen_{masked,uniform}.sbatch` | `./scripts/submit_blockgen.sh both` |
+| Pipeline | Arms | Submit |
+|----------|------|--------|
+| **AR→block** (pretrained Qwen) | `ar2block_masked`, `ar2block_uniform` | `./scripts/submit_ar2block.sh both` |
+| **Scratch block** | `block_masked`, `block_uniform` | `./scripts/submit_block.sh both` |
 
 ```bash
 ./scripts/submit_ar2block.sh both
-./scripts/submit_blockgen.sh both
-./scripts/resume_block_qwen.sh outputs/block_qwen/masked_<jobid>
-./scripts/resume_block_qwen.sh outputs/block_qwen/blockgen_uniform_<jobid>
+./scripts/submit_block.sh both
+./scripts/resume_block_qwen.sh outputs/block_qwen/<run_dir>
 ```
 
-Shared: `_block_qwen_env.bash`, `_block_qwen_launch.bash`, `_resolve_block_qwen_run.bash`.
+Shared helpers: `_block_qwen_env.bash`, `_block_qwen_launch.bash`, `_block_qwen_ckpt.bash`, `_block_qwen_eval.bash`, `_resolve_block_qwen_run.bash`.
 
-Legacy aliases: `slurm/masked.sbatch`, `slurm/uniform.sbatch` → Pipeline 1.
+Sbatch templates live under `scripts/slurm/` (`ar2block_*.sbatch`, `block_*.sbatch`).  
+Legacy `blockgen_*` / `submit_blockgen.sh` still resolve old run dirs only.
 
-## Other
+## Verify / eval
 
 | Script | Purpose |
 |--------|---------|
-| `train_block_qwen_verify.sbatch` | GPU verification (S0–S6 via `smoke.sh`) |
-| `train_block_qwen_masked.sbatch` | Alias → `slurm/masked.sbatch` |
-| `train_block_qwen_uniform.sbatch` | Alias → `slurm/uniform.sbatch` |
+| `train_block_qwen_verify.sbatch` | GPU verification (`examples/block_qwen/smoke.sh`) |
+| `submit_block_qwen_eval.sh` | Post-train eval wrapper |
+| `slurm/arm_sanity.sbatch`, `pipeline_sanity.sbatch`, `copy_x0_probe.sbatch` | Probes |
 
-Logs: `slurm_logs/%x_%j.out`
+Docs: [docs/BLOCK_PATH.md](../docs/BLOCK_PATH.md).

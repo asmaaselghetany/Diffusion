@@ -1,0 +1,15 @@
+# Decode tok/s for BlockTrainer + BlockSampler (post-train speed bench).
+checkpoint_path: ???
+metrics_path: ./tok_s.json
+device: cuda
+
+# free = unconditional fill; conditional = prompt continuation (lm-eval-like).
+mode: conditional
+prompt: "Question: What is 2+2?\nPlease reason step by step, and put your final answer within \\boxed{}.\n"
+min_new_tokens: 64
+
+batch_size: 1
+num_batches: 4
+warmup_batches: 1
+num_steps: 32
+max_new_tokens: 256

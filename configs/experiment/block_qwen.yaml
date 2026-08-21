@@ -5,9 +5,9 @@
 # Neutral baseline: masked vs uniform differ only via algo= at launch (corruption
 # type). All optional arm-specific training hooks stay off in algo configs.
 #
-# Hyperparams below follow a single-GPU token budget (~2B) inspired by literature
-# (seq 2048, block 32, lr 2e-5, warmup 500). Paper-specific hooks (shift,
-# complementary masks, block-size mixture, ARPC) are documented in
+# Hyperparams match Fast-dLLM 1.5B (seq 2048, block 32, lr 2e-5, warmup 500,
+# global batch 256, 6000 steps ≈ 3.15B tokens via grad accum). Paper-specific
+# hooks (shift, complementary masks, block-size mixture, ARPC) are documented in
 # docs/BLOCK_QWEN_TRAINING.md — enable via HYDRA_OVERRIDES, not this file.
 #
 # Data: Llama-Nemotron post-training SFT (chat+safety+science by default).
@@ -23,6 +23,7 @@ defaults:
     - checkpoint_every_n_steps
     - checkpoint_monitor
     - learning_rate_monitor
+    - seed_checkpoint_resume_step
     - save_last_on_train_end
 
 block_size: 32
@@ -43,7 +44,7 @@ optim:
   eps: 1.0e-8
 
 trainer:
-  max_steps: 7500
+  max_steps: 6000
   devices: 1
   accelerator: cuda
   precision: bf16
@@ -52,28 +53,28 @@ trainer:
   # is post-train via eval_checkpoint.sbatch.
   limit_val_batches: 64
   # Lightning counts *batches*, not optimizer steps. With accumulate_grad_batches
-  # ≈ 64 (global 128 / 2 GPUs), bare 500 was ~every 8 opt steps. Multiply so we
-  # validate every 500 optimizer steps.
+  # ≈ 128 (global 256 / 2 GPUs) or 256 (1 GPU), bare 500 was too frequent.
+  # Multiply so we validate every 500 optimizer steps.
   val_check_interval: ${mul:500, ${trainer.accumulate_grad_batches}}
   log_every_n_steps: 50
 
 loader:
   batch_size: 1
-  global_batch_size: 128
+  global_batch_size: 256
   eval_global_batch_size: 1  # symmetric for masked/uniform fair compare (uniform OOMs at 8)
   num_workers: 4
   pin_memory: true
 
 eval:
-  # Paper-like training loop (Fast-dLLM / BlockGen): train for throughput;
-  # heavy sample/gen-PPL/DepBench eval is post-train via eval_checkpoint.sbatch.
-  # In-train: cheap val metrics every 500 *optimizer* steps only (see
-  # trainer.val_check_interval). No sample generation during train.
+  # Upstream default is generate_samples=true. Off here for Qwen-1.5B / seq-2048
+  # throughput (paper-like train loop). Re-enable like other UNI-D² examples:
+  #   eval.generate_samples=true sampling.num_sample_batches=1
+  # Post-train free-gen/gen-PPL: examples/block_qwen/eval.sh (upstream modules).
   generate_samples: false
   save_validation_samples: false
   compute_perplexity_on_sanity: false
-  # Layer-3 Track 1 diagnostic: log val NLL by α band (AR-init cliff).
-  # Off by default for full 7500; enable on micros via HYDRA_OVERRIDES.
+  # Layer-3 diagnostic: log val NLL/BPD/PPL by α band. Off in yaml; example
+  # scripts turn it on via CLI.
   t_bucketed_nll: false
   collapse_early_stop: false
   collapse_min_step: 500
@@ -93,7 +94,7 @@ wandb:
 callbacks:
   # Periodics (0-N.ckpt) are the resume safety net if last.ckpt truncates.
   # Lightning requires save_top_k=-1 when monitor=None; prune keeps newest 2.
-  # every_n must divide max_steps (7500) or the final step never triggers a
+  # every_n must divide max_steps (6000) or the final step never triggers a
   # periodic save; SaveLastOnTrainEnd covers the remainder as a backstop.
   checkpoint_every_n_steps:
     every_n_train_steps: 500

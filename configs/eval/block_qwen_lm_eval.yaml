@@ -1,0 +1,33 @@
+# Fast-dLLM v2 task suite + code + tok/s (documentation).
+# Runs: examples/block_qwen/lm_eval.sh <ckpt>
+#
+# Reference: https://github.com/NVlabs/Fast-dLLM/blob/main/v2/eval_script.sh
+
+checkpoint_path: ???
+device: cuda
+batch_size: 1
+max_new_tokens: 512
+num_steps: 32
+show_speed: true
+speed_metrics_path: ./tok_s_lm_eval.json
+
+# Task presets (accuracy). Default suite includes HumanEval for code.
+tasks:
+  mmlu:
+    num_fewshot: 5
+    batch_size: 1
+  gpqa_main_n_shot:
+    num_fewshot: null
+    batch_size: 1
+  gsm8k:
+    num_fewshot: 0
+    batch_size: 1
+  minerva_math:
+    num_fewshot: 0
+    batch_size: 1
+  ifeval:
+    num_fewshot: null
+    batch_size: 1
+  humaneval:
+    num_fewshot: null
+    batch_size: 1

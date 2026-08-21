@@ -310,8 +310,8 @@ class BlockTrainer(TrainerBase):
   def _log_t_bucketed_nll(self, x0: torch.Tensor, valid_tokens: torch.Tensor):
     """Layer-3 diagnostic: NLL vs corruption level (AR-init cliff detector).
 
-    Logs ``val/nll_alpha_{lo}_{hi}`` for fixed α bands. Aggregate val/nll
-    alone can hide a high-t cliff on ar2block_uniform.
+    Logs ``val/{nll,bpd,ppl}_alpha_{lo}_{hi}`` for fixed α bands.
+    Aggregate val/nll alone can hide a high-t cliff on ar2block_uniform.
     """
     x0, valid_tokens = self._process_model_input(x0, valid_tokens)
     bsz, seq = x0.shape
@@ -350,8 +350,14 @@ class BlockTrainer(TrainerBase):
         vt = vt[:, 1:]
       weighted = loss * vt
       nll = weighted.sum() / vt.sum().clamp(min=1)
-      key = f'val/nll_alpha_{lo:.2f}_{hi:.2f}'.replace('.', 'p')
-      self.log(key, nll, on_step=False, on_epoch=True, sync_dist=True)
+      band = f'{lo:.2f}_{hi:.2f}'.replace('.', 'p')
+      # NLL plus BPD/PPL (same transforms as aggregate val/{bpd,ppl}).
+      self.log(f'val/nll_alpha_{band}', nll, on_step=False, on_epoch=True,
+               sync_dist=True)
+      self.log(f'val/bpd_alpha_{band}', nll / torch.log(torch.tensor(2.0, device=nll.device)),
+               on_step=False, on_epoch=True, sync_dist=True)
+      self.log(f'val/ppl_alpha_{band}', torch.exp(nll), on_step=False,
+               on_epoch=True, sync_dist=True)
 
 
 __all__ = ['BlockTrainer']

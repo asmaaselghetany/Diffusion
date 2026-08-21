@@ -138,14 +138,17 @@ def main() -> int:
 
   vis = mask_visibility_report(seq, bs)
 
-  # Position ids: HF default on length-2n input is 0..2n-1 (halves not aligned).
+  # Position ids: concat(xt, x0) must share 0..n-1 (Fast-dLLM / BlockGen).
+  from discrete_diffusion.models.qwen.modeling import shared_block_position_ids
+  ids = shared_block_position_ids(seq, 'cpu', batch_size=1)
   pos_note = {
-      'expected_hf_default_on_concat_2n': '0 .. 2n-1 (xt and x0 get different ids)',
-      'same_index_share_position_id': False,
+      'same_index_share_position_id': bool(
+          (ids[0, :seq] == ids[0, seq:]).all().item()),
+      'xt_ids': ids[0, : min(seq, 8)].tolist(),
+      'x0_ids': ids[0, seq: seq + min(seq, 8)].tolist(),
       'note': (
-          'No custom position_ids in QwenBlockForCausalLM.forward — '
-          'halves distinguished by absolute position, not segment embeds. '
-          'Not a same-position copy channel.'
+          'QwenBlockForCausalLM.forward passes shared_block_position_ids: '
+          'both halves use 0..n-1. Stock HF 0..2n-1 is not used.'
       ),
   }
 

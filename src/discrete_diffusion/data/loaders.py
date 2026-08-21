@@ -484,7 +484,12 @@ def _finalize_tokenizer(tokenizer):
         (tokenizer.bos_token, tokenizer.bos_token_id),
         (tokenizer.eos_token, tokenizer.eos_token_id)))
   if tokenizer.bos_token is None:
-    if tokenizer.cls_token is not None:
+    # Qwen/chat models have no BOS; prefer the trained <|im_start|> id
+    # over aliasing EOS (which made free-gen start at <|im_end|>).
+    vocab = tokenizer.get_vocab()
+    if '<|im_start|>' in vocab:
+      tokenizer.bos_token = '<|im_start|>'
+    elif tokenizer.cls_token is not None:
       tokenizer.bos_token = tokenizer.cls_token
     elif tokenizer.eos_token is not None:
       tokenizer.bos_token = tokenizer.eos_token
