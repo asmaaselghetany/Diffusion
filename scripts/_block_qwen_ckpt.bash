@@ -183,3 +183,26 @@ _block_qwen_prepare_last_ckpt() {
   fi
   echo "${last}"
 }
+
+# Print ``<abs_path>\t<global_step>`` for the best ckpt at TARGET step (exact
+# periodic name first, else highest valid ckpt with step <= TARGET).
+_block_qwen_ckpt_at_step() {
+  local ckpt_dir="$1"
+  local target="$2"
+  [[ -d "${ckpt_dir}" ]] || return 1
+  local pick step path
+  for path in "${ckpt_dir}/0-${target}.ckpt" "${ckpt_dir}/1-${target}.ckpt"; do
+    if [[ -f "${path}" ]] && _block_qwen_ckpt_ok "${path}"; then
+      echo "${path}"$'\t'"${target}"
+      return 0
+    fi
+  done
+  pick="$(_block_qwen_pick_highest_ckpt "${ckpt_dir}")" || return 1
+  path="${pick%%$'\t'*}"
+  step="${pick#*$'\t'}"
+  if [[ "${step}" =~ ^[0-9]+$ && "${step}" -le "${target}" ]]; then
+    echo "${path}"$'\t'"${step}"
+    return 0
+  fi
+  return 1
+}

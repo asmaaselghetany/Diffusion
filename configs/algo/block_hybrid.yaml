@@ -1,0 +1,29 @@
+defaults:
+  - /forward_process: block_hybrid
+  - /sampling: block
+  - /noise: log-linear
+
+_target_: discrete_diffusion.algorithms.block_trainer.BlockTrainer
+name: block_hybrid
+forward_process_name: hybrid
+parameterization: subs
+time_conditioning: False
+T: 0
+loss_type: elbo
+ignore_bos: True
+# Fraction of replacements that are Unif(V\{MASK}) vs MASK (B4).
+hybrid_p_uniform: 0.1
+# B4v1 locked decode (DESIGN_LOCKS.md): masked unmask only.
+hybrid_decode: masked
+# Neutral defaults — masked-only hooks refused on hybrid.
+shift_loss_targets: False
+complementary_masks: False
+mask_schedule: alpha
+block_size_mixture: []
+block_weights: null
+block_size_per_gpu: null
+stratified_gamma: null
+pure_noise_block_sizes: []
+loss_type_special_cases: []
+joint_ar_alpha: 0.0
+causal_clean_stream: False

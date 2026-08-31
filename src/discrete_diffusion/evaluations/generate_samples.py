@@ -9,9 +9,8 @@ import hydra
 import torch
 import tqdm
 from pathlib import Path
-from omegaconf import OmegaConf
 
-from discrete_diffusion.data import get_tokenizer
+from discrete_diffusion.evaluations.checkpoint_utils import load_block_trainer_checkpoint
 
 @hydra.main(config_path="../../../configs/eval", config_name="generate_samples", version_base="1.3")
 def main(cfg):
@@ -25,41 +24,10 @@ def main(cfg):
     if not Path(checkpoint_path).exists():
         raise FileNotFoundError(f"Checkpoint not found at {checkpoint_path}")
 
-    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    
-    # Extract config from hyper_parameters
-    if 'hyper_parameters' not in ckpt:
-        raise ValueError("Checkpoint does not contain 'hyper_parameters'. Cannot load config.")
-    
-    if 'config' not in ckpt['hyper_parameters']:
-         raise ValueError("Checkpoint hyper_parameters does not contain 'config'.")
-         
-    model_config = ckpt['hyper_parameters']['config']
-    # Ensure it's an OmegaConf object
-    if not isinstance(model_config, (dict, list, OmegaConf.get_type("DictConfig"), OmegaConf.get_type("ListConfig"))):
-         model_config = OmegaConf.create(model_config)
-    
-    # Get tokenizer
-    print("Loading tokenizer...")
-    tokenizer = get_tokenizer(model_config)
-    
-    # Identify algorithm class
-    algo_target = model_config.algo._target_
-    algo_cls = hydra.utils.get_class(algo_target)
-    print(f"Detected algorithm class: {algo_cls.__name__}")
-
-    # Load model
-    # We need to pass the config and tokenizer as they are init arguments
-    print("Loading model...")
-    model = algo_cls.load_from_checkpoint(
-        checkpoint_path, 
-        config=model_config, 
-        tokenizer=tokenizer,
-        map_location=device
-    )
-    
-    model.to(device)
-    model.eval()
+    print("Loading tokenizer and model...")
+    model, model_config, tokenizer = load_block_trainer_checkpoint(
+        checkpoint_path, device)
+    print(f"Detected algorithm class: {model.__class__.__name__}")
     
     if cfg.torch_compile:
         print("Compiling model...")
@@ -114,4 +82,3 @@ def main(cfg):
 
 if __name__ == "__main__":
     main()
-

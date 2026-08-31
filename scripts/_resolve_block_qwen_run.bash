@@ -32,7 +32,7 @@ resolve_block_qwen_run_dir() {
 
   if [[ "${1:-}" =~ ^(ar2block|block|blockgen)$ ]]; then
     line="${1}"
-    arm="${2:?arm required (masked|uniform)}"
+    arm="${2:?arm required (masked|uniform|hybrid)}"
     job_id="${3:?job_id required}"
   elif [[ "${1:-}" =~ ^(neutral|auto)$ ]]; then
     # Legacy callers: prefer legacy dir, then ar2block.
@@ -56,8 +56,8 @@ resolve_block_qwen_run_dir() {
     return 0
   fi
 
-  if [[ "${arm}" != "masked" && "${arm}" != "uniform" ]]; then
-    echo "Unknown arm: ${arm} (expected masked|uniform)" >&2
+  if [[ "${arm}" != "masked" && "${arm}" != "uniform" && "${arm}" != "hybrid" ]]; then
+    echo "Unknown arm: ${arm} (expected masked|uniform|hybrid)" >&2
     return 1
   fi
 
@@ -74,7 +74,7 @@ resolve_block_qwen_ckpt() {
 # LINE is ar2block|block|blockgen; legacy masked_/uniform_ → ar2block
 parse_block_qwen_run_basename() {
   local name="${1:?}"
-  if [[ "${name}" =~ ^(ar2block|block|blockgen)_(masked|uniform)_([0-9]+)$ ]]; then
+  if [[ "${name}" =~ ^(ar2block|block|blockgen)_(masked|uniform|hybrid)_([0-9]+)$ ]]; then
     echo "${BASH_REMATCH[1]} ${BASH_REMATCH[2]} ${BASH_REMATCH[3]}"
     return 0
   fi

@@ -43,6 +43,24 @@ from omegaconf import OmegaConf
 from tqdm import tqdm
 
 from discrete_diffusion.data import get_tokenizer
+from discrete_diffusion.evaluations.checkpoint_utils import load_block_trainer_checkpoint
+
+
+def encode_context_continuation(tokenizer, context: str, continuation: str):
+  """Split token ids at the context/continuation boundary (BPE-safe)."""
+  ctx_ids = tokenizer(context, add_special_tokens=False)['input_ids']
+  if not continuation:
+    return ctx_ids, []
+  whole_ids = tokenizer(
+      context + continuation, add_special_tokens=False)['input_ids']
+  if whole_ids[:len(ctx_ids)] == ctx_ids:
+    return ctx_ids, whole_ids[len(ctx_ids):]
+  # Last context token merged with continuation (e.g. "The" + "re" → "There").
+  if len(ctx_ids) > 0 and whole_ids[: len(ctx_ids) - 1] == ctx_ids[:-1]:
+    return ctx_ids, whole_ids[len(ctx_ids) - 1 :]
+  raise ValueError(
+      f'Could not align continuation tokens for context={context!r} '
+      f'continuation={continuation!r}')
 
 
 def set_seed(seed: int) -> None:
@@ -55,27 +73,7 @@ def set_seed(seed: int) -> None:
 
 def _load_block_trainer(checkpoint_path: str, device: torch.device):
   """Load a UNI-D² Lightning BlockTrainer ckpt (same path as generate_samples)."""
-  path = Path(checkpoint_path).expanduser().resolve()
-  if not path.is_file():
-    raise FileNotFoundError(f'checkpoint not found: {path}')
-  ckpt = torch.load(path, map_location='cpu', weights_only=False)
-  if 'hyper_parameters' not in ckpt or 'config' not in ckpt['hyper_parameters']:
-    raise ValueError(f'{path} missing hyper_parameters.config')
-  config = ckpt['hyper_parameters']['config']
-  if not OmegaConf.is_config(config):
-    config = OmegaConf.create(config)
-  tokenizer = get_tokenizer(config)
-  algo_target = config.algo._target_
-  algo_cls = hydra.utils.get_class(algo_target)
-  model = algo_cls.load_from_checkpoint(
-      str(path),
-      config=config,
-      tokenizer=tokenizer,
-      map_location=device,
-  )
-  model.to(device)
-  model.eval()
-  return model, config, tokenizer
+  return load_block_trainer_checkpoint(checkpoint_path, device)
 
 
 def _as_bool(v) -> bool:
@@ -128,8 +126,12 @@ class BlockQwenEvalHarness(LM):
     self._speed_tokens = 0
     self._speed_elapsed = 0.0
     self._sampler = self.model._create_sampler()
-    if self._sampler is None:
-      raise RuntimeError('BlockTrainer has no configured BlockSampler')
+    self._is_causal_ar = self._sampler is None
+    if self._is_causal_ar:
+      mode = getattr(self.model.backbone, 'forward_mode', None)
+      if mode != 'causal':
+        raise RuntimeError(
+            'Checkpoint has no BlockSampler and is not causal AR (C3).')
 
   @property
   def device(self):
@@ -158,10 +160,7 @@ class BlockQwenEvalHarness(LM):
     raise NotImplementedError
 
   def _encode_pair(self, context: str, continuation: str):
-    whole = self.tokenizer(context + continuation, add_special_tokens=False)[
-        'input_ids']
-    ctx = self.tokenizer(context, add_special_tokens=False)['input_ids']
-    return ctx, whole[len(ctx):]
+    return encode_context_continuation(self.tokenizer, context, continuation)
 
   @torch.no_grad()
   def get_loglikelihood(self, prefix, target) -> float:
@@ -204,16 +203,56 @@ class BlockQwenEvalHarness(LM):
       torch.cuda.empty_cache()
     return out
 
+  def _parse_gen_kwargs(self, req) -> dict:
+    if len(req.args) >= 2 and isinstance(req.args[1], dict):
+      return req.args[1]
+    return {}
+
+  @staticmethod
+  def _normalize_gen_kwargs(gen_kwargs: dict, default_max: int):
+    max_gen = int(gen_kwargs.get('max_gen_toks', default_max))
+    until = gen_kwargs.get('until', [])
+    if until is None:
+      until = []
+    elif isinstance(until, str):
+      until = [until]
+    greedy = not bool(gen_kwargs.get('do_sample', False))
+    return max_gen, list(until), greedy
+
+  @staticmethod
+  def _truncate_at_stop(text: str, until: list[str]) -> str:
+    if not until:
+      return text
+    end = len(text)
+    for stop in until:
+      if not stop:
+        continue
+      idx = text.find(stop)
+      if idx != -1:
+        end = min(end, idx)
+    return text[:end]
+
   @torch.no_grad()
-  def _generate_batch(self, questions: list[str]) -> tuple[list[str], int, float]:
+  def _generate_batch(
+      self,
+      questions: list[str],
+      *,
+      max_new_tokens: int | None = None,
+      until: list[str] | None = None,
+      greedy: bool = True,
+  ) -> tuple[list[str], int, float]:
+    max_new = int(max_new_tokens or self.max_new_tokens)
+    until = until or []
     encoded = [
         self.tokenizer(q, add_special_tokens=False, return_tensors='pt')[
             'input_ids'][0]
         for q in questions
     ]
-    # Truncate prompts so at least max_new_tokens (or 1) remain.
-    max_prefix = max(1, self.seq_len - max(self.max_new_tokens, 1))
-    encoded = [ids[:max_prefix] for ids in encoded]
+    # Left-truncate prompts so the tail (question) is kept.
+    max_prefix = max(1, self.seq_len - max(1, max_new))
+    encoded = [
+        ids[-max_prefix:] if ids.numel() > max_prefix else ids
+        for ids in encoded]
     max_len = max(int(ids.numel()) for ids in encoded)
     padded = []
     lengths = []
@@ -232,24 +271,40 @@ class BlockQwenEvalHarness(LM):
     t0 = time.perf_counter()
     for i, plen in enumerate(lengths):
       prefix = prefix_batch[i:i + 1, :plen]
-      samples = self._sampler.generate(
-          self.model,
-          num_samples=1,
-          num_steps=self.num_steps,
-          eps=None,
-          inject_bos=False,
-          prefix_ids=prefix,
-          max_new_tokens=self.max_new_tokens,
-      )
-      cont = samples[0, plen:plen + self.max_new_tokens]
+      if self._is_causal_ar:
+        out = self.model.backbone.model.generate(
+            prefix,
+            max_new_tokens=max_new,
+            do_sample=not greedy,
+            top_p=float(getattr(self.config.sampling, 'p_nucleus', 0.9)),
+            pad_token_id=self.tokenizer.pad_token_id or self.tokenizer.eos_token_id,
+            eos_token_id=self.tokenizer.eos_token_id,
+        )
+        cont = out[0, plen:plen + max_new]
+      else:
+        samples = self._sampler.generate(
+            self.model,
+            num_samples=1,
+            num_steps=self.num_steps,
+            eps=None,
+            inject_bos=False,
+            prefix_ids=prefix,
+            max_new_tokens=max_new,
+            greedy=greedy,
+        )
+        cont = samples[0, plen:plen + max_new]
       eos = self.tokenizer.eos_token_id
       if eos is not None:
         eos_hits = (cont == eos).nonzero(as_tuple=False)
         if eos_hits.numel() > 0:
           cont = cont[: int(eos_hits[0]) + 1]
       # Count non-mask continuation tokens for tok/s.
-      n_tokens += int((cont != self.mask_id).sum().item())
+      if self._is_causal_ar:
+        n_tokens += int(cont.numel())
+      else:
+        n_tokens += int((cont != self.mask_id).sum().item())
       text = self.tokenizer.decode(cont, skip_special_tokens=True)
+      text = self._truncate_at_stop(text, until)
       answers.append(text)
     if self._device.type == 'cuda' and torch.cuda.is_available():
       torch.cuda.synchronize(self._device)
@@ -286,46 +341,55 @@ class BlockQwenEvalHarness(LM):
 
   def generate_until(self, requests):
     output = [None] * len(requests)
-    indexed = list(enumerate(requests))
-    indexed.sort(key=lambda x: len(x[1].args[0]))
-
-    batches: list[list[tuple[int, object]]] = []
-    cur: list[tuple[int, object]] = []
-    for item in indexed:
-      cur.append(item)
-      if len(cur) >= self.batch_size:
-        batches.append(cur)
-        cur = []
-    if cur:
-      batches.append(cur)
+    # Group by generation kwargs (lm-eval contract).
+    buckets: dict[tuple, list[tuple[int, object]]] = {}
+    for idx, req in enumerate(requests):
+      gen_kwargs = self._parse_gen_kwargs(req)
+      key = (
+          int(gen_kwargs.get('max_gen_toks', self.max_new_tokens)),
+          tuple(gen_kwargs.get('until') or ()),
+          bool(gen_kwargs.get('do_sample', False)),
+      )
+      buckets.setdefault(key, []).append((idx, req))
 
     self._speed_tokens = 0
     self._speed_elapsed = 0.0
-    for batch in tqdm(batches, desc='block_qwen generate_until'):
-      questions = []
-      for _, req in batch:
-        q = req.args[0]
-        if req.task_name.startswith('minerva_math'):
-          q = q.replace(
-              'Solution:',
-              'Please reason step by step, and put your final answer '
-              'within \\boxed{}.')
-        elif req.task_name.startswith('gsm8k'):
-          q = q.replace(
-              'Answer:',
-              'Please reason step by step, and put your final answer '
-              'within \\boxed{}.')
-        questions.append(q)
-      answers, n_tok, elapsed = self._generate_batch(questions)
-      self._speed_tokens += n_tok
-      self._speed_elapsed += elapsed
-      for (orig_idx, req), ans in zip(batch, answers):
-        output[orig_idx] = ans
-        print('=' * 20)
-        print('question:', req.args[0][:200])
-        print('answer:', ans[:500])
-        print('=' * 20, end='\n\n')
-      torch.cuda.empty_cache()
+    for key, batch in buckets.items():
+      max_gen, until_tuple, do_sample = key
+      until = list(until_tuple)
+      greedy = not do_sample
+      batch.sort(key=lambda x: len(x[1].args[0]))
+      for start in range(0, len(batch), self.batch_size):
+        chunk = batch[start:start + self.batch_size]
+        questions = []
+        for _, req in chunk:
+          q = req.args[0]
+          if req.task_name.startswith('minerva_math'):
+            q = q.replace(
+                'Solution:',
+                'Please reason step by step, and put your final answer '
+                'within \\boxed{}.')
+          elif req.task_name.startswith('gsm8k'):
+            q = q.replace(
+                'Answer:',
+                'Please reason step by step, and put your final answer '
+                'within \\boxed{}.')
+          questions.append(q)
+        answers, n_tok, elapsed = self._generate_batch(
+            questions,
+            max_new_tokens=max_gen,
+            until=until,
+            greedy=greedy,
+        )
+        self._speed_tokens += n_tok
+        self._speed_elapsed += elapsed
+        for (orig_idx, req), ans in zip(chunk, answers):
+          output[orig_idx] = ans
+          print('=' * 20)
+          print('question:', req.args[0][:200])
+          print('answer:', ans[:500])
+          print('=' * 20, end='\n\n')
+        torch.cuda.empty_cache()
 
     self._write_speed_metrics()
     return output

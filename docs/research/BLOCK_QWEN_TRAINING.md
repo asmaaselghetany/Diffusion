@@ -15,25 +15,45 @@ on the neutral recipe without a row + go/no-go there.
 | Hook | Config key | Neutral value | Used in literature |
 |------|------------|---------------|-------------------|
 | Token shift at loss | `algo.shift_loss_targets` | `false` | Fast-dLLM v2 (arxiv [2509.26328](https://arxiv.org/abs/2509.26328)); also in this repo’s MDLM path |
-| Complementary per-block masks | `algo.complementary_masks` | `false` | Fast-dLLM v2; Li et al. 2025b (cited there) |
-| Multi block-size training | `algo.block_size_mixture` | `[]` | BlockGen (arxiv [2606.02241](https://arxiv.org/abs/2606.02241)) |
-| Stratified block-size / timestep draw | `algo.stratified_gamma` | `null` | BlockGen §3.2 |
-| AR-informed predictor–corrector | `sampling.use_arpc` | `false` | BlockGen §3.3 (uniform decode) |
+| Complementary paired masks | `algo.complementary_masks` | `false` | Fast-dLLM v2 — **paired `m`/`~m`** via two sequential forwards (not polarity flip; not 2B batch) |
+| Fast-dLLM mask schedule | `algo.mask_schedule` | `alpha` | Fast-dLLM: set `fast_dllm` for `p=(1-ε)t+ε` |
+| Multi block-size (list) | `algo.block_size_mixture` | `[]` | BlockGen analogue (uniform list draw) |
+| Weighted `2^k` mixture | `algo.block_weights` | `null` | BlockGen (XOR with list mixture) |
+| Block-size per GPU | `algo.block_size_per_gpu` | `null` | BlockGen `same\|random\|u-stratified` |
+| Stratified timestep draw | `algo.stratified_gamma` | `null` | Ours (≠ BlockGen u-stratified) |
+| Pure noise at sizes | `algo.pure_noise_block_sizes` | `[]` | BlockGen |
+| Per-size loss override | `algo.loss_type_special_cases` | `[]` | BlockGen e.g. `[1,ce]` |
+| AR-informed PC | `sampling.use_arpc` / `arpc_mode` | `false` / `simplified` | BlockGen §3.3 (`simplified`\|`blockgen` + corruption modes; uniform; needs size 1) |
+| Sub-block decode window | `sampling.sub_block_size` | `null` | Fast-dLLM `small_block_size` analogue |
+| Hierarchical / progressive KV | `sampling.hierarchical_kv` | `false` | Truncated dual-stream (+ causal KV for ARPC) |
+| DualCache splice | `sampling.use_block_cache` | `false` | Requires `hierarchical_kv`; K/V-only approx |
+| Joint AR (C5) | `algo.joint_ar_alpha` | `0` | `L_AR + α L_diff`; epoch `val/nll` stays diffusion-only — use `val/joint_nll` |
+| Causal clean AR | `algo.causal_clean_stream` | `false` | Requires `joint_ar_alpha>0`; true causal NLD-style stream |
+| Hybrid p_uniform (B4) | `algo.hybrid_p_uniform` | `0.1` | Hybrid arm only; `hybrid_p10` pins default |
 
-**Not implemented** (would require separate experiments, not neutral hooks): Fast-dLLM partial within-block masking, sub-block size 8, hierarchical KV cache; 64-GPU DeepSpeed.
+**Optional fidelity (default off):** BlockGen full ARPC (`arpc_mode=blockgen`); hierarchical truncate (`hierarchical_kv`); DualCache (`use_block_cache` via lever `dual_cache`).
 
 ### Enable a reference recipe (optional)
 
-Do **not** put arm-specific hooks in `block_qwen.yaml` — Hydra dot-keys at experiment root (`algo.shift_loss_targets: true`) do not merge into `config.algo`. Pass overrides at launch:
+Do **not** put arm-specific hooks in `block_qwen.yaml` — Hydra dot-keys at experiment root (`algo.shift_loss_targets: true`) do not merge into `config.algo`. Prefer the **lever registry**:
 
 ```bash
-# Fast-dLLM-style masked training hooks
-HYDRA_OVERRIDES="algo.shift_loss_targets=true algo.complementary_masks=true" \
-  sbatch scripts/slurm/masked.sbatch
+# Fast-dLLM-style (corrected complementary)
+./scripts/submit_lever.sh --preset fdllm --arm masked
 
-# BlockGen-style uniform extras (fixed block 32 still; mixture adds more sizes)
-HYDRA_OVERRIDES="algo.block_size_mixture=[16,32] algo.stratified_gamma=0.5 sampling.use_arpc=true" \
-  sbatch scripts/slurm/uniform.sbatch
+# BlockGen-style uniform extras
+./scripts/submit_lever.sh --preset blockgen_uniform --arm uniform
+
+# List / dry-run
+./scripts/submit_lever.sh --list
+./scripts/submit_lever.sh --preset fdllm_shift_only --arm masked --dry-run
+```
+
+Legacy: pass overrides at launch only if you know what you are doing — registry validation will not run:
+
+```bash
+HYDRA_OVERRIDES="algo.shift_loss_targets=true algo.complementary_masks=true" \
+  sbatch scripts/slurm/ar2block_masked.sbatch
 ```
 
 Verify in the SLURM log that flags appear **inside** the `algo:` struct, not as orphaned root keys.

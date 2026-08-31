@@ -127,6 +127,32 @@ class _Outer(nn.Module):
     self.model = _Inner()
 
 
+def test_padding_mask_blocks_pad_positions():
+  from discrete_diffusion.models.block_mask import apply_padding_to_sdpa_mask
+  n, b = 8, 4
+  base = build_sdpa_mask(n, b, device='cpu', dtype=torch.float32)
+  pad = torch.tensor([[1, 1, 1, 1, 1, 1, 0, 0]], dtype=torch.long)
+  out = apply_padding_to_sdpa_mask(base, pad, n)
+  assert out.shape[0] == 1
+  # Pad query row must be fully blocked (additive mask uses finfo.min, not -inf).
+  assert (out[0, 0, 6] <= -1e30).all()
+  # Valid query must still attend somewhere.
+  assert (out[0, 0, 0] == 0).any()
+
+
+def test_attention_hook_respects_padding_mask():
+  outer = _Outer()
+  n, b = 8, 4
+  x = torch.zeros(1, 2 * n, 4)
+  pad = torch.ones(1, n, dtype=torch.long)
+  pad[0, -2:] = 0
+  with block_diff_attention_mask(outer, n, b, x.device, x.dtype, padding_mask=pad):
+    out = outer.model._update_causal_mask(
+        pad, x, None, None, output_attentions=False)
+  assert out.shape[0] == 1
+  assert (out[0, 0, n + 6] <= -1e30).all()
+
+
 def test_attention_hook_installs_block_sdpa_mask():
   """Patched _update_causal_mask must return block SDPA mask, not causal zeros."""
   outer = _Outer()

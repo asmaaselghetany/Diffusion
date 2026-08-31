@@ -53,10 +53,41 @@ def build_sdpa_mask(
     block_size: int,
     device: torch.device | str = 'cpu',
     dtype: torch.dtype = torch.float32,
+    padding_mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
   allowed = build_block_diff_bool_mask(n, block_size, device)
   mask = torch.zeros((1, 1, n * 2, n * 2), device=device, dtype=dtype)
-  return mask.masked_fill(~allowed, float('-inf'))
+  mask = mask.masked_fill(~allowed, float('-inf'))
+  return apply_padding_to_sdpa_mask(mask, padding_mask, n)
+
+
+def apply_padding_to_sdpa_mask(
+    sdpa_mask: torch.Tensor,
+    padding_mask: torch.Tensor | None,
+    n: int,
+) -> torch.Tensor:
+  """Block attention to/from padded positions on the ``2n`` concat grid."""
+  if padding_mask is None:
+    return sdpa_mask
+  finfo_min = torch.finfo(sdpa_mask.dtype).min
+  pad = padding_mask
+  if pad.dtype != torch.bool:
+    pad = pad != 0
+  if pad.shape[-1] == n:
+    pad = torch.cat([pad, pad], dim=-1)
+  elif pad.shape[-1] != 2 * n:
+    raise ValueError(
+        f'padding_mask last dim {pad.shape[-1]} must equal n={n} or 2n={2 * n}')
+  batch = pad.shape[0]
+  if sdpa_mask.shape[0] == 1 and batch > 1:
+    base = sdpa_mask.expand(batch, -1, -1, -1).clone()
+  elif sdpa_mask.shape[0] == batch:
+    base = sdpa_mask
+  else:
+    base = sdpa_mask.expand(batch, -1, -1, -1).clone()
+  bad_q = (~pad).unsqueeze(1).unsqueeze(-1)
+  bad_k = (~pad).unsqueeze(1).unsqueeze(-2)
+  return base.masked_fill(bad_q, finfo_min).masked_fill(bad_k, finfo_min)
 
 
 def build_causal_bool_mask(seq_len: int, device: torch.device | str = 'cpu') -> torch.Tensor:

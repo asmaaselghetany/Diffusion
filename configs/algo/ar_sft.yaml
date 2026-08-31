@@ -1,0 +1,11 @@
+# Matched AR SFT (paper cell C3) — causal next-token on Qwen Instruct.
+# Pair with experiment=block_qwen (same data / steps / LR / batch).
+
+_target_: discrete_diffusion.algorithms.ar_sft.ArSftTrainer
+name: ar_sft
+parameterization: ar
+time_conditioning: False
+T: 0
+loss_type: elbo
+ignore_bos: True
+forward_process_name: none

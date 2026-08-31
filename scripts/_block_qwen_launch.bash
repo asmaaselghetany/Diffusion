@@ -9,16 +9,18 @@
 # Usage (from repo root, after sourcing _block_qwen_env.bash):
 #   LINE=ar2block scripts/_block_qwen_launch.bash masked
 #   LINE=block scripts/_block_qwen_launch.bash uniform
+#   LINE=ar2block scripts/_block_qwen_launch.bash hybrid
 
 set -euo pipefail
 
-ARM="${1:?Usage: _block_qwen_launch.bash <masked|uniform>}"
+ARM="${1:?Usage: _block_qwen_launch.bash <masked|uniform|hybrid>}"
 
 case "${ARM}" in
   masked)  ALGO=block_masked ;;
   uniform) ALGO=block_uniform ;;
+  hybrid)  ALGO=block_hybrid ;;
   *)
-    echo "Unknown arm: ${ARM} (expected masked or uniform)" >&2
+    echo "Unknown arm: ${ARM} (expected masked, uniform, or hybrid)" >&2
     exit 1
     ;;
 esac

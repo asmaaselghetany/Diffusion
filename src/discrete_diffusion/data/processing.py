@@ -14,6 +14,7 @@ __all__ = [
     "lambada_detokenizer",
     "scientific_papers_detokenizer",
     "_apply_detokenizer",
+    "_pad_example_to_attention_blocks",
     "_group_texts",
 ]
 
@@ -103,8 +104,34 @@ def _apply_detokenizer(detokenizer):
   return detok
 
 
-def _group_texts(examples, block_size, bos, eos, insert_special_tokens=True):
-  concatenated_examples = list(itertools.chain(* examples['input_ids']))
+def _pad_example_to_attention_blocks(
+    token_ids: list[int],
+    attention_block_size: int,
+    pad_id: int,
+) -> list[int]:
+  """Pad one example so its length is a multiple of the diffusion block size."""
+  if attention_block_size <= 1:
+    return token_ids
+  rem = len(token_ids) % attention_block_size
+  if rem == 0:
+    return token_ids
+  return token_ids + [pad_id] * (attention_block_size - rem)
+
+
+def _group_texts(
+    examples,
+    block_size,
+    bos,
+    eos,
+    insert_special_tokens=True,
+    attention_block_size: int = 1,
+    pad_id: int = 0,
+):
+  padded_sequences = [
+      _pad_example_to_attention_blocks(seq, attention_block_size, pad_id)
+      for seq in examples['input_ids']
+  ]
+  concatenated_examples = list(itertools.chain(*padded_sequences))
   total_length = len(concatenated_examples)
   if insert_special_tokens:
     new_block_size = block_size - 2
@@ -116,15 +143,15 @@ def _group_texts(examples, block_size, bos, eos, insert_special_tokens=True):
   _attn_masks = []
   for i in range(0, total_length, new_block_size):
     if insert_special_tokens:
-      _values.append(
-        [bos]
-        + concatenated_examples[i : i + new_block_size]
-        + [eos])
+      chunk = (
+          [bos]
+          + concatenated_examples[i : i + new_block_size]
+          + [eos])
     else:
-      _values.append(
-        concatenated_examples[i : i + new_block_size]
-      )
-    _attn_masks.append(torch.ones(block_size))
+      chunk = concatenated_examples[i : i + new_block_size]
+    _values.append(chunk)
+    mask = [0 if tid == pad_id else 1 for tid in chunk]
+    _attn_masks.append(torch.tensor(mask, dtype=torch.long))
   result['input_ids'] = _values
   result['attention_mask'] = _attn_masks
   return result

@@ -21,24 +21,7 @@ import hydra
 import torch
 from omegaconf import DictConfig, OmegaConf
 
-from discrete_diffusion.data import get_tokenizer
-
-
-def _load_model(checkpoint_path: str, device: torch.device):
-  path = Path(hydra.utils.to_absolute_path(checkpoint_path))
-  if not path.is_file():
-    raise FileNotFoundError(path)
-  ckpt = torch.load(path, map_location='cpu', weights_only=False)
-  config = ckpt['hyper_parameters']['config']
-  if not OmegaConf.is_config(config):
-    config = OmegaConf.create(config)
-  tokenizer = get_tokenizer(config)
-  algo_cls = hydra.utils.get_class(config.algo._target_)
-  model = algo_cls.load_from_checkpoint(
-      str(path), config=config, tokenizer=tokenizer, map_location=device)
-  model.to(device)
-  model.eval()
-  return model, config, tokenizer
+from discrete_diffusion.evaluations.checkpoint_utils import load_block_trainer_checkpoint
 
 
 def _sync(device: torch.device) -> None:
@@ -109,7 +92,8 @@ def main(cfg: DictConfig) -> None:
       cfg.device if torch.cuda.is_available() or cfg.device == 'cpu' else 'cpu')
   torch.set_grad_enabled(False)
 
-  model, config, tokenizer = _load_model(cfg.checkpoint_path, device)
+  model, config, tokenizer = load_block_trainer_checkpoint(
+      hydra.utils.to_absolute_path(cfg.checkpoint_path), device)
   sampler = model._create_sampler()
   if sampler is None:
     raise RuntimeError('no BlockSampler configured on checkpoint')

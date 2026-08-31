@@ -10,18 +10,18 @@ Read date: 2026-08-06. **Do not launch these levers until Track 1 1500 (`138143`
 | Corruption | Uniform-state (Duo-style) via `BlockGenUniform` | `BlockUniformForwardProcess` + DUO/UDLM NLL — aligned in spirit |
 | Default `loss_type` | **`elbo`** (`configs/algo/blockgen-uniform.yaml`) | `loss_type: elbo` — **already on**; not a lever micro |
 | Special cases | `loss_type_special_cases` can force CE per block size; eval prefers ELBO for \(L'>1\) | We always ELBO on uniform; paper note: unweighted CE underperforms NELBO for uniform \(L'>4\) |
-| Block sizes | Mixture via `block_weights` over **powers of 2** (`get_block_size` → `2**log_block_size`) | Fixed `block_size=32`; optional `algo.block_size_mixture` (uniform draw over list — **not** their weighted \(2^k\) / `u-stratified`) |
-| Stratified block-size draw | `block_size_per_gpu: u-stratified` — stratifies **which block size** each GPU/accum step sees | **Not implemented.** Do not confuse with `algo.stratified_gamma` |
+| Block sizes | Mixture via `block_weights` over **powers of 2** (`get_block_size` → `2**log_block_size`) | Fixed `block_size=32`; optional `algo.block_size_mixture` (uniform list) **or** `algo.block_weights` + `block_size_per_gpu` |
+| Stratified block-size draw | `block_size_per_gpu: u-stratified` — stratifies **which block size** each GPU/accum step sees | **Implemented** via lever `u_stratified` (`block_geometry.py`); requires a `bg_weights_*` lever |
 | Timestep / γ | Continuous `T: 0`; their “stratified” in code is the block-size path above | `algo.stratified_gamma` = **noise-level (t) stratification** within a fixed block — different axis |
 | Scale | 170M DiT, 250k–1M steps, batch 512, LR 3e-4 | 1.5B Qwen, micros 500–1500, batch 128, LR 2e-5 |
-| Decode | Ancestral + **ARPC** (needs mixture including block size 1) | `sampling.use_arpc`; keep off until mixture includes 1 |
+| Decode | Ancestral + **ARPC** (needs mixture including block size 1) | `sampling.use_arpc` / `arpc_blockgen`; keep off until mixture includes 1 |
 
 ### Name collision (do not conflate)
 
 | Name in older notes | Actual axis | Ours / BlockGen |
 |---------------------|-------------|-----------------|
-| “stratified γ” (BlockGen-flavored) | **block-size** draw across GPUs (`u-stratified`) | BlockGen only; we have no knob |
-| `algo.stratified_gamma` | **timestep / noise level** within block | Ours only |
+| “stratified γ” (BlockGen-flavored) | **block-size** draw across GPUs (`u-stratified`) | Lever `u_stratified` + `bg_weights_*` |
+| `algo.stratified_gamma` | **timestep / noise level** within block | Ours only (`t_strat_05`) |
 
 ## Mapping to our Hydra knobs (single-factor micros)
 
@@ -36,7 +36,7 @@ Script: `uni-d2/scripts/submit_blockgen_lever_micro.sh`
 
 **Not a lever:** `loss_type=elbo` — already default on both arms. Switching *to* CE would be an anti-BlockGen ablation, not a BlockGen-derived rescue.
 
-**Do not copy blindly:** their `u-stratified` multi-GPU schedule, adaLN DiT backbone, TinyGSM/OWT scale, or ARPC without size-1 in the mixture.
+Prefer `./scripts/submit_lever.sh` (registry) over legacy `submit_blockgen_lever_micro.sh`. Example: `--levers bg_weights_1_16,u_stratified,pure_noise_1`.
 
 ## Pre-registered launch order (after 1500 readout)
 

@@ -5,6 +5,8 @@ Not part of the upstream UNI-D² docs layout.
 
 | Doc | Role |
 |-----|------|
+| [PAPER_EXPERIMENTS.md](PAPER_EXPERIMENTS.md) | **Thesis experiments:** AR→block design space (A–E) + longitudinal eval bundles |
+| [DESIGN_LOCKS.md](DESIGN_LOCKS.md) | Closed design decisions (B4v1, DualCache, C5 streams, tok/s) |
 | [FOUR_ARMS_DIRECTIONS.md](FOUR_ARMS_DIRECTIONS.md) | Status of the four clean-graph arms + follow-on directions |
 | [BLOCK_QWEN_TRAINING.md](BLOCK_QWEN_TRAINING.md) | Cluster launch / eval details |
 | [LEVERS.md](LEVERS.md) | Lever registry (hooks off by default) |

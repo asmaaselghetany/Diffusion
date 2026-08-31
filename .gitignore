@@ -20,9 +20,7 @@ slurm_scripts/
 !examples/**/*.sh
 !scripts/**/*.sh
 !scripts/**/*.bash
-tests/
-!tests/test_block*.py
-!tests/test_qwen*.py
+# Unit tests are tracked; pytest cache is ignored via .pytest_cache/
 plans/
 
 gifs/
@@ -39,6 +37,7 @@ datasets/
 # Model outputs and checkpoints
 outputs/
 slurm_logs/
+slurm_logs
 *.ckpt
 *.pth
 *.pt

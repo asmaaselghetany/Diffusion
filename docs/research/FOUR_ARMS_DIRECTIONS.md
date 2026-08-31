@@ -1,8 +1,8 @@
 # Four-arm `block_qwen` bakeoff — status and directions
 
 Scope of this note: **only** the four clean-graph arms and the follow-on
-directions discussed for turning that line into a paper. No DepBench thesis,
-growblock, or other side tracks.
+directions for turning that line into a **thesis chapter** (main baseline +
+extras). No DepBench thesis, growblock, or other side tracks.
 
 Canonical WandB (eval + samples + curves):  
 https://wandb.ai/asmaaselghetany-elghitany/block_qwen_final
@@ -29,8 +29,8 @@ Shared neutral recipe (`configs/experiment/block_qwen.yaml` + hooks **off**):
 
 **Design intent:** controlled 2×2 (init × corruption). Literature anchors:
 Fast-dLLM-style AR→**masked** block; BlockGen-style scratch masked/**uniform**;
-AR→**uniform** block still sparse. Neutral bakeoff deliberately omits paper hooks
-(see `LEVERS.md`).
+AR→**uniform** block still sparse. Neutral bakeoff deliberately omits Fast-dLLM
+hooks (see `LEVERS.md`).
 
 ---
 
@@ -74,7 +74,7 @@ If quality jumps → soup was recipe. If still soup → hunt soft impl gaps.
 ### D0 — Keep the four as baseline (no new claim)
 
 Use current runs as **Fig.1 / Table.1**: matched skeleton, hooks off, generation fails.
-Paper contribution lives in D1–D3 below, not in these numbers alone.
+Thesis contribution lives in D1–D3 below, not in these numbers alone.
 
 ### D1 — Scale-only (both arms)
 
@@ -86,7 +86,7 @@ Fast-dLLM throughput (~batch 256, ~6k steps, ~3B tokens in their writeup).
 
 Corruption-agnostic; preserves fair masked↔uniform compare.
 
-### D2 — Recipe / lever transfer study (recommended paper spine)
+### D2 — Recipe / lever transfer study (recommended thesis spine)
 
 **Framing:** *Published block systems work because of recipe, not the skeleton alone —
 and recipe pieces are not all corruption-symmetric.*
@@ -114,7 +114,8 @@ Only after **at least AR-masked** clears a fluency gate under a declared recipe:
 re-run (or resume) the full 2×2 under **agnostic** levers only, and report masked vs
 uniform fairly.
 
-Without that gate, a “matched bakeoff paper” from soup is not viable.
+Without that gate, a matched four-arm bakeoff from soup is not viable as a thesis
+section.
 
 ### D4 — Positive control (decision experiment)
 
@@ -148,8 +149,8 @@ Details: `docs/research/LEVERS.md`, `docs/research/BLOCKGEN_LEVERS.md`, `docs/re
 
 1. Freeze current four arms as **hooks-off baseline** (done).  
 2. Run **D4** (or D1 then D4) before claiming anything about “implementation vs recipe.”  
-3. If positive control works → **D2** as the paper; use **D3** only once fluency exists.  
-4. Do **not** turn on all Fast-dLLM knobs on masked only and call that the four-arm paper.
+3. If positive control works → **D2** as the thesis spine; use **D3** only once fluency exists.  
+4. Do **not** turn on all Fast-dLLM knobs on masked only and call that the four-arm thesis baseline.
 
 ---
 

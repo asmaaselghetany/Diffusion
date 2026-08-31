@@ -18,16 +18,23 @@ def block_diff_attention_mask(
     block_size: int,
     device: torch.device,
     dtype: torch.dtype,
+    padding_mask: torch.Tensor | None = None,
 ) -> Iterator[None]:
   assert_block_attention_hook_compatible(model)
   inner = model.model if hasattr(model, 'model') else model
-  additive = build_sdpa_mask(n, block_size, device=device, dtype=dtype)
+  additive = build_sdpa_mask(
+      n, block_size, device=device, dtype=dtype, padding_mask=padding_mask)
   original = inner._update_causal_mask
 
   def _patched(attention_mask, input_tensor, cache_position, past_key_values,
                output_attentions: bool = False):
-    del attention_mask, cache_position, past_key_values, output_attentions
-    return additive.to(dtype=input_tensor.dtype, device=input_tensor.device)
+    del cache_position, past_key_values, output_attentions
+    # Prefer explicit padding_mask from the trainer; fall back to HF mask.
+    pad = padding_mask if padding_mask is not None else attention_mask
+    out = build_sdpa_mask(
+        n, block_size, device=input_tensor.device, dtype=input_tensor.dtype,
+        padding_mask=pad)
+    return out.to(dtype=input_tensor.dtype, device=input_tensor.device)
 
   inner._update_causal_mask = _patched
   try:

@@ -1,0 +1,23 @@
+shift_loss_targets: False
+complementary_masks: False
+# alpha = 1-alpha_t(t); fast_dllm = (1-eps)*t+eps (Fast-dLLM v2 modeling.py)
+mask_schedule: alpha
+block_size_mixture: []
+# BlockGen weighted 2^k mixture (mutually exclusive with block_size_mixture).
+# Example: "0.05 0.0 0.0 0.0 0.95" → 5% size 1, 95% size 16.
+block_weights: null
+# same | random | u-stratified — only with block_weights
+block_size_per_gpu: null
+stratified_gamma: null
+# Force t=1 (full prior) when training at these block sizes (BlockGen).
+pure_noise_block_sizes: []
+# Flat list [size, type, ...] or mapping; types: elbo | ce | ce-noisy
+loss_type_special_cases: []
+# NLD joint AR: L = L_AR + alpha * L_diff (0 = off).
+joint_ar_alpha: 0.0
+# True → AR term uses token-causal HF forward (C5_causal_clean).
+causal_clean_stream: False
+loss_weighting: elbo  # elbo | plain_ce (Fast-dLLM complementary uses plain_ce)
+hybrid_p_uniform: 0.1
+# B4v1 locked decode (DESIGN_LOCKS.md).
+hybrid_decode: masked

@@ -79,12 +79,18 @@ class QwenBlockForCausalLM(nn.Module):
     return len(matched) / max(len(own), 1), sorted(own - other), sorted(other - own)
 
   def forward(self, indices, sigma=None, sample_mode=False, store_kv=False,
-              block_size: int | None = None):
+              block_size: int | None = None, return_both: bool = False,
+              active_len: int | None = None, attention_mask: torch.Tensor | None = None):
     del sigma, sample_mode, store_kv
     if self.forward_mode == 'causal':
+      if return_both:
+        raise ValueError('return_both is only valid in block_diff mode')
       return self.model(input_ids=indices, use_cache=False).logits
 
-    n = self.n_tokens
+    n = int(active_len) if active_len is not None else self.n_tokens
+    if active_len is not None and not (1 <= n <= self.n_tokens):
+      raise ValueError(
+          f'active_len={active_len} must be in [1, n_tokens={self.n_tokens}]')
     if indices.shape[1] != 2 * n:
       raise ValueError(f'Expected seq len {2 * n}, got {indices.shape[1]}')
 
@@ -92,19 +98,93 @@ class QwenBlockForCausalLM(nn.Module):
     dtype = next(self.model.parameters()).dtype
     position_ids = shared_block_position_ids(
         n, indices.device, batch_size=indices.shape[0])
-    with block_diff_attention_mask(self.model, n, bs, indices.device, dtype):
+    with block_diff_attention_mask(
+        self.model, n, bs, indices.device, dtype,
+        padding_mask=attention_mask):
       out = self.model(
-          input_ids=indices, position_ids=position_ids, use_cache=False)
-    return out.logits[:, :n, :]
+          input_ids=indices, position_ids=position_ids, use_cache=False,
+          attention_mask=attention_mask)
+    xt_logits = out.logits[:, :n, :]
+    if return_both:
+      return xt_logits, out.logits[:, n:, :]
+    return xt_logits
 
-  @torch.no_grad()
-  def causal_logits(self, input_ids: torch.Tensor) -> torch.Tensor:
+  def causal_train_logits(self, input_ids: torch.Tensor) -> torch.Tensor:
+    """Trainable causal next-token logits (grads enabled)."""
     prev = self.forward_mode
     self.forward_mode = 'causal'
     try:
       return self.forward(input_ids)
     finally:
       self.forward_mode = prev
+
+  @torch.no_grad()
+  def causal_logits(self, input_ids: torch.Tensor) -> torch.Tensor:
+    return self.causal_train_logits(input_ids)
+
+  @torch.no_grad()
+  def causal_next_with_cache(
+      self,
+      input_ids: torch.Tensor,
+      past_key_values=None,
+  ):
+    """Causal decode step with HF KV cache (ARPC / hierarchical AR path).
+
+    Returns ``(next_logits [B, V], past_key_values)``.
+    """
+    prev = self.forward_mode
+    self.forward_mode = 'causal'
+    try:
+      if past_key_values is None:
+        out = self.model(
+            input_ids=input_ids, use_cache=True, past_key_values=None)
+      else:
+        out = self.model(
+            input_ids=input_ids[:, -1:],
+            use_cache=True,
+            past_key_values=past_key_values)
+      return out.logits[:, -1, :], out.past_key_values
+    finally:
+      self.forward_mode = prev
+
+  @torch.no_grad()
+  def block_diff_prefill(
+      self,
+      xt: torch.Tensor,
+      x0: torch.Tensor,
+      *,
+      active_len: int,
+      block_size: int | None = None,
+  ):
+    """DualCache prefill: truncated dual-stream forward + store per-layer K/V."""
+    from .dual_cache import dual_stream_prefill
+    bs = int(block_size) if block_size is not None else self.block_size
+    xt_a = xt[:, :active_len]
+    x0_a = x0[:, :active_len]
+    x_in = torch.cat([xt_a, x0_a], dim=-1)
+    position_ids = shared_block_position_ids(
+        active_len, xt.device, batch_size=xt.shape[0])
+    return dual_stream_prefill(
+        self.model, x_in, active_len=active_len, block_size=bs,
+        position_ids=position_ids)
+
+  @torch.no_grad()
+  def block_diff_replace(
+      self,
+      xt: torch.Tensor,
+      x0: torch.Tensor,
+      *,
+      active_len: int,
+      window: tuple[int, int],
+      cache,
+      block_size: int | None = None,
+  ) -> torch.Tensor:
+    """DualCache replace_position splice for an active window."""
+    from .dual_cache import dual_stream_replace
+    bs = int(block_size) if block_size is not None else self.block_size
+    return dual_stream_replace(
+        self.model, xt, x0, active_len=active_len, window=window,
+        block_size=bs, cache=cache)
 
   @torch.no_grad()
   def block_diff_logits(self, xt_x0: torch.Tensor) -> torch.Tensor:

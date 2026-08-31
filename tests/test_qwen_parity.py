@@ -12,7 +12,7 @@ pytestmark = pytest.mark.qwen
     reason='set RUN_QWEN_TESTS=1 to download Qwen',
 )
 def test_qwen_load_fraction():
-  from scripts.verify_qwen_load import main
+  from tools.verify_qwen_load import main
   assert main() == 0
 
 
@@ -21,5 +21,5 @@ def test_qwen_load_fraction():
     reason='set RUN_QWEN_TESTS=1 to download Qwen',
 )
 def test_block_forward_differs_from_causal():
-  from scripts.verify_block_forward import main
+  from tools.verify_block_forward import main
   assert main() == 0

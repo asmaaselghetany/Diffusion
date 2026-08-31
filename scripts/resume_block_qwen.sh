@@ -75,12 +75,15 @@ WANDB_RESUME="${WANDB_RESUME:-allow}"
 
 if [[ -z "${HYDRA_OVERRIDES:-}" && -f "${HYDRA_OVERRIDES_FILE}" ]]; then
   HYDRA_OVERRIDES=""
-  for key in eval.generate_samples eval.save_validation_samples eval.t_bucketed_nll; do
-    val="$(_read_override "${key}")"
-    if [[ -n "${val}" ]]; then
-      HYDRA_OVERRIDES="${HYDRA_OVERRIDES:+${HYDRA_OVERRIDES} }${key}=${val}"
-    fi
-  done
+  while IFS= read -r line; do
+    [[ "${line}" =~ ^-[[:space:]]+(.*)$ ]] || continue
+    kv="${BASH_REMATCH[1]}"
+    key="${kv%%=*}"
+    case "${key}" in
+      checkpointing.resume_ckpt_path|checkpointing.save_dir) continue ;;
+    esac
+    HYDRA_OVERRIDES="${HYDRA_OVERRIDES:+${HYDRA_OVERRIDES} }${kv}"
+  done < "${HYDRA_OVERRIDES_FILE}"
 fi
 
 # Pick highest valid ckpt; do NOT cp onto last.ckpt (avoids multi-GB Lustre copy

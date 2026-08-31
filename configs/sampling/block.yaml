@@ -6,8 +6,34 @@ use_float64: False
 p_nucleus: 1.0
 num_sample_batches: 1
 num_sample_log: 2
+# --- ARPC (uniform + size-1 mixture; default off) ---
 use_arpc: False
+# simplified = prefix fill + confidence resample (legacy B3)
+# blockgen = in-loop predictor–corrector with corruption modes
+arpc_mode: simplified
 arpc_prefix_frac: 0.25
 arpc_resample_tau: 0.5
+arpc_corruption_mode: divergence   # random|divergence|diffusion_metric|ar_metric
+arpc_divergence_measure: kld       # kld|reverse_kld|tvd
+arpc_diffusion_metric: confidence  # entropy|confidence|margin
+arpc_ar_metric: nll                # nll|gap_to_top1|entropy
+arpc_warmup_steps: 0
+arpc_guide_every: 1
+# null → true for simplified, false for blockgen (set explicitly to override)
+arpc_use_prefix_fill: null
+# null = follow algo.shift_loss_targets; true/false forces A/B.
+align_shift_logits: null
+# Fast-dLLM small_block_size analogue (decode windowing).
+# Must divide block_size when set (e.g. 8 with block_size 32).
+sub_block_size: null
+# Greedy argmax decode (Fast-dLLM eval default); set false for stochastic.
+greedy: False
+# Fast-dLLM confidence commit (null = ancestral random denoise step).
+unmask_threshold: null
+# Progressive truncated dual-stream decode (prefix+active only) + causal KV
+# for ARPC AR paths.
+hierarchical_kv: False
+# Fast-dLLM DualCache replace_position splice (requires hierarchical_kv).
+use_block_cache: False
 sampler:
   _target_: discrete_diffusion.sampling.block_sampler.BlockSampler

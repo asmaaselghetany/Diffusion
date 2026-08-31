@@ -12,7 +12,20 @@ T: 0
 loss_type: elbo
 ignore_bos: True
 # Neutral defaults (match block_uniform hook keys; all off for fair comparison).
+# See configs/algo/_block_hooks.yaml + docs/research/LEVERS.md.
 shift_loss_targets: False
 complementary_masks: False
+loss_weighting: elbo
+mask_schedule: alpha
 block_size_mixture: []
+block_weights: null
+block_size_per_gpu: null
 stratified_gamma: null
+pure_noise_block_sizes: []
+loss_type_special_cases: []
+# NLD-style joint AR (C5); 0 = off.
+joint_ar_alpha: 0.0
+causal_clean_stream: False
+# Hybrid arm only (ignored on masked/uniform).
+hybrid_p_uniform: 0.1
+hybrid_decode: masked

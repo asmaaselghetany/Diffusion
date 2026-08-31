@@ -181,7 +181,8 @@ def get_dataset(dataset_name,
                 streaming=False,
                 revision: Optional[str] = None,
                 min_length: int = 0,
-                chunking: str = "none"):
+                chunking: str = "none",
+                attention_block_size: int = 1):
   chunking_mode = (chunking or "none").lower()
   if chunking_mode not in {"none", "double_newline"}:
     raise ValueError(f"Unsupported chunking mode: {chunking_mode}")
@@ -194,8 +195,11 @@ def get_dataset(dataset_name,
     eos_tag += "_specialFalse"
   min_len_tag = f"_min{min_length}" if (min_length and not wrap) else ""
   chunk_tag = "_flexchunk" if (not wrap and chunking_mode != "none") else ""
+  align_tag = (
+      f"_abl{attention_block_size}"
+      if wrap and attention_block_size > 1 else "")
   if wrap:
-    filename = f"{dataset_name}_{mode}_bs{block_size}_wrapped{eos_tag}.dat"
+    filename = f"{dataset_name}_{mode}_bs{block_size}_wrapped{align_tag}{eos_tag}.dat"
   else:
     filename = f"{dataset_name}_{mode}_bs{block_size}_unwrapped{chunk_tag}{eos_tag}{min_len_tag}.dat"
   _path = os.path.join(cache_dir, filename)
@@ -460,7 +464,9 @@ def get_dataset(dataset_name,
     block_size=block_size,
     bos=BOS,
     eos=EOS,
-    insert_special_tokens=insert_special_tokens)
+    insert_special_tokens=insert_special_tokens,
+    attention_block_size=attention_block_size,
+    pad_id=int(tokenizer.pad_token_id or tokenizer.eos_token_id or 0))
   if streaming:
     chunked_dataset = tokenized_dataset.map(group_texts, batched=True)
   else:
@@ -571,6 +577,7 @@ def get_dataloaders(config, tokenizer, skip_train=False,
   else:
     train_min_length = config.data.get(
       "train_min_length", config.data.get("min_length", 0))
+    attn_bs = int(getattr(config.algo, 'block_size', 1) or 1)
     train_set = get_dataset(
       config.data.train,
       tokenizer,
@@ -585,7 +592,8 @@ def get_dataloaders(config, tokenizer, skip_train=False,
       num_proc=config.loader.num_workers,
       revision=config.data.get("train_revision", None),
       min_length=train_min_length,
-      chunking=train_chunking)
+      chunking=train_chunking,
+      attention_block_size=attn_bs)
 
   if config.data.valid in ["text8", "lm1b", "ag_news"]:
     validation_split = "test"
@@ -596,6 +604,7 @@ def get_dataloaders(config, tokenizer, skip_train=False,
   else:
     valid_min_length = config.data.get(
       "valid_min_length", config.data.get("min_length", 0))
+    attn_bs = int(getattr(config.algo, 'block_size', 1) or 1)
     valid_set = get_dataset(
       config.data.valid,
       tokenizer,
@@ -610,7 +619,8 @@ def get_dataloaders(config, tokenizer, skip_train=False,
       num_proc=config.loader.num_workers,
       revision=config.data.get("valid_revision", None),
       min_length=valid_min_length,
-      chunking=valid_chunking)
+      chunking=valid_chunking,
+      attention_block_size=attn_bs)
 
   use_synthetic_collate = (
       config.data.train == 'synthetic' or config.data.valid == 'synthetic')

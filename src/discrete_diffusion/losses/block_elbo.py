@@ -3,6 +3,19 @@
 from __future__ import annotations
 
 import torch
+import torch.nn.functional as F
+
+
+def masked_plain_ce_per_token(
+    log_x_theta: torch.Tensor,
+    x0: torch.Tensor,
+    xt: torch.Tensor,
+    mask_id: int,
+) -> torch.Tensor:
+  """Unweighted masked-token CE (Fast-dLLM complementary objective)."""
+  log_probs = F.log_softmax(log_x_theta, dim=-1)
+  ce = -log_probs.gather(-1, x0.unsqueeze(-1)).squeeze(-1)
+  return (xt == mask_id).to(ce.dtype) * ce
 
 
 def masked_block_nll_per_token(

@@ -1,0 +1,364 @@
+# Canonical lever registry for block_qwen Slurm wiring.
+# Source of truth for scripts/submit_lever.sh / tools/resolve_lever.py.
+# Do NOT invent Hydra overrides outside this file for paper levers.
+#
+# Each lever:
+#   overrides: list of Hydra CLI tokens (algo.* / sampling.*)
+#   arms: [masked] | [uniform] | [masked, uniform]
+#   line: [ar2block] | [block] | [ar2block, block]  (init pipeline)
+#   conflicts: other lever ids that must not co-occur
+#   requires: other lever ids that must be enabled first / together
+#   notes: human string
+
+version: 1
+
+presets:
+  # --- Paper design cells (PAPER_EXPERIMENTS.md) — prefer these names ---
+  # C0: axis D neutral (hooks off). Empty overrides; still validates arm/line.
+  C0:
+    levers: []
+    arms: [masked]
+    line: [ar2block]
+  # C2 axis-D ablations (strict table: shift / complementary only).
+  C2_shift:
+    levers: [shift]
+    arms: [masked]
+    line: [ar2block]
+  C2_comp:
+    levers: [complementary]
+    arms: [masked]
+    line: [ar2block]
+  C2_fdllm:
+    levers: [shift, complementary]
+    arms: [masked]
+    line: [ar2block]
+  # Fuller Fast-dLLM-ish positive control (+ their mask schedule).
+  # Use when claiming closer recipe fidelity; not the strict Tab-2 C2_fdllm cell.
+  C2_fdllm_full:
+    levers: [shift, complementary, mask_schedule_fdllm, loss_plain_ce]
+    arms: [masked]
+    line: [ar2block]
+  # B3 bonus (single-factor).
+  B3_mixture:
+    levers: [mixture_16_32]
+    arms: [masked, uniform]
+    line: [ar2block]
+  B3_arpc:
+    levers: [mixture_1_32, arpc_blockgen]
+    arms: [uniform]
+    line: [ar2block]
+  # Legacy simplified ARPC (prefix+tau) if needed for A/B.
+  B3_arpc_simplified:
+    levers: [mixture_1_32, arpc]
+    arms: [uniform]
+    line: [ar2block]
+  # C5 NLD-style joint AR (axis D conversion control).
+  C5_joint_ar:
+    levers: [joint_ar]
+    arms: [masked]
+    line: [ar2block]
+  C5_causal_clean:
+    levers: [joint_ar, causal_clean]
+    arms: [masked]
+    line: [ar2block]
+  # B4 hybrid noising (third corruption pole).
+  B4_hybrid_p10:
+    levers: [hybrid_p10]
+    arms: [hybrid]
+    line: [ar2block]
+  B4_hybrid_p50:
+    levers: [hybrid_p50]
+    arms: [hybrid]
+    line: [ar2block]
+  # Axis B geometry (was orphan levers).
+  B3_t_strat:
+    levers: [t_strat_05]
+    arms: [masked, uniform]
+    line: [ar2block]
+  B3_weights_32:
+    levers: [bg_weights_1_32]
+    arms: [masked, uniform]
+    line: [ar2block]
+  B3_u_stratified:
+    levers: [bg_weights_1_16, u_stratified]
+    arms: [masked, uniform]
+    line: [ar2block]
+  # Decode: truncate-only vs DualCache (eval / micro).
+  decode_sub_block:
+    levers: [sub_block_8]
+    arms: [masked, uniform]
+    line: [ar2block, block]
+  decode_hierarchical:
+    levers: [hierarchical_kv]
+    arms: [masked, uniform, hybrid]
+    line: [ar2block, block]
+  decode_dual_cache:
+    levers: [hierarchical_kv, dual_cache]
+    arms: [masked, uniform, hybrid]
+    line: [ar2block, block]
+
+  # --- Aliases (same as paper cells / recipes) ---
+  # Fast-dLLM positive control (corrected complementary = paired m/~m).
+  fdllm:
+    levers: [shift, complementary, mask_schedule_fdllm]
+    arms: [masked]
+    line: [ar2block]
+  fdllm_shift_only:
+    levers: [shift]
+    arms: [masked]
+    line: [ar2block]
+  fdllm_decode:
+    levers: [shift, complementary, mask_schedule_fdllm, hierarchical_kv, dual_cache]
+    arms: [masked]
+    line: [ar2block]
+  # BlockGen-style uniform recipe (weighted mixture + pure noise @1 + CE@1 + ARPC).
+  blockgen_uniform:
+    levers: [bg_weights_1_16, pure_noise_1, ce_at_1, arpc_blockgen]
+    arms: [uniform]
+    line: [ar2block, block]
+  # Neutral skeleton — empty overrides; useful for dry-run / control.
+  neutral:
+    levers: []
+    arms: [masked, uniform]
+    line: [ar2block, block]
+
+levers:
+  # --- Fast-dLLM (masked-only) ---
+  shift:
+    source: Fast-dLLM v2
+    overrides:
+      - algo.shift_loss_targets=true
+    arms: [masked]
+    line: [ar2block, block]
+    conflicts: []
+    requires: []
+    notes: "Shifted CE at mask sites; sampler auto-aligns via shift_loss_targets."
+
+  complementary:
+    source: Fast-dLLM v2
+    overrides:
+      - algo.complementary_masks=true
+    arms: [masked]
+    line: [ar2block, block]
+    conflicts: []
+    requires: []
+    notes: >
+      Paired m and ~m views (Fast-dLLM). Implemented as two sequential
+      forwards of batch B (not one 2B forward) for paper-scale memory.
+      Prefer with shift for Fast-dLLM recipe.
+
+  mask_schedule_fdllm:
+    source: Fast-dLLM v2 modeling.py
+    overrides:
+      - algo.mask_schedule=fast_dllm
+    arms: [masked]
+    line: [ar2block, block]
+    conflicts: []
+    requires: []
+    notes: "p_mask=(1-eps)*t+eps instead of 1-alpha_t."
+
+  loss_plain_ce:
+    source: Fast-dLLM v2 Appendix A.3
+    overrides:
+      - algo.loss_weighting=plain_ce
+    arms: [masked]
+    line: [ar2block, block]
+    conflicts: []
+    requires: []
+    notes: "Unweighted masked CE (omit dalpha/(1-alpha)); pair with complementary."
+
+  sub_block_8:
+    source: Fast-dLLM v2 decode (small_block_size=8)
+    overrides:
+      - sampling.sub_block_size=8
+    arms: [masked, uniform]
+    line: [ar2block, block]
+    conflicts: []
+    requires: []
+    notes: "Decode windowing; pair with hierarchical_kv for progressive truncated dual-stream."
+
+  # --- BlockGen / shared geometry ---
+  mixture_16_32:
+    source: BlockGen analogue (list mixture)
+    overrides:
+      - "algo.block_size_mixture=[16,32]"
+    arms: [masked, uniform]
+    line: [ar2block, block]
+    conflicts: [bg_weights_1_16, bg_weights_1_32, mixture_1_32]
+    requires: []
+    notes: "Uniform draw over list — not BlockGen weighted 2^k."
+
+  mixture_1_32:
+    source: BlockGen AR-size component (list)
+    overrides:
+      - "algo.block_size_mixture=[1,32]"
+    arms: [masked, uniform]
+    line: [ar2block, block]
+    conflicts: [bg_weights_1_16, bg_weights_1_32, mixture_16_32]
+    requires: []
+    notes: "Prerequisite for ARPC when not using block_weights."
+
+  t_strat_05:
+    source: ours (≠ BlockGen u-stratified)
+    overrides:
+      - algo.stratified_gamma=0.5
+    arms: [masked, uniform]
+    line: [ar2block, block]
+    conflicts: []
+    requires: []
+    notes: "Timestep strat within blocks. Do NOT confuse with u-stratified."
+
+  bg_weights_1_16:
+    source: BlockGen block_weights
+    overrides:
+      - 'algo.block_weights="0.05 0.0 0.0 0.0 0.95"'
+      - algo.block_size_per_gpu=same
+    arms: [masked, uniform]
+    line: [ar2block, block]
+    conflicts: [mixture_16_32, mixture_1_32, bg_weights_1_32]
+    requires: []
+    notes: "5% size 1, 95% size 16. Mutually exclusive with block_size_mixture."
+
+  bg_weights_1_32:
+    source: BlockGen block_weights
+    overrides:
+      - 'algo.block_weights="0.05 0.0 0.0 0.0 0.0 0.95"'
+      - algo.block_size_per_gpu=same
+    arms: [masked, uniform]
+    line: [ar2block, block]
+    conflicts: [mixture_16_32, mixture_1_32, bg_weights_1_16]
+    requires: []
+    notes: "5% size 1, 95% size 32."
+
+  u_stratified:
+    source: BlockGen block_size_per_gpu=u-stratified
+    overrides:
+      - algo.block_size_per_gpu=u-stratified
+    arms: [masked, uniform]
+    line: [ar2block, block]
+    conflicts: []
+    requires: [bg_weights_1_16, bg_weights_1_32]
+    require_mode: any
+    notes: "Requires one of the bg_weights_* levers (block_weights set)."
+
+  pure_noise_1:
+    source: BlockGen pure_noise_block_sizes
+    overrides:
+      - "algo.pure_noise_block_sizes=[1]"
+    arms: [masked, uniform]
+    line: [ar2block, block]
+    conflicts: []
+    requires: [mixture_1_32, bg_weights_1_16, bg_weights_1_32]
+    require_mode: any
+    notes: "Force t=1 when training at block size 1."
+
+  ce_at_1:
+    source: BlockGen loss_type_special_cases
+    overrides:
+      - "algo.loss_type_special_cases=[1,ce]"
+    arms: [masked, uniform]
+    line: [ar2block, block]
+    conflicts: []
+    requires: [mixture_1_32, bg_weights_1_16, bg_weights_1_32]
+    require_mode: any
+    notes: "CE instead of ELBO at block size 1."
+
+  arpc:
+    source: BlockGen ARPC (simplified)
+    overrides:
+      - sampling.use_arpc=true
+      - sampling.arpc_mode=simplified
+    arms: [uniform]
+    line: [ar2block, block]
+    conflicts: [arpc_blockgen]
+    requires: [mixture_1_32, bg_weights_1_16, bg_weights_1_32]
+    require_mode: any
+    notes: "Prefix fill + confidence resample (legacy simplified path)."
+
+  arpc_blockgen:
+    source: BlockGen ARPC (full modes)
+    overrides:
+      - sampling.use_arpc=true
+      - sampling.arpc_mode=blockgen
+      - sampling.arpc_corruption_mode=divergence
+      - sampling.arpc_use_prefix_fill=false
+    arms: [uniform]
+    line: [ar2block, block]
+    conflicts: [arpc]
+    requires: [mixture_1_32, bg_weights_1_16, bg_weights_1_32]
+    require_mode: any
+    notes: >
+      In-loop predictor–corrector with divergence/diffusion/ar/random
+      corruption modes (BlockGen). AR verify via causal logits.
+
+  hierarchical_kv:
+    source: Fast-dLLM hierarchical decode
+    overrides:
+      - sampling.hierarchical_kv=true
+      - sampling.sub_block_size=8
+    arms: [masked, uniform, hybrid]
+    line: [ar2block, block]
+    conflicts: []
+    requires: []
+    notes: >
+      Progressive truncated dual-stream (+ causal KV for ARPC). Does not enable
+      DualCache; add dual_cache for replace_position splice.
+
+  dual_cache:
+    source: Fast-dLLM DualCache replace_position
+    overrides:
+      - sampling.use_block_cache=true
+    arms: [masked, uniform, hybrid]
+    line: [ar2block, block]
+    conflicts: []
+    requires: [hierarchical_kv]
+    notes: >
+      K/V-only DualCache splice (approx). Requires hierarchical_kv. Prefer
+      truncate-only for quality metrics; DualCache for tok/s probes.
+
+  # --- NLD / C5 ---
+  joint_ar:
+    source: NLD (L_AR + α L_diff)
+    overrides:
+      - algo.joint_ar_alpha=0.3
+    arms: [masked, uniform, hybrid]
+    line: [ar2block, block]
+    conflicts: []
+    requires: []
+    notes: >
+      Joint next-token AR on clean stream + α·diffusion. Clean stream is the
+      x0 half of concat(xt,x0) unless causal_clean is also set. Epoch val/nll
+      stays diffusion-only; use val/joint_nll for the trained objective.
+
+  causal_clean:
+    source: NLD causal clean stream
+    overrides:
+      - algo.causal_clean_stream=true
+    arms: [masked, uniform, hybrid]
+    line: [ar2block, block]
+    conflicts: []
+    requires: [joint_ar]
+    notes: "AR term uses token-causal HF forward (extra pass)."
+
+  # --- B4 hybrid ---
+  hybrid_p10:
+    source: GIDD-inspired hybrid noising
+    overrides:
+      - algo.hybrid_p_uniform=0.1
+    arms: [hybrid]
+    line: [ar2block, block]
+    conflicts: [hybrid_p50]
+    requires: []
+    notes: >
+      Pins p_uniform=0.1 (same as block_hybrid.yaml default). The cell effect
+      is --arm hybrid; this lever labels the default rate for audit trails.
+
+  hybrid_p50:
+    source: GIDD-inspired hybrid noising
+    overrides:
+      - algo.hybrid_p_uniform=0.5
+    arms: [hybrid]
+    line: [ar2block, block]
+    conflicts: [hybrid_p10]
+    requires: []
+    notes: "50% of replacements Unif(V\\MASK); rest MASK. Real p sweep vs default."

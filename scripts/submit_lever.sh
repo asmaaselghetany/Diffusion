@@ -1,0 +1,204 @@
+#!/usr/bin/env bash
+# Dynamic lever submitter — ONLY way to launch paper-hook micros/runs.
+#
+# Resolves Hydra overrides from configs/levers/registry.yaml via
+# tools/resolve_lever.py. Refuses unknown / conflicting / wrong-arm combos.
+#
+# Usage:
+#   # Paper-scale C2 (6000 / 2048 / 256) — inferred from C2_* / C0 presets
+#   ./scripts/submit_lever.sh --preset C2_fdllm --arm masked
+#
+#   # Explicit micro (500 / 512 / 128)
+#   ./scripts/submit_lever.sh --preset C2_fdllm --arm masked --micro
+#   # or: MAX_STEPS=500 SEQ_LEN=512 GBS=128 ./scripts/submit_lever.sh ...
+#
+#   ./scripts/submit_lever.sh --levers shift,complementary --arm masked --micro
+#   ./scripts/submit_lever.sh --preset blockgen_uniform --arm uniform --micro
+#   ./scripts/submit_lever.sh --list
+#
+# Never pass raw lever Hydra flags — the registry is the source of truth.
+# Extra non-lever overrides go in EXTRA_OVERRIDES.
+
+set -euo pipefail
+WORKSPACE="${ASMAA_WORKSPACE:-/fast/project/HFMI_SynergyUnit/asmaa.elsayed}"
+# shellcheck disable=SC1091
+source "${WORKSPACE}/env.sh"
+cd "${REPO_ROOT}"
+
+PRESET=""
+LEVERS=""
+ARM=""
+LINE="ar2block"
+DRY_RUN=0
+LIST=0
+SCALE=""   # paper | micro | empty→infer
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --preset) PRESET="${2:?}"; shift 2 ;;
+    --levers) LEVERS="${2:?}"; shift 2 ;;
+    --arm) ARM="${2:?}"; shift 2 ;;
+    --line) LINE="${2:?}"; shift 2 ;;
+    --micro) SCALE=micro; shift ;;
+    --paper) SCALE=paper; shift ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    --list) LIST=1; shift ;;
+    -h|--help)
+      sed -n '2,25p' "$0"
+      exit 0
+      ;;
+    *)
+      echo "Unknown arg: $1" >&2
+      exit 1
+      ;;
+  esac
+done
+
+if [[ "${LIST}" -eq 1 ]]; then
+  python - <<'PY'
+import yaml
+from pathlib import Path
+reg = yaml.safe_load(Path('configs/levers/registry.yaml').read_text())
+print('=== presets ===')
+for k, v in (reg.get('presets') or {}).items():
+  print(f"  {k}: levers={v.get('levers')} arms={v.get('arms')} line={v.get('line')}")
+print('=== levers ===')
+for k, v in (reg.get('levers') or {}).items():
+  print(f"  {k}: arms={v.get('arms')} :: {v.get('overrides')}")
+PY
+  exit 0
+fi
+
+if [[ -z "${ARM}" ]]; then
+  echo "Required: --arm masked|uniform|hybrid" >&2
+  exit 1
+fi
+
+# Infer scale: paper cells must NOT silently become 500-step micros.
+_is_paper_preset() {
+  case "${1}" in
+    C0|C2_shift|C2_comp|C2_fdllm|C2_fdllm_full|C5_joint_ar|C5_causal_clean|B3_mixture|B3_arpc|B3_arpc_simplified|B3_t_strat|B3_weights_32|B3_u_stratified|B4_hybrid_p10|B4_hybrid_p50|decode_sub_block|decode_hierarchical|decode_dual_cache) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+if [[ -z "${SCALE}" ]]; then
+  if [[ -n "${PRESET}" ]] && _is_paper_preset "${PRESET}"; then
+    SCALE=paper
+  else
+    SCALE=micro
+  fi
+fi
+
+BLOCK="${BLOCK:-32}"
+export NUM_GPUS="${NUM_GPUS:-2}"
+EXTRA_OVERRIDES="${EXTRA_OVERRIDES:-}"
+
+if [[ "${SCALE}" == "paper" ]]; then
+  # Match configs/experiment/block_qwen.yaml — only set knobs if caller overrides.
+  MAX_STEPS="${MAX_STEPS:-6000}"
+  SEQ_LEN="${SEQ_LEN:-2048}"
+  GBS="${GBS:-256}"
+  export RESUME_FROM_CKPT="${RESUME_FROM_CKPT:-false}"
+  export RUN_FULL_EVAL="${RUN_FULL_EVAL:-true}"
+  export WANDB_PROJECT="${WANDB_PROJECT:-block_qwen}"
+  export WANDB_RESUME="${WANDB_RESUME:-never}"
+  # t_bucketed optional on full runs (costly); enable via EXTRA if desired.
+  BASE_OVERRIDES="trainer.max_steps=${MAX_STEPS} model.length=${SEQ_LEN} block_size=${BLOCK} loader.global_batch_size=${GBS}"
+else
+  MAX_STEPS="${MAX_STEPS:-500}"
+  SEQ_LEN="${SEQ_LEN:-512}"
+  GBS="${GBS:-128}"
+  export RESUME_FROM_CKPT="${RESUME_FROM_CKPT:-false}"
+  export RUN_FULL_EVAL="${RUN_FULL_EVAL:-false}"
+  export WANDB_PROJECT="${WANDB_PROJECT:-block_qwen_trials}"
+  export WANDB_RESUME="${WANDB_RESUME:-never}"
+  BASE_OVERRIDES="trainer.max_steps=${MAX_STEPS} model.length=${SEQ_LEN} block_size=${BLOCK} loader.global_batch_size=${GBS} eval.t_bucketed_nll=true"
+fi
+
+resolve_one() {
+  local arm="$1"
+  local line="$2"
+  local args=(--arm "${arm}" --line "${line}" --format json)
+  if [[ -n "${PRESET}" ]]; then
+    args+=(--preset "${PRESET}")
+  else
+    args+=(--levers "${LEVERS}")
+  fi
+  if [[ -n "${EXTRA_OVERRIDES:-}" ]]; then
+    args+=(--extra-overrides "${EXTRA_OVERRIDES}")
+  fi
+
+  local meta tag lever_list lever_ov
+  meta="$(python tools/resolve_lever.py "${args[@]}")" || {
+    echo "resolve_lever failed for arm=${arm} line=${line}" >&2
+    exit 2
+  }
+  tag="$(python -c 'import json,sys; print(json.loads(sys.argv[1])["tag"])' "${meta}")"
+  lever_list="$(python -c 'import json,sys; print(",".join(json.loads(sys.argv[1])["levers"]))' "${meta}")"
+  lever_ov="$(python -c 'import json,sys; print(" ".join(json.loads(sys.argv[1])["overrides"]))' "${meta}")"
+  python -c 'import json,sys
+for w in json.loads(sys.argv[1]).get("warnings") or []:
+  print("LEVER_WARN:", w, file=sys.stderr)' "${meta}" || true
+
+  export HYDRA_OVERRIDES="${BASE_OVERRIDES} ${lever_ov} ${EXTRA_OVERRIDES}"
+  export WANDB_RUN_NAME="lever_${tag}_${line}_${arm}"
+  unset WANDB_RUN_ID || true
+
+  # Persist overrides to a unique file before sbatch (job id unknown yet).
+  # Avoid last-write-wins on a shared path if another lever is submitted while
+  # this job is still pending.
+  local ov_dir="${REPO_ROOT}/outputs/block_qwen/lever_overrides"
+  mkdir -p "${ov_dir}"
+  local ov_stamp
+  ov_stamp="$(date +%Y%m%dT%H%M%S)_$$"
+  local ov_file="${ov_dir}/${tag}_${line}_${arm}_${ov_stamp}.txt"
+  python - "${HYDRA_OVERRIDES}" <<'PY' > "${ov_file}"
+import shlex, sys
+for tok in shlex.split(sys.argv[1]):
+  print(tok)
+PY
+  # Joined one-liner for launch (HYDRA_OVERRIDES string / LEVER_OVERRIDES_FILE).
+  tr '\n' ' ' < "${ov_file}" | sed 's/[[:space:]]*$/\n/' > "${ov_file}.oneline"
+  export LEVER_OVERRIDES_FILE="${ov_file}.oneline"
+  export HYDRA_OVERRIDES="$(<"${ov_file}.oneline")"
+
+  echo "=== lever submit ==="
+  echo "  scale:   ${SCALE}"
+  echo "  tag:     ${tag}"
+  echo "  levers:  ${lever_list}"
+  echo "  line:    ${line}"
+  echo "  arm:     ${arm}"
+  echo "  wandb:   ${WANDB_PROJECT}"
+  echo "  overrides_file: ${LEVER_OVERRIDES_FILE}"
+  echo "  overrides: ${HYDRA_OVERRIDES}"
+
+  local sbatch="scripts/slurm/${line}_${arm}.sbatch"
+  if [[ ! -f "${sbatch}" ]]; then
+    echo "Missing sbatch script: ${sbatch}" >&2
+    exit 1
+  fi
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    echo "DRY_RUN: would sbatch ${sbatch}"
+    return 0
+  fi
+  local jid
+  jid="$(sbatch --parsable --job-name="lever_${tag}_${arm}" \
+    --export=ALL \
+    "${sbatch}")"
+  # Symlink audit name with job id → unique stamp file.
+  ln -sfn "$(basename "${ov_file}.oneline")" \
+    "${ov_dir}/${tag}_${line}_${arm}_job${jid}.txt"
+  echo "Submitted batch job ${jid}"
+  echo "  audit: ${ov_dir}/${tag}_${line}_${arm}_job${jid}.txt -> ${LEVER_OVERRIDES_FILE}"
+  return 0
+}
+
+case "${LINE}" in
+  ar2block|block|blockgen)
+    resolve_one "${ARM}" "${LINE}"
+    ;;
+  *)
+    echo "Unknown --line ${LINE} (expected ar2block|block|blockgen)" >&2
+    exit 1
+    ;;
+esac

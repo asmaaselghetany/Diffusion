@@ -26,6 +26,23 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from ..data.tokenizers import Text8Tokenizer
 
 
+def _trim_token_rows_at_eos(rows: np.ndarray, eos_id: int | None) -> np.ndarray:
+  if eos_id is None:
+    return rows
+  trimmed = []
+  max_len = 0
+  for row in rows:
+    hits = np.where(row == eos_id)[0]
+    if hits.size:
+      row = row[: int(hits[0]) + 1]
+    trimmed.append(row)
+    max_len = max(max_len, row.shape[0])
+  out = np.zeros((len(trimmed), max_len), dtype=rows.dtype)
+  for i, row in enumerate(trimmed):
+    out[i, : row.shape[0]] = row
+  return out
+
+
 def _decode_samples(model_tokenizer, z_ts: np.ndarray) -> List[str]:
   if isinstance(model_tokenizer, Text8Tokenizer):
     return [
@@ -112,6 +129,8 @@ def main(cfg):
   z_ts = _load_samples(cfg.samples_path)
   if z_ts.ndim != 2:
     raise ValueError(f"Expected 2D [N, T] tokens array, got {z_ts.shape}")
+  if cfg.first_chunk_only:
+    z_ts = _trim_token_rows_at_eos(z_ts, model_tokenizer.eos_token_id)
   texts = _decode_samples(model_tokenizer, z_ts)
   nonempty = sum(1 for t in texts if t.strip())
   if nonempty == 0:

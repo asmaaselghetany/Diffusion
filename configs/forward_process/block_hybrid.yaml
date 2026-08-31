@@ -1,0 +1,2 @@
+_target_: discrete_diffusion.forward_process.block_hybrid.BlockHybridForwardProcess
+name: block_hybrid
