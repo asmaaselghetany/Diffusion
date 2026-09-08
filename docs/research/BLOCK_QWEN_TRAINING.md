@@ -15,7 +15,7 @@ on the neutral recipe without a row + go/no-go there.
 | Hook | Config key | Neutral value | Used in literature |
 |------|------------|---------------|-------------------|
 | Token shift at loss | `algo.shift_loss_targets` | `false` | Fast-dLLM v2 (arxiv [2509.26328](https://arxiv.org/abs/2509.26328)); also in this repo’s MDLM path |
-| Complementary paired masks | `algo.complementary_masks` | `false` | Fast-dLLM v2 — **paired `m`/`~m`** via two sequential forwards (not polarity flip; not 2B batch) |
+| Complementary paired masks | `algo.complementary_masks` | `false` | Fast-dLLM v2 — **paired `m`/`~m`** via fused 2B batch (`algo.complementary_batching=fused`; sequential OOM fallback) |
 | Fast-dLLM mask schedule | `algo.mask_schedule` | `alpha` | Fast-dLLM: set `fast_dllm` for `p=(1-ε)t+ε` |
 | Multi block-size (list) | `algo.block_size_mixture` | `[]` | BlockGen analogue (uniform list draw) |
 | Weighted `2^k` mixture | `algo.block_weights` | `null` | BlockGen (XOR with list mixture) |
@@ -38,11 +38,15 @@ on the neutral recipe without a row + go/no-go there.
 Do **not** put arm-specific hooks in `block_qwen.yaml` — Hydra dot-keys at experiment root (`algo.shift_loss_targets: true`) do not merge into `config.algo`. Prefer the **lever registry**:
 
 ```bash
-# Fast-dLLM-style (corrected complementary)
+# Fast-dLLM-style (conversion family, masked)
 ./scripts/submit_lever.sh --preset fdllm --arm masked
 
-# BlockGen-style uniform extras
-./scripts/submit_lever.sh --preset blockgen_uniform --arm uniform
+# BlockGen-style (native family, scratch, uniform)
+./scripts/submit_lever.sh --preset blockgen_uniform --arm uniform --paper
+./scripts/submit_blockgen_owt.sh   # OWT 1+16 recreate
+
+# Transfer (BlockGen knobs on ar2block — not a BlockGen claim)
+./scripts/submit_lever.sh --preset xfer_mixture --arm masked --paper
 
 # List / dry-run
 ./scripts/submit_lever.sh --list
@@ -71,7 +75,11 @@ Verify in the SLURM log that flags appear **inside** the `algo:` struct, not as 
 | Global batch | 256 (64× A100, ZeRO-3) | **256** (grad_accum on local GPUs) |
 | Steps | ~6000 (paper) | **6000** (~3.15B tokens @ 256×2048) |
 
-Fast-dLLM reports shift + complementary masks on top of this recipe; BlockGen reports mixture + stratified γ + ARPC for its uniform instantiation. Those are **not** part of the neutral `block_qwen` comparison.
+Fast-dLLM reports shift + complementary masks on the **conversion** recipe
+(`LINE=ar2block`). BlockGen reports mixture + u-stratified + ARPC on **scratch**
+(`LINE=block`). Those are **not** part of the neutral `block_qwen` comparison,
+and they must not share a `LINE` when claiming paper fidelity. See
+[`PAPER_EXPERIMENTS.md`](PAPER_EXPERIMENTS.md) families + [`BLOCKGEN_LEVERS.md`](BLOCKGEN_LEVERS.md).
 
 ### Data (Nemotron default)
 
@@ -90,12 +98,14 @@ First job downloads + tokenizes into `${scratch_dir}/block_qwen_sft_nemotron` (c
 
 ## Submit
 
-Two pipelines (hooks off). Within each pipeline only corruption differs (masked vs uniform). Between pipelines only **init** differs.
+Two **families** / pipelines (hooks off). Within each, only corruption differs
+(masked vs uniform). Between families, **init / LINE** differs.
 
-| Pipeline | Intent | Init | Scripts | Outputs |
-|----------|--------|------|---------|---------|
-| **1. ar2block** | AR→block (Fast-dLLM style) | pretrained Qwen Instruct | `ar2block_{masked,uniform}.sbatch` | `ar2block_{masked,uniform}_<jobid>/` |
-| **2. block** | Pure / scratch block diffusion | scratch (same Qwen arch) | `block_{masked,uniform}.sbatch` | `block_{masked,uniform}_<jobid>/` |
+| Family / pipeline | Intent | Init | Scripts | Outputs |
+|-------------------|--------|------|---------|---------|
+| **1. conversion (`ar2block`)** | AR→block (Fast-dLLM style) | pretrained Qwen Instruct | `ar2block_{masked,uniform}.sbatch` | `ar2block_{masked,uniform}_<jobid>/` |
+| **2. native (`block`)** | Scratch block diffusion / BlockGen home | scratch (same Qwen arch) | `block_{masked,uniform}.sbatch` | `block_{masked,uniform}_<jobid>/` |
+| **3. transfer (`xfer_*`)** | BlockGen knobs on conversion | pretrained + native levers | `submit_lever.sh --preset xfer_*` | `ar2block_*` run dirs; **not** BlockGen tables |
 
 ```bash
 source env.sh && cd "$REPO_ROOT"
@@ -181,10 +191,12 @@ python -m discrete_diffusion +experiment=block_qwen algo=block_masked \
 
 ## Literature map (corruption vs hooks)
 
-| Work | Corruption | Training extras in paper | Decode extras |
-|------|------------|--------------------------|---------------|
-| **MDLM** (Sahoo et al., NeurIPS 2024, [2406.07524](https://arxiv.org/abs/2406.07524)) | Full-sequence masked / SUBS ELBO | Standard SUBS; no block hooks | Semi-AR sampler |
-| **BlockGen** ([2606.02241](https://arxiv.org/abs/2606.02241)) | Masked **or** uniform **within block** | Block-size mixture γ, stratified multi-GPU draws | ARPC (uniform) |
-| **Fast-dLLM v2** ([2509.26328](https://arxiv.org/abs/2509.26328)) | Block masked (partial mask in paper) | Shifted-label loss, complementary masks, concat(xt,x0) | Sub-block parallel decode, hierarchical cache |
+| Work | Family | Corruption | Training extras in paper | Decode extras |
+|------|--------|------------|--------------------------|---------------|
+| **MDLM** ([2406.07524](https://arxiv.org/abs/2406.07524)) | full-seq | Full-sequence masked / SUBS ELBO | Standard SUBS | Semi-AR sampler |
+| **BlockGen** ([2606.02241](https://arxiv.org/abs/2606.02241)) | **native scratch** | Masked **or** uniform **within block** | Block-size mixture, u-stratified | ARPC (uniform) |
+| **Fast-dLLM v2** ([2509.26328](https://arxiv.org/abs/2509.26328)) | **conversion** | Block masked | Shifted-label loss, complementary masks, concat(xt,x0) | Sub-block parallel decode, hierarchical cache |
 
-Our neutral baseline isolates the BlockGen-style question — *masked vs uniform corruption within fixed block size* — without any row’s “extras” column enabled.
+Our neutral four-arm isolates *masked vs uniform within fixed block size* and
+*AR-init vs scratch* without extras. Paper-faithful recreates use the matching
+**family** (`C2_*` conversion; `blockgen_owt_uniform` native).

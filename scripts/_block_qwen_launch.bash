@@ -46,11 +46,15 @@ case "${LINE}" in
 esac
 
 EXPERIMENT=block_qwen
-DATA_CACHE="${DATA_CACHE:-${ASMAA_WORKSPACE}/.cache/discrete_diffusion/block_qwen_sft_nemotron}"
+DATA_CACHE="${DATA_CACHE:-${DISCRETE_DIFFUSION_SCRATCH_DIR:-${SCRATCH:-${ASMAA_WORKSPACE}}/.cache/discrete_diffusion}/block_qwen_sft_nemotron}"
 RUN_ROOT="${RUN_ROOT:-${REPO_ROOT}/outputs/block_qwen/${LINE}_${ARM}_${SLURM_JOB_ID:-local}}"
 # Paper curves live in block_qwen. Track 1/2 micros set WANDB_PROJECT=block_qwen_trials.
 WANDB_PROJECT="${WANDB_PROJECT:-block_qwen}"
-NUM_GPUS="${NUM_GPUS:-2}"
+
+# shellcheck disable=SC1091
+_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${_SCRIPT_DIR}/_block_qwen_ddp.bash"
+resolve_block_qwen_ddp_resources
 
 mkdir -p "${RUN_ROOT}" "${RUN_ROOT}/hydra" "${DATA_CACHE}" slurm_logs
 echo "Dataset cache at ${DATA_CACHE} (built on first train epoch)."
@@ -63,18 +67,12 @@ _append_override() {
   fi
 }
 
-# Multi-GPU under Slurm (Lightning-compatible):
-#   --ntasks-per-node=NUM_GPUS  (NOT plain --ntasks)
-#   --gres=gpu:NUM_GPUS
-#   trainer.devices=NUM_GPUS
-# Do NOT pass --gpus-per-task=1: that remaps each task to only GPU [0], which
-# breaks devices=NUM_GPUS. Lightning binds ranks via LOCAL_RANK instead.
-_append_override "trainer.devices" "${NUM_GPUS}"
-if [[ "${NUM_GPUS}" -gt 1 ]]; then
-  _append_override "strategy" "ddp"
-fi
-# Fair paired compare: same validation batch on both arms (= NUM_GPUS).
-_append_override "loader.eval_global_batch_size" "${NUM_GPUS}"
+# Multi-GPU under Slurm (Lightning-compatible, codex pattern):
+#   trainer.devices = GPUs per node
+#   trainer.num_nodes = Slurm nodes
+#   srun launches one task per GPU (never ntasks=1 + devices=N under SlurmEnvironment)
+# Do NOT pass --gpus-per-task=1 with trainer.devices=N on the same node.
+append_block_qwen_trainer_overrides
 # Keep yaml log_every_n_steps (50); do not force 10 — sync/wandb overhead.
 # Pipeline 2: random init (architecture from hub config only).
 if [[ "${LINE}" == "block" || "${LINE}" == "blockgen" ]]; then
@@ -119,7 +117,9 @@ echo "  arm:        ${ARM} (${ALGO})"
 echo "  experiment: ${EXPERIMENT}"
 echo "  run_root:   ${RUN_ROOT}"
 echo "  data_cache: ${DATA_CACHE}"
-echo "  num_gpus:   ${NUM_GPUS}"
+echo "  num_nodes:  ${NUM_NODES}"
+echo "  gpus/node:  ${GPUS_PER_NODE}"
+echo "  num_gpus:   ${NUM_GPUS} (total)"
 echo "  wandb_project: ${WANDB_PROJECT}"
 echo "  wandb_name: ${WANDB_RUN_NAME}"
 echo "  wandb_id:   ${WANDB_RUN_ID}"
@@ -144,19 +144,7 @@ PY
 fi
 
 TRAIN_RC=0
-# One Slurm task per GPU so Lightning DDP sees world_size=NUM_GPUS
-# (ntasks=1 + devices=2 → MEMBER 1/1 and a wasted GPU).
-srun --ntasks-per-node="${NUM_GPUS}" --cpu-bind=cores \
-  python -u -m discrete_diffusion "+experiment=${EXPERIMENT}" "algo=${ALGO}" \
-  data.cache_dir="${DATA_CACHE}" \
-  checkpointing.save_dir="${RUN_ROOT}" \
-  checkpointing.resume_from_ckpt="${RESUME_FROM_CKPT:-true}" \
-  hydra.run.dir="${RUN_ROOT}/hydra" \
-  "wandb.project=${WANDB_PROJECT}" \
-  "wandb.name=${WANDB_RUN_NAME}" \
-  "wandb.id=${WANDB_RUN_ID}" \
-  "wandb.resume=${WANDB_RESUME}" \
-  "${EXTRA_OVERRIDES[@]}" || TRAIN_RC=$?
+run_block_qwen_srun_train || TRAIN_RC=$?
 
 # After training: eval if highest valid ckpt reached max_steps; otherwise
 # auto-resubmit resume (partition MaxTime is 24h). Set AUTO_RESUME=0 to disable.

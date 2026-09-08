@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Shared block_qwen eval launcher (samples → gen-PPL → DepBench → ELBO sweep).
+# Shared block_qwen eval launcher (samples → gen-PPL → ELBO sweep).
 #
 # Usage:
 #   scripts/_block_qwen_eval.bash <checkpoint_path> [extra run_block_qwen_eval.py args...]
@@ -12,23 +12,26 @@ set -euo pipefail
 CKPT="${1:?Usage: _block_qwen_eval.bash <checkpoint> [eval args...]}"
 shift
 
-WORKSPACE="${ASMAA_WORKSPACE:-/fast/project/HFMI_SynergyUnit/asmaa.elsayed}"
-# shellcheck disable=SC1091
-source "${WORKSPACE}/env.sh"
+export ASMAA_WORKSPACE="${ASMAA_WORKSPACE:-/e/project1/scifi/elsayed3}"
+# Prefer shared Jupiter env (modules + venv); fall back to workspace env.sh.
+if [[ -f "${REPO_ROOT:-}/scripts/_block_qwen_env.bash" ]]; then
+  # Already sourced by eval_checkpoint.sbatch in normal path; safe to re-source.
+  # shellcheck disable=SC1091
+  source "${REPO_ROOT}/scripts/_block_qwen_env.bash"
+else
+  # shellcheck disable=SC1091
+  source "${ASMAA_WORKSPACE}/env.sh"
+  cd "${REPO_ROOT}"
+  # shellcheck disable=SC1091
+  source .venv/bin/activate
+fi
 cd "${REPO_ROOT}"
-
-module load CUDA/12.6.0 2>/dev/null || true
-# shellcheck disable=SC1091
-source .venv/bin/activate
 # shellcheck disable=SC1091
 source scripts/_block_qwen_ckpt.bash
 
 export TOKENIZERS_PARALLELISM=false
 export HYDRA_FULL_ERROR=1
-# DepBench is a sibling package; editable install is brittle here (broken
-# uni-d2 file: URL in its pyproject). Always put the repo root on PYTHONPATH.
-export DEPBENCH_ROOT="${DEPBENCH_ROOT:-${WORKSPACE}/projects/depbench}"
-export PYTHONPATH="${DEPBENCH_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
+export PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 
 CKPT_ABS="$(readlink -f "${CKPT}")"
 CKPT_BASE="$(basename "${CKPT_ABS}")"

@@ -61,7 +61,7 @@ SKIP_THROUGHPUT=1 bash examples/block_qwen/lm_eval.sh <ckpt>
 
 tok/s is **our** `BlockSampler` (not Fast-dLLM hierarchical KV / sub-block-8).
 
-Optional fork extras (DepBench / block ELBO):
+Optional extras (block ELBO):
 
 ```bash
 python tools/run_block_qwen_eval.py --checkpoint ... --upstream-only

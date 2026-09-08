@@ -128,8 +128,9 @@ def train(config):
   if (
       callbacks_cfg is None
       or (omegaconf.OmegaConf.is_list(callbacks_cfg) and len(callbacks_cfg) == 0)
+      or (omegaconf.OmegaConf.is_dict(callbacks_cfg) and len(callbacks_cfg) == 0)
   ):
-    callbacks = None  # Lightning 2.x rejects callbacks=[]
+    callbacks = None  # Lightning 2.x rejects callbacks=[] / empty dict
   else:
     callbacks = [
         hydra.utils.instantiate(cb) for _, cb in callbacks_cfg.items()]

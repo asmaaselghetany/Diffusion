@@ -16,6 +16,7 @@ __all__ = [
     "_apply_detokenizer",
     "_pad_example_to_attention_blocks",
     "_group_texts",
+    "_group_block_aligned_sft",
 ]
 
 
@@ -155,3 +156,56 @@ def _group_texts(
   result['input_ids'] = _values
   result['attention_mask'] = _attn_masks
   return result
+
+
+def _group_block_aligned_sft(
+    examples,
+    sequence_length,
+    diffusion_block_size,
+    mask_id,
+):
+  """Pad each SFT example to a diffusion-block boundary, then pack it.
+
+  ``labels`` uses ``-100`` for prompt and padding positions. Padding with the
+  diffusion mask token before concatenation guarantees that no diffusion block
+  contains tokens from two different conversations.
+  """
+  if sequence_length % diffusion_block_size != 0:
+    raise ValueError(
+        'sequence_length must be divisible by diffusion_block_size')
+
+  packed = {'input_ids': [], 'attention_mask': [], 'labels': []}
+  for input_ids, attention_mask, labels in zip(
+      examples['input_ids'], examples['attention_mask'], examples['labels']):
+    if not (len(input_ids) == len(attention_mask) == len(labels)):
+      raise ValueError('SFT input_ids, attention_mask, and labels must align')
+    pad_length = (-len(input_ids)) % diffusion_block_size
+    packed['input_ids'].extend(input_ids)
+    packed['input_ids'].extend([mask_id] * pad_length)
+    packed['attention_mask'].extend(attention_mask)
+    packed['attention_mask'].extend([0] * pad_length)
+    packed['labels'].extend(labels)
+    packed['labels'].extend([-100] * pad_length)
+
+  tail_padding = (-len(packed['input_ids'])) % sequence_length
+  packed['input_ids'].extend([mask_id] * tail_padding)
+  packed['attention_mask'].extend([0] * tail_padding)
+  packed['labels'].extend([-100] * tail_padding)
+
+  chunks = {
+      key: [
+          values[i:i + sequence_length]
+          for i in range(0, len(values), sequence_length)
+      ]
+      for key, values in packed.items()
+  }
+  # A very long prompt can span complete context windows before its response.
+  # Such rows have no learning signal and produce zero-gradient DDP steps.
+  supervised_rows = [
+      idx for idx, labels in enumerate(chunks['labels'])
+      if any(label != -100 for label in labels)
+  ]
+  return {
+      key: [rows[idx] for idx in supervised_rows]
+      for key, rows in chunks.items()
+  }

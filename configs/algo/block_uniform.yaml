@@ -15,6 +15,7 @@ ignore_bos: True
 # See configs/algo/_block_hooks.yaml + docs/research/LEVERS.md.
 shift_loss_targets: False
 complementary_masks: False
+complementary_batching: fused
 mask_schedule: alpha
 block_size_mixture: []
 block_weights: null

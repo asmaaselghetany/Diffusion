@@ -1,52 +1,73 @@
-# BlockGen recipe notes (for our lever micros)
+# BlockGen recipe notes (native family only)
 
 Clone: `third_party/blockgen` ([jdeschena/blockgen](https://github.com/jdeschena/blockgen), arXiv:2606.02241).
-Read date: 2026-08-06. **Do not launch these levers until Track 1 1500 (`138143`/`138144`) returns.**
+
+**Family:** BlockGen lives on **`LINE=block` (scratch)**. It is **not**
+AR→block conversion. Geometry on conversion uses `xfer_*` presets and must not
+be tagged BlockGen. Legacy `submit_blockgen_lever_micro.sh` is **retired** (it
+hardcoded `ar2block_*.sbatch`).
 
 ## What BlockGen actually does (uniform)
 
-| Piece | BlockGen | Our `block_qwen` today |
-|-------|----------|------------------------|
-| Corruption | Uniform-state (Duo-style) via `BlockGenUniform` | `BlockUniformForwardProcess` + DUO/UDLM NLL — aligned in spirit |
-| Default `loss_type` | **`elbo`** (`configs/algo/blockgen-uniform.yaml`) | `loss_type: elbo` — **already on**; not a lever micro |
-| Special cases | `loss_type_special_cases` can force CE per block size; eval prefers ELBO for \(L'>1\) | We always ELBO on uniform; paper note: unweighted CE underperforms NELBO for uniform \(L'>4\) |
-| Block sizes | Mixture via `block_weights` over **powers of 2** (`get_block_size` → `2**log_block_size`) | Fixed `block_size=32`; optional `algo.block_size_mixture` (uniform list) **or** `algo.block_weights` + `block_size_per_gpu` |
-| Stratified block-size draw | `block_size_per_gpu: u-stratified` — stratifies **which block size** each GPU/accum step sees | **Implemented** via lever `u_stratified` (`block_geometry.py`); requires a `bg_weights_*` lever |
-| Timestep / γ | Continuous `T: 0`; their “stratified” in code is the block-size path above | `algo.stratified_gamma` = **noise-level (t) stratification** within a fixed block — different axis |
-| Scale | 170M DiT, 250k–1M steps, batch 512, LR 3e-4 | 1.5B Qwen, micros 500–1500, batch 128, LR 2e-5 |
-| Decode | Ancestral + **ARPC** (needs mixture including block size 1) | `sampling.use_arpc` / `arpc_blockgen`; keep off until mixture includes 1 |
+| Piece | BlockGen | Our native wiring |
+|-------|----------|-------------------|
+| Init | Scratch Block-DiT | `line=block` (`load_pretrained=false`) |
+| Corruption | Uniform-state (Duo-style) via `BlockGenUniform` | `algo=block_uniform` |
+| Default `loss_type` | **`elbo`** | `loss_type: elbo` — already on |
+| Special cases | CE at block size 1 | lever `ce_at_1` |
+| Block sizes | `block_weights` over powers of 2 | `bg_weights_*` + optional list mixture |
+| Stratified size draw | `u-stratified` | lever `u_stratified` |
+| Pure noise @1 | yes | lever `pure_noise_1` |
+| Decode | Ancestral + **ARPC** (needs size 1 in mix) | `arpc_blockgen` |
 
 ### Name collision (do not conflate)
 
-| Name in older notes | Actual axis | Ours / BlockGen |
-|---------------------|-------------|-----------------|
-| “stratified γ” (BlockGen-flavored) | **block-size** draw across GPUs (`u-stratified`) | Lever `u_stratified` + `bg_weights_*` |
-| `algo.stratified_gamma` | **timestep / noise level** within block | Ours only (`t_strat_05`) |
+| Name | Actual axis |
+|------|-------------|
+| BlockGen “stratified” | **block-size** draw (`u-stratified`) |
+| `algo.stratified_gamma` | **timestep** strat within a fixed block (ours; `B3_t_strat` on conversion) |
 
-## Mapping to our Hydra knobs (single-factor micros)
+## Launch (registry)
 
-Script: `uni-d2/scripts/submit_blockgen_lever_micro.sh`
+```bash
+# Native micros / paper cells
+./scripts/submit_lever.sh --preset N0 --arm uniform --paper
+./scripts/submit_lever.sh --preset B3_mixture --arm masked --micro
+./scripts/submit_lever.sh --preset B3_arpc --arm uniform --paper
+./scripts/submit_lever.sh --preset blockgen_uniform --arm uniform --paper
 
-| LEVER | Override | Axis | Notes |
-|-------|----------|------|-------|
-| **A** | `algo.block_size_mixture=[16,32]` | BlockGen multi-size analogue | Closest shared recipe lever; random over list ≠ `u-stratified` |
-| **B** | `algo.stratified_gamma=0.5` | Our **t**-strat | Distinct from A; was previously bundled into A by mistake |
-| **C** | `algo.block_size_mixture=[1,32]` | AR-size component | Prerequisite for ARPC; still train-time mixture only |
-| **D** | C + `sampling.use_arpc=true` | Decode | Only after C is understood |
+# One-to-one OWT 1+16
+PREFETCH_ONLY=1 ./scripts/submit_blockgen_owt.sh
+./scripts/submit_blockgen_owt.sh
 
-**Not a lever:** `loss_type=elbo` — already default on both arms. Switching *to* CE would be an anti-BlockGen ablation, not a BlockGen-derived rescue.
+# Transfer only (NOT a BlockGen claim)
+./scripts/submit_lever.sh --preset xfer_arpc --arm uniform --paper
+```
 
-Prefer `./scripts/submit_lever.sh` (registry) over legacy `submit_blockgen_lever_micro.sh`. Example: `--levers bg_weights_1_16,u_stratified,pure_noise_1`.
+Registry firewall: raw native levers on `--line ar2block` raise unless the
+preset is `xfer_*`. Fast-dLLM levers refuse `--line block`.
 
-## Pre-registered launch order (after 1500 readout)
+## One-to-one OWT (our components)
 
-**Directional only** — do not require low-t ≥ 0.90 or harness-PASS to launch A. Recipe-promotion AND stays separate (don’t promote A into the *shared default* until micro-go + health).
+Official: `third_party/blockgen/scripts/train/owt/blockgen_uniform_1_16.sh`.
 
-| If 1500 shows… | First move |
-|----------------|------------|
-| low-t moves **off 0** | Budget helps; optional longer neutral train; levers secondary |
-| low-t still **hard 0** | Launch **A** (mixture) — BlockGen’s headline shared lever |
-| Still flat after A | **B** (t-strat alone) *or* **C** (mix with 1) — pick one axis, not both |
-| Still flat | Document budget/recipe-class limit — not more naked step rungs |
+| Official | Ours (`scripts/submit_blockgen_owt.sh`) |
+|----------|------------------------------------------|
+| `jdeschena/openwebtext` | `data=openwebtext-blockgen` |
+| GPT-2 tokenizer | Qwen2.5-1.5B-Instruct |
+| `small-block-dit` scratch | Qwen block, `line=block` |
+| `algo=blockgen-uniform` | `algo=block_uniform` + `blockgen_owt_uniform` |
+| 1+16, u-strat, pure_noise@1, CE@1 | matched levers (+ ARPC) |
+| GBS 512, len 1024, lr 3e-4, 1M | same; `AUTO_RESUME` across 12h walls |
 
-Always: `eval.t_bucketed_nll=true`, WandB `block_qwen_trials`. Never A+B in one job. Tax strata still need harness-PASS (then family-clears).
+## Single-factor native map (was LEVER A–D)
+
+| Preset | Knobs |
+|--------|-------|
+| `B3_mixture` | `block_size_mixture=[16,32]` |
+| `B3_t_strat` | `stratified_gamma=0.5` (**conversion** track; not BlockGen) |
+| `B3_weights_32` / `B3_u_stratified` | weighted 2^k (+ u-strat) |
+| `B3_arpc` | mixture incl. 1 + ARPC (**uniform**, `line=block`) |
+
+Always: report **`line × arm × data × budget`**. Never A+B (mixture + t-strat)
+in one native micro unless pre-registered as a combo cell.

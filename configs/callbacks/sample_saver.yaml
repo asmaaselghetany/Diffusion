@@ -6,3 +6,5 @@ sample_saver:
   num_steps: ${sampling.steps}
   save_dir: ${cwd:}/samples
   filename_template: step_{global_step}.json
+  sample_mode: ${sampling.sample_mode}
+  max_new_tokens: ${sampling.max_new_tokens}

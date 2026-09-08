@@ -43,8 +43,8 @@ def _bare_masked_trainer(*, shift: bool) -> SimpleNamespace:
       _pending_clean_logits=None,
   )
 
-  def _corrupt(x0, t, *, block_size):
-    del t, block_size
+  def _corrupt(x0, t, *, block_size, corruption_mask=None, **_kwargs):
+    del t, block_size, corruption_mask
     xt = x0.clone()
     xt[:, 1::2] = m.mask_id
     return xt
@@ -126,3 +126,35 @@ def test_nll_without_shift_keeps_full_length():
   valid = torch.ones(b, t)
   nlls = BlockTrainer.nll(m, x0, valid, block_size=4)
   assert nlls.shape == (b, t)
+
+
+def test_shift_plain_ce_is_minimize_oriented():
+  """shift + plain_ce must return positive CE (not -ce).
+
+  C2 (1660576) inverted this and drove trainer/loss -6 → -730 with logit
+  collapse; non-shift plain_ce already used masked_plain_ce_per_token.
+  """
+  m = _bare_masked_trainer(shift=True)
+  m.loss_weighting = 'plain_ce'
+  b, t, v = 2, 8, 32
+  torch.manual_seed(0)
+  xt = torch.full((b, t), m.mask_id)
+  x0 = torch.randint(1, v, (b, t))
+  alpha = torch.full((b, t), 0.5)
+  dalpha = torch.full((b, t), -0.5)
+
+  # Confident wrong: mass on token 1, labels are in 2..v-1
+  wrong = torch.full((b, t, v), -20.0)
+  wrong[..., 1] = 20.0
+  loss_wrong = BlockTrainer._masked_loss(m, wrong, xt, x0, alpha, dalpha)
+
+  # Confident correct on the shifted grid (logits[i] → x0[i+1])
+  right = torch.full((b, t, v), -20.0)
+  for i in range(t - 1):
+    right[:, i, :].scatter_(1, x0[:, i + 1:i + 2], 20.0)
+  loss_right = BlockTrainer._masked_loss(m, right, xt, x0, alpha, dalpha)
+
+  assert loss_wrong.shape == (b, t - 1)
+  assert float(loss_wrong.mean()) > 1.0  # large positive CE
+  assert float(loss_right.mean()) < 0.1  # near-zero CE
+  assert float(loss_wrong.mean()) > float(loss_right.mean())

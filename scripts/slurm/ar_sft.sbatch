@@ -18,7 +18,10 @@
 
 set -euo pipefail
 
-export NUM_GPUS="${NUM_GPUS:-2}"
+# shellcheck disable=SC1091
+source scripts/_block_qwen_ddp.bash
+resolve_block_qwen_ddp_resources
+
 if [[ -z "${RUN_ROOT:-}" ]]; then
   export RUN_ROOT="/fast/project/HFMI_SynergyUnit/asmaa.elsayed/uni-d2/outputs/block_qwen/ar_sft_${SLURM_JOB_ID}"
 fi
@@ -37,7 +40,8 @@ _append() {
     HYDRA_OVERRIDES="${HYDRA_OVERRIDES:+${HYDRA_OVERRIDES} }${key}=${value}"
   fi
 }
-_append "trainer.devices" "${NUM_GPUS}"
+_append "trainer.devices" "${GPUS_PER_NODE}"
+_append "trainer.num_nodes" "${NUM_NODES}"
 if [[ "${NUM_GPUS}" -gt 1 ]]; then
   _append "strategy" "ddp"
 fi
@@ -49,29 +53,55 @@ WANDB_RESUME="${WANDB_RESUME:-allow}"
 
 echo "=== ar_sft launch ==="
 echo "  run_root: ${RUN_ROOT}"
+echo "  num_nodes: ${NUM_NODES}"
+echo "  gpus/node: ${GPUS_PER_NODE}"
 echo "  num_gpus: ${NUM_GPUS}"
 echo "  wandb:    ${WANDB_PROJECT}/${WANDB_RUN_ID}"
 echo "  overrides:${HYDRA_OVERRIDES}"
 
-# shellcheck disable=SC2086
-srun --ntasks-per-node="${NUM_GPUS}" --cpu-bind=cores \
-  python -u -m discrete_diffusion \
-  "+experiment=ar_sft_qwen" \
-  algo=ar_sft \
-  model.forward_mode=causal \
-  model.load_pretrained=true \
-  checkpointing.save_dir="${RUN_ROOT}" \
-  checkpointing.resume_from_ckpt="${RESUME_FROM_CKPT:-true}" \
-  hydra.run.dir="${RUN_ROOT}/hydra" \
-  data.cache_dir="${DATA_CACHE}" \
-  loader.num_workers=4 \
-  wandb.project="${WANDB_PROJECT}" \
-  wandb.name="${WANDB_RUN_NAME}" \
-  wandb.id="${WANDB_RUN_ID}" \
-  wandb.resume="${WANDB_RESUME}" \
-  ${HYDRA_OVERRIDES}
+EXTRA_OVERRIDES=()
+if [[ -n "${HYDRA_OVERRIDES}" ]]; then
+  mapfile -t EXTRA_OVERRIDES < <(
+    python - "${HYDRA_OVERRIDES}" <<'PY'
+import shlex
+import sys
+for token in shlex.split(sys.argv[1]):
+  print(token)
+PY
+  )
+fi
 
-TRAIN_RC=$?
+TRAIN_RC=0
+if [[ "${NUM_NODES}" -gt 1 ]]; then
+  srun --ntasks-per-node="${GPUS_PER_NODE}" --cpu-bind=cores \
+    python -u -m discrete_diffusion "+experiment=ar_sft_qwen" algo=ar_sft \
+    model.forward_mode=causal model.load_pretrained=true \
+    "checkpointing.save_dir=${RUN_ROOT}" \
+    "checkpointing.resume_from_ckpt=${RESUME_FROM_CKPT:-true}" \
+    "hydra.run.dir=${RUN_ROOT}/hydra" \
+    "data.cache_dir=${DATA_CACHE}" \
+    loader.num_workers=4 \
+    "wandb.project=${WANDB_PROJECT}" \
+    "wandb.name=${WANDB_RUN_NAME}" \
+    "wandb.id=${WANDB_RUN_ID}" \
+    "wandb.resume=${WANDB_RESUME}" \
+    "${EXTRA_OVERRIDES[@]}" || TRAIN_RC=$?
+else
+  srun --ntasks="${GPUS_PER_NODE}" --ntasks-per-node="${GPUS_PER_NODE}" \
+    --cpu-bind=cores \
+    python -u -m discrete_diffusion "+experiment=ar_sft_qwen" algo=ar_sft \
+    model.forward_mode=causal model.load_pretrained=true \
+    "checkpointing.save_dir=${RUN_ROOT}" \
+    "checkpointing.resume_from_ckpt=${RESUME_FROM_CKPT:-true}" \
+    "hydra.run.dir=${RUN_ROOT}/hydra" \
+    "data.cache_dir=${DATA_CACHE}" \
+    loader.num_workers=4 \
+    "wandb.project=${WANDB_PROJECT}" \
+    "wandb.name=${WANDB_RUN_NAME}" \
+    "wandb.id=${WANDB_RUN_ID}" \
+    "wandb.resume=${WANDB_RESUME}" \
+    "${EXTRA_OVERRIDES[@]}" || TRAIN_RC=$?
+fi
 
 # shellcheck disable=SC1091
 source scripts/_block_qwen_ckpt.bash

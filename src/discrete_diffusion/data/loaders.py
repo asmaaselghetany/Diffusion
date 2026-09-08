@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import hashlib
 import os
 from typing import Optional
 
@@ -20,6 +21,7 @@ from .datasets import (
 )
 from .processing import (
     _apply_detokenizer,
+    _group_block_aligned_sft,
     _group_texts,
     lm1b_detokenizer,
     lambada_detokenizer,
@@ -47,6 +49,35 @@ _NEMOTRON_DEFAULT_MAX_PER_SPLIT = {
     'code': 100_000,
     'math': 100_000,
 }
+
+_NEMOTRON_PREPROCESSING_VERSION = 'qwen-chat-block-aligned-v1'
+
+# Qwen2.5's bundled template in transformers 4.45 predates assistant-token
+# masks. This is the regular Qwen ChatML layout with generation tags marking
+# assistant content and <|im_end|>, matching Fast-dLLM v2's SFT template.
+_FAST_DLLM_SFT_CHAT_TEMPLATE = (
+    "{%- if messages[0]['role'] == 'system' %}"
+    "{{- '<|im_start|>system\\n' + messages[0]['content'] + "
+    "'<|im_end|>\\n' }}"
+    "{%- else %}"
+    "{{- '<|im_start|>system\\nYou are a helpful assistant."
+    "<|im_end|>\\n' }}"
+    "{%- endif %}"
+    "{%- for message in messages %}"
+    "{%- if message['role'] == 'assistant' %}"
+    "{{- '<|im_start|>assistant\\n' }}"
+    "{% generation %}"
+    "{{- message['content'] + '<|im_end|>\\n' }}"
+    "{% endgeneration %}"
+    "{%- elif message['role'] == 'user' %}"
+    "{{- '<|im_start|>user\\n' + message['content'] + "
+    "'<|im_end|>\\n' }}"
+    "{%- elif message['role'] == 'system' and not loop.first %}"
+    "{{- '<|im_start|>system\\n' + message['content'] + "
+    "'<|im_end|>\\n' }}"
+    "{%- endif %}"
+    "{%- endfor %}"
+)
 
 
 def _default_num_proc() -> int:
@@ -82,6 +113,100 @@ def _nemotron_max_for_split(split: str) -> int | None:
   if split in overrides:
     return overrides[split]
   return _NEMOTRON_DEFAULT_MAX_PER_SPLIT.get(split)
+
+
+def _nemotron_to_messages(example: dict) -> list[dict[str, str]]:
+  """Convert one Nemotron row into role-preserving Qwen chat messages."""
+  messages: list[dict[str, str]] = []
+  sys_p = (example.get('system_prompt') or '').strip()
+  if sys_p:
+    messages.append({'role': 'system', 'content': sys_p})
+
+  msgs = example.get('input') or []
+  if isinstance(msgs, list):
+    for m in msgs:
+      if isinstance(m, dict):
+        role = (m.get('role') or 'user').lower()
+        content = (m.get('content') or '').strip()
+        if not content:
+          continue
+        if role not in {'system', 'user', 'assistant'}:
+          raise ValueError(f'Unsupported Nemotron chat role: {role!r}')
+        messages.append({'role': role, 'content': content})
+      else:
+        content = str(m).strip()
+        if content:
+          messages.append({'role': 'user', 'content': content})
+  elif msgs:
+    messages.append({'role': 'user', 'content': str(msgs).strip()})
+
+  output = (example.get('output') or '').strip()
+  messages.append({'role': 'assistant', 'content': output})
+  return messages
+
+
+def _tokenize_nemotron_sft_batch(examples: dict, tokenizer) -> dict:
+  """Apply Qwen ChatML and retain labels only for assistant tokens."""
+  size = len(examples['output'])
+  result = {'input_ids': [], 'attention_mask': [], 'labels': []}
+  for idx in range(size):
+    row = {key: values[idx] for key, values in examples.items()}
+    encoded = tokenizer.apply_chat_template(
+        _nemotron_to_messages(row),
+        chat_template=_FAST_DLLM_SFT_CHAT_TEMPLATE,
+        tokenize=True,
+        add_generation_prompt=False,
+        return_assistant_tokens_mask=True,
+        return_dict=True,
+    )
+    input_ids = list(encoded['input_ids'])
+    assistant_mask = list(encoded['assistant_masks'])
+    if len(input_ids) != len(assistant_mask):
+      raise ValueError('Qwen assistant-token mask does not align with input_ids')
+    if not any(assistant_mask):
+      raise ValueError('Qwen chat template produced no supervised assistant tokens')
+    result['input_ids'].append(input_ids)
+    result['attention_mask'].append([1] * len(input_ids))
+    result['labels'].append([
+        token_id if is_assistant else -100
+        for token_id, is_assistant in zip(input_ids, assistant_mask)
+    ])
+  return result
+
+
+def _nemotron_cache_fingerprint(tokenizer, revision, diffusion_block_size):
+  cached_identity = getattr(
+      tokenizer, '_discrete_diffusion_cache_identity', None)
+  if cached_identity is None:
+    vocab_hash = hashlib.sha256()
+    for token, token_id in sorted(
+        tokenizer.get_vocab().items(), key=lambda item: (item[1], item[0])):
+      vocab_hash.update(str(token_id).encode('ascii'))
+      vocab_hash.update(b'\0')
+      vocab_hash.update(token.encode('utf-8'))
+      vocab_hash.update(b'\0')
+    cached_identity = (
+        tokenizer.__class__.__name__,
+        getattr(tokenizer, 'name_or_path', None),
+        getattr(tokenizer, '_commit_hash', None),
+        len(tokenizer),
+        tokenizer.bos_token_id,
+        tokenizer.eos_token_id,
+        tokenizer.pad_token_id,
+        tokenizer.mask_token_id,
+        vocab_hash.hexdigest(),
+    )
+    setattr(
+        tokenizer, '_discrete_diffusion_cache_identity', cached_identity)
+  payload = repr((
+      _NEMOTRON_PREPROCESSING_VERSION,
+      cached_identity,
+      revision,
+      diffusion_block_size,
+      tuple(_nemotron_split_list()),
+      os.environ.get('NEMOTRON_SFT_MAX_PER_SPLIT', '').strip(),
+  ))
+  return hashlib.sha256(payload.encode('utf-8')).hexdigest()[:12]
 
 
 def _nemotron_to_text(example: dict) -> dict:
@@ -153,13 +278,7 @@ def _load_nemotron_sft(
     full = datasets.concatenate_datasets(pieces)
 
   full = full.shuffle(seed=0)
-  mapped = full.map(
-      _nemotron_to_text,
-      remove_columns=full.column_names,
-      num_proc=num_proc,
-      desc='Nemotron SFT to text',
-  )
-  return mapped
+  return full
 
 
 __all__ = [
@@ -167,6 +286,33 @@ __all__ = [
     "get_dataset",
     "get_dataloaders",
 ]
+
+
+
+def _with_race_safe_cache(cache_dir, path, streaming, build):
+  """Load, build under lock, or atomically publish a processed dataset cache."""
+  from . import dataset_cache as dc
+
+  lock_path = f'{path}.lockdir'
+  cached = dc._load_complete_dataset_cache(path)
+  if cached is not None:
+    LOGGER.info('Loading data from: %s', path)
+    return cached.with_format('torch')
+  os.makedirs(cache_dir, exist_ok=True)
+  with dc._exclusive_dataset_cache_lock(lock_path) as lock_token:
+    cached = dc._load_complete_dataset_cache(path)
+    if cached is not None:
+      LOGGER.info('Loading data from: %s (after cache lock)', path)
+      return cached.with_format('torch')
+    dc._recover_legacy_flock_file(f'{path}.lock', path)
+    if os.path.lexists(path):
+      dc._recover_stale_incomplete_cache(path)
+    LOGGER.info('Generating new data at: %s', path)
+    built = build()
+    if streaming:
+      return built.with_format('torch')
+    return dc._save_dataset_cache_atomically(
+        built, path, lock_path, lock_token).with_format('torch')
 
 
 def get_dataset(dataset_name,
@@ -182,12 +328,15 @@ def get_dataset(dataset_name,
                 revision: Optional[str] = None,
                 min_length: int = 0,
                 chunking: str = "none",
-                attention_block_size: int = 1):
+                attention_block_size: int = 1,
+                diffusion_block_size: Optional[int] = None):
   chunking_mode = (chunking or "none").lower()
   if chunking_mode not in {"none", "double_newline"}:
     raise ValueError(f"Unsupported chunking mode: {chunking_mode}")
   if wrap and chunking_mode != "none":
     raise ValueError("Delimiter-based chunking only applies when wrap=False.")
+  if diffusion_block_size is None:
+    diffusion_block_size = attention_block_size
   eos_tag = ""
   if not insert_eos:
     eos_tag += "_eosFalse"
@@ -198,288 +347,335 @@ def get_dataset(dataset_name,
   align_tag = (
       f"_abl{attention_block_size}"
       if wrap and attention_block_size > 1 else "")
+  sft_tag = ""
+  if dataset_name in ("nemotron-sft-train", "nemotron-sft-valid"):
+    fingerprint = _nemotron_cache_fingerprint(
+        tokenizer, revision, diffusion_block_size)
+    sft_tag = f"_qwenchat_d{diffusion_block_size}_{fingerprint}"
   if wrap:
-    filename = f"{dataset_name}_{mode}_bs{block_size}_wrapped{align_tag}{eos_tag}.dat"
+    filename = (
+        f"{dataset_name}_{mode}_bs{block_size}_wrapped{align_tag}{sft_tag}"
+        f"{eos_tag}.dat")
   else:
     filename = f"{dataset_name}_{mode}_bs{block_size}_unwrapped{chunk_tag}{eos_tag}{min_len_tag}.dat"
   _path = os.path.join(cache_dir, filename)
 
-  if utils.fsspec_exists(_path):
-    LOGGER.info("Loading data from: %s", _path)
-    return datasets.load_from_disk(_path).with_format("torch")
-  LOGGER.info("Generating new data at: %s", _path)
-  LOGGER.info("streaming=%s", streaming)
+  def _build():
+    nonlocal block_size
+    crop_train = dataset_name == "text8-crop"
+    if mode == "train" and crop_train:
+      block_size *= 2
 
-  crop_train = dataset_name == "text8-crop"
-  if mode == "train" and crop_train:
-    block_size *= 2
-
-  if dataset_name == "wikitext103":
-    dataset = datasets.load_dataset(
-      "wikitext",
-      name="wikitext-103-raw-v1",
-      cache_dir=cache_dir,
-      revision=revision)
-  elif dataset_name == "wikitext2":
-    dataset = datasets.load_dataset(
-      "wikitext",
-      name="wikitext-2-raw-v1",
-      cache_dir=cache_dir,
-      revision=revision)
-  elif dataset_name == "ptb":
-    dataset = datasets.load_dataset(
-      "ptb_text_only",
-      cache_dir=cache_dir,
-      revision=revision)
-  elif dataset_name == "lambada":
-    dataset = get_lambada_test_dataset()
-  elif dataset_name == "text8":
-    assert wrap
-    assert revision is None
-    dataset = get_text8_dataset(cache_dir, max_seq_length=block_size)
-  elif dataset_name == "text8-crop":
-    assert revision is None
-    dataset = get_text8_dataset(
-      cache_dir, max_seq_length=block_size, crop_train=True)
-  elif dataset_name == "openwebtext-train":
-    dataset = datasets.load_dataset(
-      "openwebtext",
-      split="train[:-100000]",
-      cache_dir=cache_dir,
-      revision=revision,
-      streaming=False,
-      num_proc=num_proc,
-      trust_remote_code=True)
-  elif dataset_name == "openwebtext-valid":
-    dataset = datasets.load_dataset(
-      "openwebtext",
-      split="train[-100000:]",
-      cache_dir=cache_dir,
-      revision=revision,
-      streaming=False,
-      num_proc=num_proc,
-      trust_remote_code=True)
-  elif dataset_name in ("alpaca-train", "alpaca-valid"):
-    _alpaca_valid_size = 2000
-    _full = datasets.load_dataset(
-        "yahma/alpaca-cleaned",
-        split="train",
+    if dataset_name == "wikitext103":
+      dataset = datasets.load_dataset(
+        "wikitext",
+        name="wikitext-103-raw-v1",
         cache_dir=cache_dir,
-        trust_remote_code=True)
-    _n = len(_full)
-    _split = max(_n - _alpaca_valid_size, 1)
-    if dataset_name == "alpaca-train":
-      dataset = _full.select(range(_split))
-    else:
-      dataset = _full.select(range(_split, _n))
-
-    def _alpaca_to_text(example):
-      inp = (example.get("input") or "").strip()
-      if inp:
-        text = (
-            f"### Instruction:\n{example['instruction']}\n\n"
-            f"### Input:\n{inp}\n\n"
-            f"### Response:\n{example['output']}")
-      else:
-        text = (
-            f"### Instruction:\n{example['instruction']}\n\n"
-            f"### Response:\n{example['output']}")
-      return {"text": text}
-
-    dataset = dataset.map(
-        _alpaca_to_text,
-        remove_columns=_full.column_names,
+        revision=revision)
+    elif dataset_name == "wikitext2":
+      dataset = datasets.load_dataset(
+        "wikitext",
+        name="wikitext-2-raw-v1",
+        cache_dir=cache_dir,
+        revision=revision)
+    elif dataset_name == "ptb":
+      dataset = datasets.load_dataset(
+        "ptb_text_only",
+        cache_dir=cache_dir,
+        revision=revision)
+    elif dataset_name == "lambada":
+      dataset = get_lambada_test_dataset()
+    elif dataset_name == "text8":
+      assert wrap
+      assert revision is None
+      dataset = get_text8_dataset(cache_dir, max_seq_length=block_size)
+    elif dataset_name == "text8-crop":
+      assert revision is None
+      dataset = get_text8_dataset(
+        cache_dir, max_seq_length=block_size, crop_train=True)
+    elif dataset_name == "openwebtext-train":
+      dataset = datasets.load_dataset(
+        "openwebtext",
+        split="train[:-100000]",
+        cache_dir=cache_dir,
+        revision=revision,
+        streaming=False,
         num_proc=num_proc,
-        desc="Alpaca to text")
-  elif dataset_name in ("nemotron-sft-train", "nemotron-sft-valid"):
-    _full = _load_nemotron_sft(
-        cache_dir=cache_dir, num_proc=num_proc, revision=revision)
-    _n = len(_full)
-    _split = max(_n - _NEMOTRON_VALID_SIZE, 1)
-    if dataset_name == "nemotron-sft-train":
-      dataset = _full.select(range(_split))
+        trust_remote_code=True)
+    elif dataset_name == "openwebtext-valid":
+      dataset = datasets.load_dataset(
+        "openwebtext",
+        split="train[-100000:]",
+        cache_dir=cache_dir,
+        revision=revision,
+        streaming=False,
+        num_proc=num_proc,
+        trust_remote_code=True)
+    elif dataset_name == "openwebtext-blockgen-train":
+      # BlockGen OWT split (jdeschena/blockgen dataloader.py).
+      dataset = datasets.load_dataset(
+        "jdeschena/openwebtext",
+        split="train[:-100000]",
+        cache_dir=cache_dir,
+        revision=revision,
+        streaming=False,
+        num_proc=num_proc)
+    elif dataset_name == "openwebtext-blockgen-valid":
+      dataset = datasets.load_dataset(
+        "jdeschena/openwebtext",
+        split="train[-100000:]",
+        cache_dir=cache_dir,
+        revision=revision,
+        streaming=False,
+        num_proc=num_proc)
+    elif dataset_name in ("alpaca-train", "alpaca-valid"):
+      _alpaca_valid_size = 2000
+      _full = datasets.load_dataset(
+          "yahma/alpaca-cleaned",
+          split="train",
+          cache_dir=cache_dir,
+          trust_remote_code=True)
+      _n = len(_full)
+      _split = max(_n - _alpaca_valid_size, 1)
+      if dataset_name == "alpaca-train":
+        dataset = _full.select(range(_split))
+      else:
+        dataset = _full.select(range(_split, _n))
+
+      def _alpaca_to_text(example):
+        inp = (example.get("input") or "").strip()
+        if inp:
+          text = (
+              f"### Instruction:\n{example['instruction']}\n\n"
+              f"### Input:\n{inp}\n\n"
+              f"### Response:\n{example['output']}")
+        else:
+          text = (
+              f"### Instruction:\n{example['instruction']}\n\n"
+              f"### Response:\n{example['output']}")
+        return {"text": text}
+
+      dataset = dataset.map(
+          _alpaca_to_text,
+          remove_columns=_full.column_names,
+          num_proc=num_proc,
+          desc="Alpaca to text")
+    elif dataset_name in ("nemotron-sft-train", "nemotron-sft-valid"):
+      _full = _load_nemotron_sft(
+          cache_dir=cache_dir, num_proc=num_proc, revision=revision)
+      _n = len(_full)
+      _split = max(_n - _NEMOTRON_VALID_SIZE, 1)
+      if dataset_name == "nemotron-sft-train":
+        dataset = _full.select(range(_split))
+      else:
+        dataset = _full.select(range(_split, _n))
+      LOGGER.info(
+          'Nemotron SFT %s size=%s (full=%s, splits=%s)',
+          dataset_name, len(dataset), _n, _nemotron_split_list())
+    elif dataset_name == "scientific_papers_arxiv":
+      dataset = datasets.load_dataset(
+        "scientific_papers", "arxiv",
+        trust_remote_code=True,
+        cache_dir=cache_dir,
+        streaming=streaming,
+        revision=revision)
+    elif dataset_name == "scientific_papers_pubmed":
+      dataset = datasets.load_dataset(
+        "scientific_papers", "pubmed",
+        trust_remote_code=True,
+        cache_dir=cache_dir,
+        streaming=streaming,
+        revision=revision)
+    elif dataset_name == "ag_news":
+      dataset = datasets.load_dataset(
+        "ag_news",
+        cache_dir=cache_dir,
+        streaming=streaming,
+        revision=revision)
+    elif dataset_name == "synthetic":
+      assert streaming
+      assert wrap
+      dataset = generate_synthetic_dataset(
+        train_dataset_size=100000,
+        validation_dataset_size=1024,
+        seq_len=block_size,
+        vocab_size=len(tokenizer),
+      )
     else:
-      dataset = _full.select(range(_split, _n))
-    LOGGER.info(
-        'Nemotron SFT %s size=%s (full=%s, splits=%s)',
-        dataset_name, len(dataset), _n, _nemotron_split_list())
-  elif dataset_name == "scientific_papers_arxiv":
-    dataset = datasets.load_dataset(
-      "scientific_papers", "arxiv",
-      trust_remote_code=True,
-      cache_dir=cache_dir,
-      streaming=streaming,
-      revision=revision)
-  elif dataset_name == "scientific_papers_pubmed":
-    dataset = datasets.load_dataset(
-      "scientific_papers", "pubmed",
-      trust_remote_code=True,
-      cache_dir=cache_dir,
-      streaming=streaming,
-      revision=revision)
-  elif dataset_name == "ag_news":
-    dataset = datasets.load_dataset(
-      "ag_news",
-      cache_dir=cache_dir,
-      streaming=streaming,
-      revision=revision)
-  elif dataset_name == "synthetic":
-    assert streaming
-    assert wrap
-    dataset = generate_synthetic_dataset(
-      train_dataset_size=100000,
-      validation_dataset_size=1024,
-      seq_len=block_size,
-      vocab_size=len(tokenizer),
-    )
-  else:
-    dataset = datasets.load_dataset(
-      dataset_name,
-      cache_dir=cache_dir,
-      streaming=streaming,
-      trust_remote_code=True,
-      revision=revision)
+      dataset = datasets.load_dataset(
+        dataset_name,
+        cache_dir=cache_dir,
+        streaming=streaming,
+        trust_remote_code=True,
+        revision=revision)
 
-  if dataset_name in [
-      "lambada", "openwebtext-train", "openwebtext-valid",
-      "alpaca-train", "alpaca-valid",
-      "nemotron-sft-train", "nemotron-sft-valid",
-  ]:
-    data = dataset
-  else:
-    data = dataset[mode]
-    if dataset_name == "synthetic":
-      return data
+    if dataset_name in [
+        "lambada", "openwebtext-train", "openwebtext-valid",
+        "openwebtext-blockgen-train", "openwebtext-blockgen-valid",
+        "alpaca-train", "alpaca-valid",
+        "nemotron-sft-train", "nemotron-sft-valid",
+    ]:
+      data = dataset
+    else:
+      data = dataset[mode]
+      if dataset_name == "synthetic":
+        return data
 
-  if dataset_name.startswith("wikitext"):
-    detokenizer = wt_detokenizer
-  elif dataset_name == "lm1b":
-    detokenizer = lm1b_detokenizer
-  elif dataset_name == "ptb":
-    detokenizer = ptb_detokenizer
-  elif dataset_name == "lambada":
-    detokenizer = lambada_detokenizer
-  elif dataset_name.startswith("scientific_papers"):
-    detokenizer = scientific_papers_detokenizer
-  else:
-    detokenizer = None
+    if dataset_name in ("nemotron-sft-train", "nemotron-sft-valid"):
+      if streaming:
+        raise ValueError('Block-aligned Nemotron SFT does not support streaming')
+      if block_size % diffusion_block_size != 0:
+        raise ValueError(
+            f'model.length={block_size} must be divisible by '
+            f'diffusion_block_size={diffusion_block_size}')
+      tokenized_dataset = data.map(
+          functools.partial(_tokenize_nemotron_sft_batch, tokenizer=tokenizer),
+          batched=True,
+          remove_columns=data.column_names,
+          num_proc=num_proc,
+          load_from_cache_file=True,
+          desc='Applying Qwen SFT chat template')
+      group_sft = functools.partial(
+          _group_block_aligned_sft,
+          sequence_length=block_size,
+          diffusion_block_size=diffusion_block_size,
+          mask_id=tokenizer.mask_token_id)
+      chunked_dataset = tokenized_dataset.map(
+          group_sft,
+          batched=True,
+          num_proc=num_proc,
+          load_from_cache_file=True,
+          desc='Block-aligning and packing SFT')
+      return chunked_dataset
 
-  EOS = tokenizer.eos_token_id
-  BOS = tokenizer.bos_token_id
+    if dataset_name.startswith("wikitext"):
+      detokenizer = wt_detokenizer
+    elif dataset_name == "lm1b":
+      detokenizer = lm1b_detokenizer
+    elif dataset_name == "ptb":
+      detokenizer = ptb_detokenizer
+    elif dataset_name == "lambada":
+      detokenizer = lambada_detokenizer
+    elif dataset_name.startswith("scientific_papers"):
+      detokenizer = scientific_papers_detokenizer
+    else:
+      detokenizer = None
 
-  tokenizer.padding_side = "right"
-  tokenizer.truncation_side = "right"
+    EOS = tokenizer.eos_token_id
+    BOS = tokenizer.bos_token_id
 
-  use_chunking = chunking_mode != "none"
-  if use_chunking:
-    if chunking_mode == "double_newline":
-      delimiter_tokens = tokenizer.encode("\n\n", add_special_tokens=False)
+    tokenizer.padding_side = "right"
+    tokenizer.truncation_side = "right"
+
+    use_chunking = chunking_mode != "none"
+    if use_chunking:
+      if chunking_mode == "double_newline":
+        delimiter_tokens = tokenizer.encode("\n\n", add_special_tokens=False)
+      else:
+        delimiter_tokens = []
+      if not delimiter_tokens:
+        raise ValueError(
+          "Tokenizer did not produce any tokens for the specified chunking delimiter.")
     else:
       delimiter_tokens = []
-    if not delimiter_tokens:
-      raise ValueError(
-        "Tokenizer did not produce any tokens for the specified chunking delimiter.")
-  else:
-    delimiter_tokens = []
 
-  def preprocess_and_tokenize(example):
-    if dataset_name == "ptb":
-      text = example["sentence"]
-    elif "scientific_papers" in dataset_name:
-      text = example["article"]
-    else:
-      text = example["text"]
-    if detokenizer is not None:
-      text = _apply_detokenizer(detokenizer)(text)
+    def preprocess_and_tokenize(example):
+      if dataset_name == "ptb":
+        text = example["sentence"]
+      elif "scientific_papers" in dataset_name:
+        text = example["article"]
+      else:
+        text = example["text"]
+      if detokenizer is not None:
+        text = _apply_detokenizer(detokenizer)(text)
+      if use_chunking:
+        return chunk_documents(
+          tokenizer,
+          text,
+          max_length=block_size,
+          delimiter_tokens=delimiter_tokens,
+          add_special_tokens=insert_special_tokens)
+      if wrap:
+        tokens = tokenizer(
+          text,
+          add_special_tokens=False,
+          return_attention_mask=False,
+          return_token_type_ids=False)
+        if insert_eos:
+          tokens = {'input_ids': [t + [EOS] for t in tokens['input_ids']]}
+      else:
+        tokens = tokenizer(
+          text,
+          max_length=block_size,
+          padding="max_length",
+          truncation=True,
+          add_special_tokens=insert_special_tokens,
+          return_attention_mask=True,
+          return_token_type_ids=True)
+      return tokens
+
+    map_kwargs = {
+      "batched": True,
+    }
     if use_chunking:
-      return chunk_documents(
-        tokenizer,
-        text,
-        max_length=block_size,
-        delimiter_tokens=delimiter_tokens,
-        add_special_tokens=insert_special_tokens)
-    if wrap:
-      tokens = tokenizer(
-        text,
-        add_special_tokens=False,
-        return_attention_mask=False,
-        return_token_type_ids=False)
-      if insert_eos:
-        tokens = {'input_ids': [t + [EOS] for t in tokens['input_ids']]}
-    else:
-      tokens = tokenizer(
-        text,
-        max_length=block_size,
-        padding="max_length",
-        truncation=True,
-        add_special_tokens=insert_special_tokens,
-        return_attention_mask=True,
-        return_token_type_ids=True)
-    return tokens
-
-  map_kwargs = {
-    "batched": True,
-  }
-  if use_chunking:
-    map_kwargs["remove_columns"] = ["text"]
-  if not streaming:
-    map_kwargs.update(
-      num_proc=num_proc,
-      load_from_cache_file=True,
-      desc="Tokenizing")
-  tokenized_dataset = data.map(
-    preprocess_and_tokenize,
-    **map_kwargs)
-  if dataset_name == "ptb":
-    tokenized_dataset = tokenized_dataset.remove_columns("sentence")
-  elif "scientific_papers" in dataset_name:
-    tokenized_dataset = tokenized_dataset.remove_columns(
-      ["article", "abstract", "section_names"])
-  elif dataset_name == "ag_news":
-    tokenized_dataset = tokenized_dataset.remove_columns(
-      ["text", "label"])
-  elif "text" in tokenized_dataset.column_names:
-    tokenized_dataset = tokenized_dataset.remove_columns("text")
-
-  if (not wrap) and min_length > 0 and (not streaming):
-    def _has_min_length(example):
-      mask = example.get("attention_mask", None)
-      if mask is None:
-        return True
-      return sum(mask) >= min_length
-
-    tokenized_dataset = tokenized_dataset.filter(
-      _has_min_length,
-      num_proc=num_proc,
-      load_from_cache_file=True,
-      desc="Filtering min length")
-
-  if not wrap:
+      map_kwargs["remove_columns"] = ["text"]
     if not streaming:
-      tokenized_dataset.save_to_disk(_path)
-    return tokenized_dataset.with_format("torch")
+      map_kwargs.update(
+        num_proc=num_proc,
+        load_from_cache_file=True,
+        desc="Tokenizing")
+    tokenized_dataset = data.map(
+      preprocess_and_tokenize,
+      **map_kwargs)
+    if dataset_name == "ptb":
+      tokenized_dataset = tokenized_dataset.remove_columns("sentence")
+    elif "scientific_papers" in dataset_name:
+      tokenized_dataset = tokenized_dataset.remove_columns(
+        ["article", "abstract", "section_names"])
+    elif dataset_name == "ag_news":
+      tokenized_dataset = tokenized_dataset.remove_columns(
+        ["text", "label"])
+    elif "text" in tokenized_dataset.column_names:
+      tokenized_dataset = tokenized_dataset.remove_columns("text")
 
-  group_texts = functools.partial(
-    _group_texts,
-    block_size=block_size,
-    bos=BOS,
-    eos=EOS,
-    insert_special_tokens=insert_special_tokens,
-    attention_block_size=attention_block_size,
-    pad_id=int(tokenizer.pad_token_id or tokenizer.eos_token_id or 0))
-  if streaming:
-    chunked_dataset = tokenized_dataset.map(group_texts, batched=True)
-  else:
-    chunked_dataset = tokenized_dataset.map(
-      group_texts,
-      batched=True,
-      num_proc=num_proc,
-      load_from_cache_file=True,
-      desc="Grouping")
-    chunked_dataset.save_to_disk(_path)
-  chunked_dataset = chunked_dataset.with_format("torch")
-  return chunked_dataset
+    if (not wrap) and min_length > 0 and (not streaming):
+      def _has_min_length(example):
+        mask = example.get("attention_mask", None)
+        if mask is None:
+          return True
+        return sum(mask) >= min_length
 
+      tokenized_dataset = tokenized_dataset.filter(
+        _has_min_length,
+        num_proc=num_proc,
+        load_from_cache_file=True,
+        desc="Filtering min length")
+
+    if not wrap:
+      return tokenized_dataset
+
+    group_texts = functools.partial(
+      _group_texts,
+      block_size=block_size,
+      bos=BOS,
+      eos=EOS,
+      insert_special_tokens=insert_special_tokens,
+      attention_block_size=attention_block_size,
+      pad_id=int(tokenizer.pad_token_id or tokenizer.eos_token_id or 0))
+    if streaming:
+      chunked_dataset = tokenized_dataset.map(group_texts, batched=True)
+    else:
+      chunked_dataset = tokenized_dataset.map(
+        group_texts,
+        batched=True,
+        num_proc=num_proc,
+        load_from_cache_file=True,
+        desc="Grouping")
+    return chunked_dataset
+
+
+
+  return _with_race_safe_cache(cache_dir, _path, streaming, _build)
 
 def _finalize_tokenizer(tokenizer):
   """Ensure special tokens exist (shared by get_tokenizer / load_tokenizer_by_name)."""
@@ -534,29 +730,37 @@ def get_tokenizer(config):
   return load_tokenizer_by_name(config.data.tokenizer_name_or_path)
 
 
-def get_dataloaders(config, tokenizer, skip_train=False,
-                    skip_valid=False, valid_seed=None):
-  # Prefer distributed world size (Slurm/torchrun DDP: 1 visible GPU per
-  # process). Fall back to local CUDA count for single-process multi-GPU.
-  num_gpus = 1
+def _training_world_size(config) -> int:
+  """Total DDP processes (devices × nodes). Prefer config; fall back to env.
+
+  Do NOT multiply ``WORLD_SIZE`` by ``trainer.num_nodes`` — under multi-node
+  ``srun`` ``WORLD_SIZE`` is already the full world and that double-counts.
+  """
+  devices = int(getattr(config.trainer, 'devices', 1) or 1)
+  nodes = int(getattr(config.trainer, 'num_nodes', 1) or 1)
+  if devices * nodes > 1:
+    return devices * nodes
   for key in ('WORLD_SIZE', 'SLURM_NTASKS', 'SLURM_NPROCS'):
     raw = os.environ.get(key)
     if raw is not None and str(raw).strip().isdigit() and int(raw) > 0:
-      num_gpus = int(raw)
-      break
-  else:
-    num_gpus = torch.cuda.device_count()
+      return int(raw)
+  return max(torch.cuda.device_count(), 1)
+
+
+def get_dataloaders(config, tokenizer, skip_train=False,
+                    skip_valid=False, valid_seed=None):
+  # Total DDP world size. Matches config.yaml accumulate_grad_batches resolver:
+  #   GBS == batch_size * devices * num_nodes * accumulate_grad_batches
+  num_gpus = _training_world_size(config)
   if torch.cuda.device_count() < 1:
     raise RuntimeError(
         'No CUDA devices visible. Launch training on a GPU node (e.g. via Slurm).')
   assert (config.loader.global_batch_size
           == (config.loader.batch_size
-              * config.trainer.num_nodes
               * num_gpus
               * config.trainer.accumulate_grad_batches)), (
       f'global_batch_size={config.loader.global_batch_size} != '
-      f'batch_size({config.loader.batch_size}) * nodes('
-      f'{config.trainer.num_nodes}) * world({num_gpus}) * accum('
+      f'batch_size({config.loader.batch_size}) * world({num_gpus}) * accum('
       f'{config.trainer.accumulate_grad_batches})'
   )
   if config.loader.global_batch_size % (
@@ -593,7 +797,8 @@ def get_dataloaders(config, tokenizer, skip_train=False,
       revision=config.data.get("train_revision", None),
       min_length=train_min_length,
       chunking=train_chunking,
-      attention_block_size=attn_bs)
+      attention_block_size=attn_bs,
+      diffusion_block_size=attn_bs)
 
   if config.data.valid in ["text8", "lm1b", "ag_news"]:
     validation_split = "test"
@@ -620,7 +825,8 @@ def get_dataloaders(config, tokenizer, skip_train=False,
       revision=config.data.get("valid_revision", None),
       min_length=valid_min_length,
       chunking=valid_chunking,
-      attention_block_size=attn_bs)
+      attention_block_size=attn_bs,
+      diffusion_block_size=attn_bs)
 
   use_synthetic_collate = (
       config.data.train == 'synthetic' or config.data.valid == 'synthetic')

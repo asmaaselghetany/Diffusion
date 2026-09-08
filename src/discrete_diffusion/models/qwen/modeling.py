@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 
 from ...contracts.attention_hook import assert_block_attention_hook_compatible
-from .attention import block_diff_attention_mask
+from .attention import block_diff_attention_mask, eval_block_causal_attention_mask
 from .config import ForwardMode, QwenBlockConfig
 
 
@@ -101,13 +101,25 @@ class QwenBlockForCausalLM(nn.Module):
     with block_diff_attention_mask(
         self.model, n, bs, indices.device, dtype,
         padding_mask=attention_mask):
-      out = self.model(
-          input_ids=indices, position_ids=position_ids, use_cache=False,
-          attention_mask=attention_mask)
-    xt_logits = out.logits[:, :n, :]
-    if return_both:
-      return xt_logits, out.logits[:, n:, :]
-    return xt_logits
+      # Qwen2ForCausalLM projects every hidden state to the full vocabulary
+      # before returning logits. Block diffusion only consumes the first half,
+      # so projecting all 2n positions wastes lm-head compute and a large FP32
+      # logits buffer that is immediately sliced away. Run the decoder over the
+      # complete concat(xt, x0) sequence, but apply lm_head only to the hidden
+      # states whose logits enter the objective (and optionally the clean half).
+      decoder_out = self.model.model(
+          input_ids=indices,
+          position_ids=position_ids,
+          use_cache=False,
+          attention_mask=attention_mask,
+          return_dict=True,
+      )
+      hidden = decoder_out[0]
+      xt_logits = self.model.lm_head(hidden[:, :n, :]).float()
+      if return_both:
+        clean_logits = self.model.lm_head(hidden[:, n:, :]).float()
+        return xt_logits, clean_logits
+      return xt_logits
 
   def causal_train_logits(self, input_ids: torch.Tensor) -> torch.Tensor:
     """Trainable causal next-token logits (grads enabled)."""
@@ -146,6 +158,68 @@ class QwenBlockForCausalLM(nn.Module):
       return out.logits[:, -1, :], out.past_key_values
     finally:
       self.forward_mode = prev
+
+  @torch.no_grad()
+  def block_eval_logits(
+      self,
+      xt: torch.Tensor,
+      *,
+      active_len: int | None = None,
+      block_size: int | None = None,
+  ) -> torch.Tensor:
+    """Hub-style single-stream block-causal decode logits (no dual concat).
+
+    Forwards ``xt[:, :A]`` under ``eval_block_diff_mask``. Matches Hub generate
+    when committed prefix has ``xt == x0`` (quality-equivalent to train graph).
+    """
+    a = int(active_len) if active_len is not None else xt.shape[1]
+    if not (1 <= a <= xt.shape[1]):
+      raise ValueError(f'active_len={a} out of range for seq {xt.shape[1]}')
+    bs = int(block_size) if block_size is not None else self.block_size
+    ids = xt[:, :a]
+    dtype = next(self.model.parameters()).dtype
+    position_ids = torch.arange(a, device=xt.device).unsqueeze(0).expand(
+        xt.shape[0], a).contiguous()
+    with eval_block_causal_attention_mask(
+        self.model, a, bs, xt.device, dtype, cache_seq_len=0):
+      out = self.model.model(
+          input_ids=ids,
+          position_ids=position_ids,
+          use_cache=False,
+          return_dict=True,
+      )
+      return self.model.lm_head(out[0]).float()
+
+  @torch.no_grad()
+  def block_eval_prefill(
+      self,
+      xt: torch.Tensor,
+      *,
+      active_len: int,
+      block_size: int | None = None,
+  ):
+    """Single-stream DualCache prefill (Hub ``use_block_cache`` shape)."""
+    from .dual_cache import single_stream_prefill
+    bs = int(block_size) if block_size is not None else self.block_size
+    return single_stream_prefill(
+        self.model, xt[:, :active_len], active_len=active_len, block_size=bs)
+
+  @torch.no_grad()
+  def block_eval_replace(
+      self,
+      xt: torch.Tensor,
+      *,
+      active_len: int,
+      window: tuple[int, int],
+      cache,
+      block_size: int | None = None,
+  ) -> torch.Tensor:
+    """Single-stream DualCache ``replace_position`` splice."""
+    from .dual_cache import single_stream_replace
+    bs = int(block_size) if block_size is not None else self.block_size
+    return single_stream_replace(
+        self.model, xt, active_len=active_len, window=window,
+        block_size=bs, cache=cache)
 
   @torch.no_grad()
   def block_diff_prefill(

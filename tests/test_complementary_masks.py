@@ -69,6 +69,7 @@ def _bare(*, complementary: bool) -> SimpleNamespace:
       stratified_gamma=None,
       noise=_FakeNoise(),
       complementary_masks=complementary,
+      complementary_batching='fused',
       mask_schedule='alpha',
       joint_ar_alpha=0.0,
       causal_clean_stream=False,
@@ -86,8 +87,8 @@ def _bare(*, complementary: bool) -> SimpleNamespace:
   m._forward_process = object.__new__(BlockMaskedForwardProcess)
   m._forward_process.mask_id = 0
 
-  def _corrupt(x0, t, *, block_size, return_move_mask=False):
-    del t, block_size
+  def _corrupt(x0, t, *, block_size, return_move_mask=False, corruption_mask=None):
+    del t, block_size, corruption_mask
     move = torch.zeros_like(x0, dtype=torch.bool)
     move[:, 1::2] = True
     xt = x0.clone()
@@ -124,6 +125,17 @@ def test_nll_complementary_doubles_batch():
   assert nlls.shape[0] == 2 * b
   assert nlls.shape[1] == t
   assert torch.isfinite(nlls).all()
+
+
+def test_nll_complementary_sequential_matches_fused_shape():
+  torch.manual_seed(0)
+  m = _bare(complementary=True)
+  m.complementary_batching = 'sequential'
+  b, t = 2, 8
+  x0 = torch.randint(1, m.vocab_size, (b, t))
+  valid = torch.ones(b, t)
+  nlls = BlockTrainer.nll(m, x0, valid, block_size=4)
+  assert nlls.shape[0] == 2 * b
 
 
 def test_nll_without_complementary_keeps_batch():

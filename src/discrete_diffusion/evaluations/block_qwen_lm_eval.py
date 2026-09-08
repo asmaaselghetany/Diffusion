@@ -30,6 +30,7 @@ import json
 import os
 import random
 import time
+from datetime import timedelta
 from pathlib import Path
 
 import hydra.utils
@@ -43,24 +44,20 @@ from omegaconf import OmegaConf
 from tqdm import tqdm
 
 from discrete_diffusion.data import get_tokenizer
+from discrete_diffusion.evaluations.block_qwen_eval_utils import (
+    encode_context_continuation,
+    generation_request_args,
+    require_masked_likelihood,
+    truncate_at_stops,
+)
 from discrete_diffusion.evaluations.checkpoint_utils import load_block_trainer_checkpoint
 
-
-def encode_context_continuation(tokenizer, context: str, continuation: str):
-  """Split token ids at the context/continuation boundary (BPE-safe)."""
-  ctx_ids = tokenizer(context, add_special_tokens=False)['input_ids']
-  if not continuation:
-    return ctx_ids, []
-  whole_ids = tokenizer(
-      context + continuation, add_special_tokens=False)['input_ids']
-  if whole_ids[:len(ctx_ids)] == ctx_ids:
-    return ctx_ids, whole_ids[len(ctx_ids):]
-  # Last context token merged with continuation (e.g. "The" + "re" → "There").
-  if len(ctx_ids) > 0 and whole_ids[: len(ctx_ids) - 1] == ctx_ids[:-1]:
-    return ctx_ids, whole_ids[len(ctx_ids) - 1 :]
-  raise ValueError(
-      f'Could not align continuation tokens for context={context!r} '
-      f'continuation={continuation!r}')
+try:
+  import accelerate
+  from accelerate.utils import InitProcessGroupKwargs
+except ImportError:  # pragma: no cover
+  accelerate = None
+  InitProcessGroupKwargs = None  # type: ignore[misc, assignment]
 
 
 def set_seed(seed: int) -> None:
@@ -76,12 +73,25 @@ def _load_block_trainer(checkpoint_path: str, device: torch.device):
   return load_block_trainer_checkpoint(checkpoint_path, device)
 
 
+from discrete_diffusion.evaluations.decode_profiles import LM_EVAL_DECODE_PROFILES
+
+
 def _as_bool(v) -> bool:
   if isinstance(v, bool):
     return v
   if v is None:
     return False
   return str(v).strip().lower() in ('1', 'true', 'yes', 'y', 't')
+
+
+def _is_none_token(v) -> bool:
+  if v is None:
+    return True
+  return str(v).strip().lower() in ('', 'none', 'null')
+
+
+# Shared ancestral core (all pipelines) vs paper overlays.
+_LM_EVAL_DECODE_PROFILES = LM_EVAL_DECODE_PROFILES
 
 
 @register_model('block_qwen')
@@ -98,6 +108,13 @@ class BlockQwenEvalHarness(LM):
       show_speed: bool = True,
       speed_metrics_path: str | None = None,
       seed: int = 0,
+      threshold: float | None = None,
+      unmask_threshold: float | None = None,
+      greedy: bool | None = None,
+      hierarchical_kv: bool | None = None,
+      use_block_cache: bool | None = None,
+      single_stream_decode: bool | None = None,
+      decode_profile: str | None = None,
       **kwargs,
   ) -> None:
     super().__init__()
@@ -106,8 +123,33 @@ class BlockQwenEvalHarness(LM):
       raise ValueError('model_args must include checkpoint_path=...')
     # lm-eval may pass batch_size via CLI *and* model_args; prefer explicit.
     set_seed(int(seed))
-    self._device = torch.device(
-        device if torch.cuda.is_available() or device == 'cpu' else 'cpu')
+    # Fast-dLLM eval.py: Accelerate shards requests across GPUs/nodes.
+    # BlockSampler generate is slow (~2 tok/s here); rank skew after
+    # generate_until easily exceeds the default NCCL watchdog (600s).
+    # lm-eval then calls accelerator.wait_for_everyone() and dies with
+    # ALLREDUCE timeout even though generations largely finished.
+    accelerator = None
+    if accelerate is not None:
+      kwargs_handlers = []
+      if InitProcessGroupKwargs is not None:
+        timeout_s = int(os.environ.get('LM_EVAL_DIST_TIMEOUT_SEC', str(6 * 3600)))
+        kwargs_handlers.append(
+            InitProcessGroupKwargs(timeout=timedelta(seconds=timeout_s)))
+      accelerator = accelerate.Accelerator(
+          kwargs_handlers=kwargs_handlers or None)
+      if accelerator.num_processes <= 1:
+        accelerator = None
+    if accelerator is not None:
+      self._device = accelerator.device
+      self._rank = int(accelerator.process_index)
+      self._world_size = int(accelerator.num_processes)
+      self.accelerator = accelerator
+    else:
+      self._device = torch.device(
+          device if torch.cuda.is_available() or device == 'cpu' else 'cpu')
+      self._rank = 0
+      self._world_size = 1
+      self.accelerator = None
     self.model, self.config, self.tokenizer = _load_block_trainer(
         checkpoint_path, self._device)
     self.batch_size = int(batch_size)
@@ -118,14 +160,77 @@ class BlockQwenEvalHarness(LM):
     self.show_speed = _as_bool(show_speed)
     self.speed_metrics_path = speed_metrics_path
     self.checkpoint_path = str(checkpoint_path)
+
+    profile = str(decode_profile or 'baseline').strip().lower()
+    if profile not in _LM_EVAL_DECODE_PROFILES:
+      raise ValueError(
+          f'decode_profile={decode_profile!r} not in '
+          f'{sorted(_LM_EVAL_DECODE_PROFILES)}')
+    prof = dict(_LM_EVAL_DECODE_PROFILES[profile])
+
+    # Profile defaults, then explicit model_args win.
+    if hierarchical_kv is None and 'hierarchical_kv' in prof:
+      hierarchical_kv = prof['hierarchical_kv']
+    if use_block_cache is None and 'use_block_cache' in prof:
+      use_block_cache = prof['use_block_cache']
+    if single_stream_decode is None and 'single_stream_decode' in prof:
+      single_stream_decode = prof['single_stream_decode']
+    if greedy is None and 'greedy' in prof:
+      greedy = prof['greedy']
+
+    # Fast-dLLM eval.py uses model_args threshold=… (confidence unmask).
+    thr = unmask_threshold if unmask_threshold is not None else threshold
+    clear_thr = bool(prof.get('clear_unmask_threshold', False))
+    if not _is_none_token(thr):
+      self._force_unmask_threshold = float(thr)
+      clear_thr = False
+    elif clear_thr or profile == 'baseline':
+      self._force_unmask_threshold = None
+      clear_thr = True
+    else:
+      self._force_unmask_threshold = None
+    self._force_greedy = None if greedy is None else _as_bool(greedy)
     self.mask_id = int(self.model.mask_id)
     self.block_size = int(self.model.block_size)
     self.seq_len = int(self.model.num_tokens)
-    self._rank = 0
-    self._world_size = 1
     self._speed_tokens = 0
     self._speed_elapsed = 0.0
     self._sampler = self.model._create_sampler()
+    self._decode_pins = {
+        'hierarchical_kv': None if hierarchical_kv is None else _as_bool(
+            hierarchical_kv),
+        'use_block_cache': None if use_block_cache is None else _as_bool(
+            use_block_cache),
+        'single_stream_decode': (
+            None if single_stream_decode is None
+            else _as_bool(single_stream_decode)),
+    }
+    if self._sampler is not None:
+      # Strip / apply paper overlays from the active profile.
+      if 'use_arpc' in prof and hasattr(self._sampler, 'use_arpc'):
+        self._sampler.use_arpc = bool(prof['use_arpc'])
+      if 'sub_block_size' in prof and hasattr(self._sampler, 'sub_block_size'):
+        self._sampler.sub_block_size = prof['sub_block_size']
+      if clear_thr:
+        self._sampler.unmask_threshold = None
+      elif self._force_unmask_threshold is not None:
+        self._sampler.unmask_threshold = self._force_unmask_threshold
+      for attr, val in self._decode_pins.items():
+        if val is not None:
+          setattr(self._sampler, attr, val)
+      # DualCache path needs hierarchical progressive windows.
+      if (bool(getattr(self._sampler, 'use_block_cache', False))
+          and not bool(getattr(self._sampler, 'hierarchical_kv', False))):
+        self._sampler.hierarchical_kv = True
+      if self._rank == 0:
+        print(
+            f'[decode_profile={profile}] '
+            f'unmask_threshold={getattr(self._sampler, "unmask_threshold", None)} '
+            f'hierarchical_kv={getattr(self._sampler, "hierarchical_kv", None)} '
+            f'use_block_cache={getattr(self._sampler, "use_block_cache", None)} '
+            f'single_stream={getattr(self._sampler, "single_stream_decode", None)} '
+            f'use_arpc={getattr(self._sampler, "use_arpc", None)}',
+            flush=True)
     self._is_causal_ar = self._sampler is None
     if self._is_causal_ar:
       mode = getattr(self.model.backbone, 'forward_mode', None)
@@ -165,6 +270,7 @@ class BlockQwenEvalHarness(LM):
   @torch.no_grad()
   def get_loglikelihood(self, prefix, target) -> float:
     """One-shot masked CE on the continuation (Fast-dLLM-style approximation)."""
+    require_masked_likelihood(self.model.forward_process_name)
     seq = torch.tensor(prefix + target, dtype=torch.long, device=self._device)
     if seq.numel() > self.seq_len:
       return -1e8
@@ -221,16 +327,7 @@ class BlockQwenEvalHarness(LM):
 
   @staticmethod
   def _truncate_at_stop(text: str, until: list[str]) -> str:
-    if not until:
-      return text
-    end = len(text)
-    for stop in until:
-      if not stop:
-        continue
-      idx = text.find(stop)
-      if idx != -1:
-        end = min(end, idx)
-    return text[:end]
+    return truncate_at_stops(text, until)
 
   @torch.no_grad()
   def _generate_batch(
@@ -312,6 +409,8 @@ class BlockQwenEvalHarness(LM):
     return answers, n_tokens, elapsed
 
   def _write_speed_metrics(self) -> None:
+    if self._rank != 0:
+      return
     if not self.show_speed and not self.speed_metrics_path:
       return
     elapsed = max(self._speed_elapsed, 1e-9)
@@ -325,9 +424,19 @@ class BlockQwenEvalHarness(LM):
         'tok_s': float(tok_s),
         'num_steps': self.num_steps,
         'batch_size': self.batch_size,
+        'unmask_threshold': getattr(
+            self._sampler, 'unmask_threshold', None) if self._sampler else None,
+        'hierarchical_kv': bool(getattr(
+            self._sampler, 'hierarchical_kv', False)) if self._sampler else False,
+        'use_block_cache': bool(getattr(
+            self._sampler, 'use_block_cache', False)) if self._sampler else False,
+        'single_stream_decode': bool(getattr(
+            self._sampler, 'single_stream_decode', False)
+        ) if self._sampler else False,
         'note': (
-            'UNI-D2 BlockSampler tok/s during task generation '
-            '(no Fast-dLLM hierarchical KV / sub-block parallel).'),
+            'UNI-D2 BlockSampler tok/s during task generation. '
+            'hierarchical_kv / DualCache are our ports — not Fast-dLLM '
+            'fused CUDA kernels; do not claim paper throughput parity.'),
     }
     print(
         f"[tok/s] tokens={metrics['tokens_generated']} "
@@ -357,7 +466,9 @@ class BlockQwenEvalHarness(LM):
     for key, batch in buckets.items():
       max_gen, until_tuple, do_sample = key
       until = list(until_tuple)
-      greedy = not do_sample
+      greedy = (
+          self._force_greedy if self._force_greedy is not None
+          else (not do_sample))
       batch.sort(key=lambda x: len(x[1].args[0]))
       for start in range(0, len(batch), self.batch_size):
         chunk = batch[start:start + self.batch_size]

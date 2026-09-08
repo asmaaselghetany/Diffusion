@@ -20,15 +20,24 @@
 # Extra non-lever overrides go in EXTRA_OVERRIDES.
 
 set -euo pipefail
-WORKSPACE="${ASMAA_WORKSPACE:-/fast/project/HFMI_SynergyUnit/asmaa.elsayed}"
+WORKSPACE="${ASMAA_WORKSPACE:-/e/project1/scifi/elsayed3}"
 # shellcheck disable=SC1091
 source "${WORKSPACE}/env.sh"
 cd "${REPO_ROOT}"
+# Login nodes often lack bare `python`; prefer repo venv.
+if [[ -x "${REPO_ROOT}/.venv/bin/python" ]]; then
+  export PATH="${REPO_ROOT}/.venv/bin:${PATH}"
+fi
+if ! command -v python >/dev/null 2>&1; then
+  echo "No python on PATH (expected ${REPO_ROOT}/.venv/bin/python)" >&2
+  exit 1
+fi
 
 PRESET=""
 LEVERS=""
 ARM=""
-LINE="ar2block"
+LINE=""
+LINE_SET=0
 DRY_RUN=0
 LIST=0
 SCALE=""   # paper | micro | empty→infer
@@ -38,7 +47,7 @@ while [[ $# -gt 0 ]]; do
     --preset) PRESET="${2:?}"; shift 2 ;;
     --levers) LEVERS="${2:?}"; shift 2 ;;
     --arm) ARM="${2:?}"; shift 2 ;;
-    --line) LINE="${2:?}"; shift 2 ;;
+    --line) LINE="${2:?}"; LINE_SET=1; shift 2 ;;
     --micro) SCALE=micro; shift ;;
     --paper) SCALE=paper; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
@@ -53,6 +62,20 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# If preset locks a single line (e.g. BlockGen scratch), default to it so
+# callers cannot silently train ar2block under a BlockGen tag.
+if [[ -n "${PRESET}" && "${LINE_SET}" -eq 0 ]]; then
+  LINE="$(python - <<PY
+import yaml
+from pathlib import Path
+reg = yaml.safe_load(Path('configs/levers/registry.yaml').read_text())
+lines = list((reg.get('presets') or {}).get('${PRESET}', {}).get('line') or [])
+print(lines[0] if len(lines) == 1 else 'ar2block')
+PY
+)"
+fi
+LINE="${LINE:-ar2block}"
 
 if [[ "${LIST}" -eq 1 ]]; then
   python - <<'PY'
@@ -77,7 +100,7 @@ fi
 # Infer scale: paper cells must NOT silently become 500-step micros.
 _is_paper_preset() {
   case "${1}" in
-    C0|C2_shift|C2_comp|C2_fdllm|C2_fdllm_full|C5_joint_ar|C5_causal_clean|B3_mixture|B3_arpc|B3_arpc_simplified|B3_t_strat|B3_weights_32|B3_u_stratified|B4_hybrid_p10|B4_hybrid_p50|decode_sub_block|decode_hierarchical|decode_dual_cache) return 0 ;;
+    C0|C2_shift|C2_comp|C2_fdllm|C2_fdllm_full|fastdllm_v2|C5_joint_ar|C5_causal_clean|N0|B3_mixture|B3_arpc|B3_arpc_simplified|B3_t_strat|B3_weights_32|B3_u_stratified|xfer_mixture|xfer_arpc|xfer_weights_32|xfer_u_stratified|B4_hybrid_p10|B4_hybrid_p50|decode_sub_block|decode_hierarchical|decode_dual_cache|blockgen_uniform|blockgen_owt_uniform|fdllm|fdllm_decode) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -90,7 +113,12 @@ if [[ -z "${SCALE}" ]]; then
 fi
 
 BLOCK="${BLOCK:-32}"
-export NUM_GPUS="${NUM_GPUS:-2}"
+export NUM_NODES="${NUM_NODES:-1}"
+# Jupiter booster nodes are 4×GH200; legacy HFMI default was 2.
+export GPUS_PER_NODE="${GPUS_PER_NODE:-4}"
+export NUM_GPUS="${NUM_GPUS:-$((NUM_NODES * GPUS_PER_NODE))}"
+# Booster QOS MaxWall=12h. Paper 6k @ GBS 256: default 8×4 (32 GPUs).
+export SBATCH_TIME="${SBATCH_TIME:-12:00:00}"
 EXTRA_OVERRIDES="${EXTRA_OVERRIDES:-}"
 
 if [[ "${SCALE}" == "paper" ]]; then
@@ -98,6 +126,11 @@ if [[ "${SCALE}" == "paper" ]]; then
   MAX_STEPS="${MAX_STEPS:-6000}"
   SEQ_LEN="${SEQ_LEN:-2048}"
   GBS="${GBS:-256}"
+  # Default paper width on Jupiter (8 nodes × 4 GPUs).
+  if [[ -z "${NUM_NODES_SET:-}" && "${NUM_NODES}" -eq 1 ]]; then
+    export NUM_NODES=8
+    export NUM_GPUS=$((NUM_NODES * GPUS_PER_NODE))
+  fi
   export RESUME_FROM_CKPT="${RESUME_FROM_CKPT:-false}"
   export RUN_FULL_EVAL="${RUN_FULL_EVAL:-true}"
   export WANDB_PROJECT="${WANDB_PROJECT:-block_qwen}"
@@ -178,11 +211,16 @@ PY
     exit 1
   fi
   if [[ "${DRY_RUN}" -eq 1 ]]; then
-    echo "DRY_RUN: would sbatch ${sbatch}"
+    echo "DRY_RUN: would sbatch --nodes=${NUM_NODES} --ntasks-per-node=${GPUS_PER_NODE} --gres=gpu:${GPUS_PER_NODE} --time=${SBATCH_TIME} ${sbatch}"
     return 0
   fi
   local jid
   jid="$(sbatch --parsable --job-name="lever_${tag}_${arm}" \
+    --nodes="${NUM_NODES}" \
+    --ntasks-per-node="${GPUS_PER_NODE}" \
+    --gres="gpu:${GPUS_PER_NODE}" \
+    --cpus-per-task=18 \
+    --time="${SBATCH_TIME}" \
     --export=ALL \
     "${sbatch}")"
   # Symlink audit name with job id → unique stamp file.

@@ -32,10 +32,10 @@ def test_fdllm_preset_masked_ok(reg):
 def test_paper_C2_fdllm_is_strict_axis_d(reg):
   """Tab-2 C2_fdllm = shift+comp only (no mask_schedule confound)."""
   r = resolve(preset='C2_fdllm', arm='masked', line='ar2block', registry=reg)
-  assert r['overrides'] == [
-      'algo.shift_loss_targets=true',
-      'algo.complementary_masks=true',
-  ]
+  assert 'algo.shift_loss_targets=true' in r['overrides']
+  assert 'algo.complementary_masks=true' in r['overrides']
+  assert 'algo.complementary_batching=fused' in r['overrides']
+  assert 'algo.mask_schedule=fast_dllm' not in r['overrides']
 
 
 def test_paper_C2_fdllm_full_adds_schedule(reg):
@@ -59,29 +59,63 @@ def test_arpc_masked_refused(reg):
   with pytest.raises(ValueError, match='only allowed on arms'):
     resolve(
         lever_ids=['mixture_1_32', 'arpc'],
-        arm='masked', line='ar2block', registry=reg)
+        arm='masked', line='block', registry=reg)
 
 
 def test_mixture_vs_weights_conflict(reg):
   with pytest.raises(ValueError, match='conflict'):
     resolve(
         lever_ids=['mixture_16_32', 'bg_weights_1_16'],
-        arm='uniform', line='ar2block', registry=reg)
+        arm='uniform', line='block', registry=reg)
 
 
 def test_arpc_requires_size_1(reg):
   with pytest.raises(ValueError, match='requires'):
-    resolve(lever_ids=['arpc'], arm='uniform', line='ar2block', registry=reg)
+    resolve(lever_ids=['arpc'], arm='uniform', line='block', registry=reg)
 
 
 def test_blockgen_uniform_preset(reg):
   r = resolve(
-      preset='blockgen_uniform', arm='uniform', line='ar2block', registry=reg)
+      preset='blockgen_uniform', arm='uniform', line='block', registry=reg)
   joined = ' '.join(r['overrides'])
-  assert 'block_weights' in joined
+  assert 'block_weights=[0.05,0.0,0.0,0.0,0.95]' in joined
   assert 'use_arpc=true' in joined
   assert 'arpc_mode=blockgen' in joined
   assert 'pure_noise_block_sizes' in joined
+
+
+def test_blockgen_uniform_refuses_ar2block(reg):
+  with pytest.raises(ValueError, match='only allows line'):
+    resolve(
+        preset='blockgen_uniform', arm='uniform', line='ar2block',
+        registry=reg)
+
+
+def test_native_levers_refuse_raw_ar2block(reg):
+  with pytest.raises(ValueError, match='family=native'):
+    resolve(
+        lever_ids=['bg_weights_1_16', 'u_stratified'],
+        arm='uniform', line='ar2block', registry=reg)
+
+
+def test_xfer_preset_allows_native_on_ar2block(reg):
+  r = resolve(
+      preset='xfer_u_stratified', arm='uniform', line='ar2block',
+      registry=reg)
+  assert 'u-stratified' in ' '.join(r['overrides'])
+  assert any('not a BlockGen paper claim' in w for w in r['warnings'])
+
+
+def test_b3_arpc_is_scratch_block(reg):
+  r = resolve(preset='B3_arpc', arm='uniform', line='block', registry=reg)
+  assert 'arpc_mode=blockgen' in ' '.join(r['overrides'])
+  with pytest.raises(ValueError, match='only allows line'):
+    resolve(preset='B3_arpc', arm='uniform', line='ar2block', registry=reg)
+
+
+def test_fdllm_levers_refuse_scratch_block(reg):
+  with pytest.raises(ValueError, match='family=conversion|only allowed on line'):
+    resolve(lever_ids=['shift'], arm='masked', line='block', registry=reg)
 
 
 def test_c5_joint_ar_preset(reg):

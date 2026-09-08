@@ -21,6 +21,8 @@
 set -euo pipefail
 
 export LINE=ar2block
+export NUM_NODES=1
+export GPUS_PER_NODE=2
 export NUM_GPUS=2
 if [[ -z "${RUN_ROOT:-}" ]]; then
   export RUN_ROOT="/fast/project/HFMI_SynergyUnit/asmaa.elsayed/uni-d2/outputs/block_qwen/ar2block_masked_${SLURM_JOB_ID}"

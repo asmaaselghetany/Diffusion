@@ -42,7 +42,7 @@ cells:
     launch: lever
     preset: C2_comp
     arm: masked
-    notes: "Paired m/~m (sequential forwards)."
+    notes: "Paired m/~m (Hub fused 2B)."
 
   C2_fdllm:
     title: "Axis D — shift + complementary (strict)"
@@ -134,55 +134,106 @@ cells:
     axis: [A]
     launch: block_uniform
 
+  N0:
+    title: "Native block reference — scratch uniform (hooks off)"
+    status: ready
+    kind: train
+    axis: [A]
+    launch: lever
+    preset: N0
+    arm: uniform
+    notes: "Native-family floor (line=block). Pair with B2_uniform sbatch for non-lever path."
+
   B3_mixture:
-    title: "BlockGen mixture [16,32]"
+    title: "Native BlockGen mixture [16,32] (scratch)"
     status: ready
     kind: train
     axis: [B]
     launch: lever
     preset: B3_mixture
     arm: masked
-    notes: "Single-factor geometry. Launchable; interpret vs C0/C2 when reporting."
+    notes: "line=block only. Compare to N0/B2, not C0. For geometry-on-conversion use xfer_mixture."
 
   B3_t_strat:
-    title: "Timestep stratified_gamma=0.5"
+    title: "Timestep stratified_gamma=0.5 (conversion-track)"
     status: ready
     kind: train
     axis: [B]
     launch: lever
     preset: B3_t_strat
     arm: masked
-    notes: "t-strat within fixed block size (≠ BlockGen u-stratified)."
+    notes: "Our t-strat on ar2block (≠ BlockGen u-stratified)."
 
   B3_weights_32:
-    title: "BlockGen weighted mixture ending at size 32"
+    title: "Native BlockGen weighted mixture ending at size 32"
     status: ready
     kind: train
     axis: [B]
     launch: lever
     preset: B3_weights_32
-    arm: masked
-    notes: "bg_weights_1_32 + same per-GPU size."
+    arm: uniform
+    notes: "line=block; bg_weights_1_32. Prefer uniform for BlockGen-uniform analogue."
 
   B3_u_stratified:
-    title: "BlockGen u-stratified block-size draw"
+    title: "Native BlockGen u-stratified block-size draw"
     status: ready
     kind: train
     axis: [B]
     launch: lever
     preset: B3_u_stratified
-    arm: masked
-    notes: "Requires bg_weights; implemented in block_geometry."
+    arm: uniform
+    notes: "line=block; requires bg_weights. For ar2block transfer use xfer_u_stratified."
 
   B3_arpc:
-    title: "BlockGen mixture[1,32] + full ARPC"
+    title: "Native BlockGen mixture[1,32] + full ARPC"
     status: ready
     kind: train
     axis: [B, E]
     launch: lever
     preset: B3_arpc
     arm: uniform
-    notes: "Uniform-only; arpc_mode=blockgen (divergence)."
+    notes: "line=block; uniform-only. Not a conversion cell."
+
+  # ---- Transfer (BlockGen knobs on AR→block; not a BlockGen claim) ----
+  xfer_mixture:
+    title: "Transfer — mixture [16,32] on ar2block"
+    status: ready
+    kind: train
+    axis: [B]
+    launch: lever
+    preset: xfer_mixture
+    arm: masked
+    notes: "Compare to C0, not N0. Never tag as BlockGen recreate."
+
+  xfer_u_stratified:
+    title: "Transfer — bg_weights 1+16 + u-strat on ar2block"
+    status: ready
+    kind: train
+    axis: [B]
+    launch: lever
+    preset: xfer_u_stratified
+    arm: uniform
+    notes: "Transfer family only."
+
+  xfer_weights_32:
+    title: "Transfer — bg_weights 1+32 on ar2block"
+    status: ready
+    kind: train
+    axis: [B]
+    launch: lever
+    preset: xfer_weights_32
+    arm: uniform
+    notes: "Transfer family only."
+
+  xfer_arpc:
+    title: "Transfer — mixture[1,32] + ARPC on ar2block"
+    status: ready
+    kind: train
+    axis: [B, E]
+    launch: lever
+    preset: xfer_arpc
+    arm: uniform
+    notes: "Uniform + ar2block. Different claim from B3_arpc."
 
   B4_hybrid_p10:
     title: "Hybrid noising (mask + 10% uniform)"
@@ -253,8 +304,17 @@ cells:
     notes: "CKPT=path/to.ckpt"
 
   lm_eval:
-    title: "lm-eval + tok/s for one checkpoint"
+    title: "lm-eval + tok/s for one checkpoint (family-routed)"
     status: eval_only
     kind: eval
     launch: lm_eval
-    notes: "CKPT=path/to.ckpt TASKS=gsm8k,ifeval"
+    notes: >
+      CKPT=path/to.ckpt. Routes via submit_family_eval.sh: DualCache exactness
+      when ckpt has confidence pins; baseline for C0-style masked; refuses uniform.
+
+  family_eval:
+    title: "Auto eval stack (lm-eval DualCache | baseline | ARPC)"
+    status: eval_only
+    kind: eval
+    launch: family_eval
+    notes: "CKPT=path/to.ckpt|run_dir — see scripts/submit_family_eval.sh"

@@ -78,17 +78,29 @@ def resolve(
   selected_set = set(selected)
   overrides: list[str] = []
   sources: list[str] = []
+  is_xfer = bool(preset and str(preset).startswith('xfer_'))
 
   for lid in selected:
     spec = levers_def[lid]
     arms = list(spec.get('arms') or [])
     lines = list(spec.get('line') or ['ar2block', 'block'])
+    family = str(spec.get('family') or 'shared')
     if arm not in arms:
       raise ValueError(
           f'lever={lid} only allowed on arms={arms}, got arm={arm}')
     if line not in lines:
       raise ValueError(
           f'lever={lid} only allowed on line={lines}, got line={line}')
+    # Family firewall: native BlockGen knobs on ar2block only via xfer_*.
+    if family == 'native' and line == 'ar2block' and not is_xfer:
+      raise ValueError(
+          f'lever={lid} is family=native (BlockGen/scratch). '
+          f'Use --line block (B3_/blockgen_*), or an xfer_* preset '
+          f'for geometry-on-conversion — do not claim BlockGen on ar2block.')
+    if family == 'conversion' and line == 'block':
+      raise ValueError(
+          f'lever={lid} is family=conversion (AR→block / Fast-dLLM). '
+          f'Use --line ar2block; scratch block is the native family.')
     for other in spec.get('conflicts') or []:
       if other in selected_set:
         raise ValueError(
@@ -112,6 +124,10 @@ def resolve(
   if 'hybrid_p10' in selected_set:
     warnings.append(
         'hybrid_p10 pins default p_uniform=0.1; real effect is --arm hybrid')
+  if is_xfer:
+    warnings.append(
+        'xfer_* = BlockGen geometry on AR→block conversion — '
+        'not a BlockGen paper claim (use blockgen_* / B3_* + line=block)')
 
   tag = preset or ('+'.join(selected) if selected else 'neutral')
   return {
@@ -132,16 +148,24 @@ _KNOWN_OVERRIDE_PREFIXES = (
     'callbacks.', 'hydra.',
 )
 
+# Hydra config-group switches (no dotted prefix), e.g. data=openwebtext-blockgen.
+_KNOWN_GROUP_KEYS = frozenset({
+    'data', 'model', 'algo', 'noise', 'sampling', 'strategy', 'lr_scheduler',
+    'callbacks', 'prior', 'forward_process',
+})
+
 # Bare names that must be prefixed — root-level Hydra keys never merge into algo/sampling.
 _BARE_ALGO_HOOKS = frozenset({
-    'shift_loss_targets', 'complementary_masks', 'mask_schedule',
+    'shift_loss_targets', 'complementary_masks', 'complementary_batching',
+    'mask_schedule',
     'joint_ar_alpha', 'hybrid_p_uniform', 'hybrid_decode',
     'block_size_mixture', 'causal_clean_stream', 'stratified_gamma',
     'block_weights', 'block_size_per_gpu', 'pure_noise_block_sizes',
     'loss_type_special_cases',
 })
 _BARE_SAMPLING_HOOKS = frozenset({
-    'hierarchical_kv', 'use_block_cache', 'sub_block_size',
+    'hierarchical_kv', 'use_block_cache', 'single_stream_decode',
+    'sub_block_size',
     'use_arpc', 'arpc_mode', 'arpc_corruption_mode',
 })
 
@@ -159,9 +183,11 @@ def validate_extra_overrides(tokens: list[str]) -> list[str]:
     if not key:
       raise ValueError(f'EXTRA_OVERRIDES empty key in {tok!r}')
     if not any(key.startswith(p) for p in _KNOWN_OVERRIDE_PREFIXES):
-      warnings.append(
-          f'EXTRA_OVERRIDES key {key!r} has unknown prefix '
-          f'(expected one of {_KNOWN_OVERRIDE_PREFIXES[:6]}…)')
+      if key not in _KNOWN_GROUP_KEYS and key not in (
+          'block_size', 'scratch_dir'):
+        warnings.append(
+            f'EXTRA_OVERRIDES key {key!r} has unknown prefix '
+            f'(expected one of {_KNOWN_OVERRIDE_PREFIXES[:6]}…)')
     # Orphan-root footgun: bare keys at experiment root never merge.
     if key.startswith('algo.') is False and key in _BARE_ALGO_HOOKS:
       raise ValueError(

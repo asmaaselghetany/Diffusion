@@ -96,6 +96,54 @@ def build_causal_bool_mask(seq_len: int, device: torch.device | str = 'cpu') -> 
   return kv_idx <= q_idx
 
 
+def eval_block_diff_mask(
+    q_idx: torch.Tensor,
+    kv_idx: torch.Tensor,
+    *,
+    block_size: int,
+) -> torch.Tensor:
+  """Hub ``eval_block_diff_mask``: single-stream block-causal allow-mask.
+
+  Tokens attend to all positions in the same or earlier blocks (full within
+  the current block). Used at decode time when ``xt == x0`` for committed
+  prefix — mathematically equivalent to dual-stream train mask on that state.
+  """
+  return (q_idx // block_size) >= (kv_idx // block_size)
+
+
+def build_eval_block_bool_mask(
+    seq_len: int,
+    block_size: int,
+    device: torch.device | str = 'cpu',
+    *,
+    cache_seq_len: int = 0,
+) -> torch.Tensor:
+  """Boolean allow-mask for single-stream decode of length ``seq_len``.
+
+  ``cache_seq_len`` shifts query indices when K/V for a prefix already live
+  in ``past_key_values`` (Hub ``eval_mask``).
+  """
+  q_idx = torch.arange(seq_len, device=device)[:, None] + cache_seq_len
+  kv_idx = torch.arange(seq_len + cache_seq_len, device=device)[None, :]
+  return eval_block_diff_mask(q_idx, kv_idx, block_size=block_size)
+
+
+def build_eval_sdpa_mask(
+    seq_len: int,
+    block_size: int,
+    device: torch.device | str = 'cpu',
+    dtype: torch.dtype = torch.float32,
+    *,
+    cache_seq_len: int = 0,
+) -> torch.Tensor:
+  allowed = build_eval_block_bool_mask(
+      seq_len, block_size, device, cache_seq_len=cache_seq_len)
+  q = seq_len
+  k = seq_len + cache_seq_len
+  mask = torch.zeros((1, 1, q, k), device=device, dtype=dtype)
+  return mask.masked_fill(~allowed, float('-inf'))
+
+
 def build_flex_block_mask(n: int, block_size: int):
   from torch.nn.attention.flex_attention import create_block_mask
   return create_block_mask(

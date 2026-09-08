@@ -46,3 +46,8 @@ def test_submit_nfe_sweep_exists():
 def test_hybrid_launch_arm_in_launch_script():
   text = (_REPO / 'scripts' / '_block_qwen_launch.bash').read_text()
   assert 'hybrid)  ALGO=block_hybrid' in text
+  ddp = (_REPO / 'scripts' / '_block_qwen_ddp.bash').read_text()
+  assert 'trainer.num_nodes' in ddp
+  assert '--ntasks-per-node="${GPUS_PER_NODE}"' in ddp
+  import re
+  assert re.search(r'^\s*srun\b[^\n]*--gpus-per-task=1', ddp, re.M) is None

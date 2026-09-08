@@ -7,8 +7,8 @@ Prefer the upstream-only path first::
 
 That uses UNI-D² ``generate_samples`` + ``generative_ppl`` only.
 
-This script wraps those same modules and optionally adds fork extras
-(DepBench, block ELBO sweep). Use ``--upstream-only`` to skip extras.
+This script wraps those same modules and optionally adds the block ELBO
+sweep. DepBench is no longer part of this pipeline.
 """
 
 from __future__ import annotations
@@ -24,11 +24,9 @@ def _repo_root() -> Path:
   return Path(__file__).resolve().parents[1]
 
 
-def _workspace_root() -> Path:
-  import os
-  return Path(os.environ.get(
-      'ASMAA_WORKSPACE',
-      '/fast/project/HFMI_SynergyUnit/asmaa.elsayed'))
+_REPO_SRC = _repo_root() / 'src'
+if str(_REPO_SRC) not in sys.path:
+  sys.path.insert(0, str(_REPO_SRC))
 
 
 def _run(
@@ -48,8 +46,7 @@ def _run(
 def main(argv: list[str] | None = None) -> int:
   parser = argparse.ArgumentParser(
       description=(
-          'Run block_qwen eval (upstream generate_samples/gen-PPL + '
-          'optional extras)'))
+          'Run block_qwen eval (generate_samples + gen-PPL + optional ELBO)'))
   parser.add_argument('--checkpoint', required=True)
   parser.add_argument(
       '--run-dir', default=None,
@@ -59,30 +56,43 @@ def main(argv: list[str] | None = None) -> int:
   # keep 1 (same constraint as training eval_global_batch_size).
   parser.add_argument('--gen-batch-size', type=int, default=1)
   parser.add_argument('--gen-steps', type=int, default=32)
+  parser.add_argument(
+      '--sample-mode', default='auto',
+      help='auto|native_free|conversion_free|bare_bos (see generate_samples.yaml)')
+  parser.add_argument(
+      '--decode-profile', default='baseline',
+      help='baseline|hierarchical|dual_cache|keep — free-gen defaults to baseline clears')
+  parser.add_argument(
+      '--max-new-tokens', type=int, default=512,
+      help='Cap free-gen length (default 512; was null→2048 fill)')
+  parser.add_argument(
+      '--force-regen', action='store_true',
+      help='Ignore existing samples.pt even if meta matches')
   parser.add_argument('--skip-samples', action='store_true')
   parser.add_argument('--skip-gen-ppl', action='store_true')
   parser.add_argument(
       '--upstream-only',
       action='store_true',
-      help='Only UNI-D² generate_samples + generative_ppl (skip DepBench/ELBO).')
-  parser.add_argument('--skip-depbench', action='store_true')
+      help='Only UNI-D² generate_samples + generative_ppl (skip ELBO).')
   parser.add_argument('--skip-elbo', action='store_true')
-  parser.add_argument('--depbench-count', type=int, default=16)
-  parser.add_argument(
-      '--depbench-root',
-      default=None,
-      help='Path to depbench repo root (default: $DEPBENCH_ROOT or '
-           '$ASMAA_WORKSPACE/projects/depbench)')
+  # Deprecated no-ops kept so old CLI / sbatch args do not crash.
+  parser.add_argument('--skip-depbench', action='store_true',
+                      help=argparse.SUPPRESS)
+  parser.add_argument('--depbench-count', type=int, default=0,
+                      help=argparse.SUPPRESS)
+  parser.add_argument('--depbench-root', default=None,
+                      help=argparse.SUPPRESS)
   parser.add_argument('--elbo-max-batches', type=int, default=50)
   parser.add_argument('--block-sizes', default='1,4,16,32')
   args = parser.parse_args(argv)
 
   if args.upstream_only:
-    args.skip_depbench = True
     args.skip_elbo = True
+  if args.skip_depbench or args.depbench_root or args.depbench_count:
+    print('NOTE: DepBench removed from pipeline; ignoring depbench flags.',
+          file=sys.stderr)
 
   repo = _repo_root()
-  workspace = _workspace_root()
   checkpoint = Path(args.checkpoint).resolve()
   if not checkpoint.exists():
     print(f'Checkpoint not found: {checkpoint}', file=sys.stderr)
@@ -96,16 +106,24 @@ def main(argv: list[str] | None = None) -> int:
   samples_path = run_dir / 'samples.pt'
   gen_ppl_path = run_dir / 'gen_ppl_metrics.json'
   elbo_path = run_dir / 'block_elbo_sweep.json'
-  depbench_path = run_dir / 'depbench_full.json'
   manifest_path = run_dir / 'eval_manifest.json'
 
   py = sys.executable
 
   if not args.skip_samples:
-    if samples_path.exists():
-      print(f'Samples already exist at {samples_path}; skipping generation.')
+    from discrete_diffusion.evaluations.decode_profiles import should_reuse_samples
+    reuse = should_reuse_samples(
+        samples_path,
+        checkpoint_path=checkpoint,
+        sample_mode=args.sample_mode,
+        decode_profile=args.decode_profile,
+        force_regen=args.force_regen,
+    )
+    if reuse:
+      print(f'Reusing samples (meta gate matched): {samples_path}')
     else:
-      # UNI-D² evaluations.generate_samples (same as examples/block_qwen/eval.sh).
+      if samples_path.exists():
+        print(f'Regenerating samples (stale/missing meta or --force-regen)')
       _run([
           py, '-m', 'discrete_diffusion.evaluations.generate_samples',
           f'checkpoint_path={checkpoint}',
@@ -113,6 +131,9 @@ def main(argv: list[str] | None = None) -> int:
           f'num_samples={args.num_samples}',
           f'batch_size={args.gen_batch_size}',
           f'num_steps={args.gen_steps}',
+          f'sample_mode={args.sample_mode}',
+          f'decode_profile={args.decode_profile}',
+          f'max_new_tokens={args.max_new_tokens}',
           'save_text=true',
           'device=cuda',
       ], cwd=repo)
@@ -142,54 +163,12 @@ def main(argv: list[str] | None = None) -> int:
     if rc != 0:
       print(f'WARNING: ELBO sweep exited {rc}; continuing.', file=sys.stderr)
 
-  if not args.skip_depbench:
-    import os
-    depbench_root = Path(
-        args.depbench_root
-        or os.environ.get('DEPBENCH_ROOT', '')
-        or (workspace / 'projects' / 'depbench')
-    ).resolve()
-    depbench_script = depbench_root / 'tools' / 'run_depbench.py'
-    if not depbench_script.exists():
-      print(
-          f'DepBench script not found at {depbench_script}. '
-          'Set --depbench-root or DEPBENCH_ROOT, or pass --skip-depbench / '
-          '--upstream-only.',
-          file=sys.stderr,
-      )
-      return 1
-    depbench_env = os.environ.copy()
-    prev = depbench_env.get('PYTHONPATH', '')
-    depbench_env['PYTHONPATH'] = (
-        f'{depbench_root}{(":" + prev) if prev else ""}'
-    )
-    depbench_env['DEPBENCH_ROOT'] = str(depbench_root)
-    rc = _run([
-        py, str(depbench_script),
-        '--checkpoint', str(checkpoint),
-        '--families',
-        'arithmetic,agreement,coreference,csp,'
-        'history_binding,history_tool_arg,'
-        'naturalistic_gsm8k,naturalistic_coref',
-        '--num-steps', '8,16,32',
-        '--tokens-per-step', '1,2,4,8',
-        '--block-sizes', '8,16,32',
-        '--count', str(args.depbench_count),
-        '--batch-size', '1',
-        '--plot',
-        '--output', str(depbench_path),
-    ], cwd=depbench_root, check=False, env=depbench_env)
-    if rc != 0:
-      print(f'WARNING: DepBench exited {rc}; writing partial manifest.',
-            file=sys.stderr)
-
   manifest = {
       'checkpoint': str(checkpoint),
       'run_dir': str(run_dir),
       'samples': str(samples_path) if samples_path.exists() else None,
       'gen_ppl': str(gen_ppl_path) if gen_ppl_path.exists() else None,
       'elbo_sweep': str(elbo_path) if elbo_path.exists() else None,
-      'depbench': str(depbench_path) if depbench_path.exists() else None,
   }
   with open(manifest_path, 'w', encoding='utf-8') as f:
     json.dump(manifest, f, indent=2)

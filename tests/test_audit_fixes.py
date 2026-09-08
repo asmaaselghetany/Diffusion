@@ -58,7 +58,7 @@ def _bare_trainer(*, shift: bool, ignore_bos: bool):
       'nll', '_loss', '_elbo_schedule_weights', '_apply_ignore_bos_mask',
   ]:
     setattr(m, fn, getattr(BlockTrainer, fn).__get__(m, BlockTrainer))
-  m._corrupt = lambda x0, t, *, block_size: x0.clone()
+  m._corrupt = lambda x0, t, *, block_size, corruption_mask=None, **kw: x0.clone()
   m._backbone_logits = lambda xt, x0, block_size=None, **kwargs: torch.randn(
       *xt.shape, m.vocab_size)
   m._sample_training_block_size = lambda *a, **k: m.block_size

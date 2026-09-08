@@ -1,12 +1,20 @@
 # Shared SLURM runtime setup for Qwen block jobs (source from scripts/*.sbatch).
 set -euo pipefail
 
-WORKSPACE="${ASMAA_WORKSPACE:-/fast/project/HFMI_SynergyUnit/asmaa.elsayed}"
+# Jupiter compute sees /e/project1; legacy /fast path is login-only elsewhere.
+WORKSPACE="${ASMAA_WORKSPACE:-/e/project1/scifi/elsayed3}"
+export ASMAA_WORKSPACE="${WORKSPACE}"
 # shellcheck disable=SC1091
 source "${WORKSPACE}/env.sh"
 cd "${REPO_ROOT}"
 
-module load CUDA/12.6.0
+# Prefer Jupiter Stages/CUDA stack; fall back to a bare CUDA module if present.
+# shellcheck disable=SC1091
+source "${REPO_ROOT}/scripts/jupiter_paths.sh"
+activate_jupiter_modules
+if ! command -v nvcc >/dev/null 2>&1 && [[ -z "${CUDA_HOME:-}${CUDA_ROOT:-}" ]]; then
+  module load CUDA 2>/dev/null || true
+fi
 # shellcheck disable=SC1091
 source .venv/bin/activate
 
@@ -38,7 +46,8 @@ export WANDB_CONSOLE="${WANDB_CONSOLE:-off}"
 # Don't let wandb.init hang forever and desync DDP ranks.
 export WANDB_INIT_TIMEOUT="${WANDB_INIT_TIMEOUT:-120}"
 export WANDB_HTTP_TIMEOUT="${WANDB_HTTP_TIMEOUT:-60}"
-export DISCRETE_DIFFUSION_SCRATCH_DIR="${ASMAA_WORKSPACE}/.cache/discrete_diffusion"
+# Prefer scratch cache from env.sh; do not clobber a caller-set path.
+export DISCRETE_DIFFUSION_SCRATCH_DIR="${DISCRETE_DIFFUSION_SCRATCH_DIR:-${SCRATCH:-${ASMAA_WORKSPACE}}/.cache/discrete_diffusion}"
 # Local per-job temp avoids pymp-* contention on shared project FS (Lustre/NFS).
 export TMPDIR="/tmp/block_qwen_${SLURM_JOB_ID:-local}"
 mkdir -p "${TMPDIR}"

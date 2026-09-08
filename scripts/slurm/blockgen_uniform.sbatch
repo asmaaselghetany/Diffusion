@@ -19,6 +19,8 @@
 set -euo pipefail
 
 export LINE=blockgen
+export NUM_NODES=1
+export GPUS_PER_NODE=2
 export NUM_GPUS=2
 if [[ -z "${RUN_ROOT:-}" ]]; then
   export RUN_ROOT="/fast/project/HFMI_SynergyUnit/asmaa.elsayed/uni-d2/outputs/block_qwen/blockgen_uniform_${SLURM_JOB_ID}"

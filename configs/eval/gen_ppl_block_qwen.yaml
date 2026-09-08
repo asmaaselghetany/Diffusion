@@ -6,3 +6,5 @@ samples_path: ???
 model_tokenizer: Qwen/Qwen2.5-1.5B-Instruct
 pretrained_model: gpt2-large
 metrics_path: gen_ppl_metrics.json
+# Fail closed: refuse headline gen-PPL without samples.meta.json (audit fix).
+require_samples_meta: true

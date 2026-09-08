@@ -24,6 +24,7 @@ import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from ..data.tokenizers import Text8Tokenizer
+from .decode_profiles import read_samples_meta
 
 
 def _trim_token_rows_at_eos(rows: np.ndarray, eos_id: int | None) -> np.ndarray:
@@ -41,6 +42,38 @@ def _trim_token_rows_at_eos(rows: np.ndarray, eos_id: int | None) -> np.ndarray:
   for i, row in enumerate(trimmed):
     out[i, : row.shape[0]] = row
   return out
+
+
+def _eos_token_stats(rows: np.ndarray, eos_id: int | None) -> dict:
+  """Honesty metrics: how often / how early EOS appears in raw sample tensors."""
+  n, t = int(rows.shape[0]), int(rows.shape[1])
+  if eos_id is None:
+    return {
+        'eos_rate': None,
+        'mean_tokens_before_eos': float(t),
+        'median_tokens_before_eos': float(t),
+        'full_length_rate': 1.0,
+        'raw_seq_len': t,
+        'num_samples': n,
+    }
+  lengths = []
+  has_eos = 0
+  for row in rows:
+    hits = np.where(row == eos_id)[0]
+    if hits.size:
+      has_eos += 1
+      lengths.append(int(hits[0]) + 1)
+    else:
+      lengths.append(t)
+  arr = np.asarray(lengths, dtype=np.float64)
+  return {
+      'eos_rate': float(has_eos / max(n, 1)),
+      'mean_tokens_before_eos': float(arr.mean()) if n else 0.0,
+      'median_tokens_before_eos': float(np.median(arr)) if n else 0.0,
+      'full_length_rate': float(np.mean(arr >= t)) if n else 0.0,
+      'raw_seq_len': t,
+      'num_samples': n,
+  }
 
 
 def _decode_samples(model_tokenizer, z_ts: np.ndarray) -> List[str]:
@@ -113,6 +146,15 @@ def main(cfg):
   torch.set_float32_matmul_precision('high')
   torch.set_grad_enabled(False)
 
+  samples_path = Path(hydra.utils.to_absolute_path(cfg.samples_path))
+  meta = read_samples_meta(samples_path)
+  require_meta = bool(cfg.get('require_samples_meta', False))
+  if require_meta and not meta:
+    raise SystemExit(
+        f'REFUSED: gen-PPL headline requires samples.meta.json beside '
+        f'{samples_path} (regenerate via eval.sh / generate_samples). '
+        f'Set require_samples_meta=false only for legacy ablations.')
+
   # Decode tokens (from diffusion model) to text using its tokenizer
   from discrete_diffusion.data import load_tokenizer_by_name
   model_tokenizer = load_tokenizer_by_name(str(cfg.model_tokenizer))
@@ -129,6 +171,7 @@ def main(cfg):
   z_ts = _load_samples(cfg.samples_path)
   if z_ts.ndim != 2:
     raise ValueError(f"Expected 2D [N, T] tokens array, got {z_ts.shape}")
+  eos_stats = _eos_token_stats(z_ts, model_tokenizer.eos_token_id)
   if cfg.first_chunk_only:
     z_ts = _trim_token_rows_at_eos(z_ts, model_tokenizer.eos_token_id)
   texts = _decode_samples(model_tokenizer, z_ts)
@@ -148,6 +191,9 @@ def main(cfg):
         "tokens": 0,
         "retokenize": bool(cfg.retokenize),
         "first_chunk_only": bool(cfg.first_chunk_only),
+        "require_samples_meta": require_meta,
+        "samples_meta": meta,
+        **eos_stats,
     }
     print(json.dumps(metrics, indent=2))
     out_path = Path(hydra.utils.to_absolute_path(cfg.metrics_path))
@@ -217,7 +263,16 @@ def main(cfg):
     "tokens": int(total_tokens),
     "retokenize": bool(cfg.retokenize),
     "first_chunk_only": bool(cfg.first_chunk_only),
+    "require_samples_meta": require_meta,
+    "samples_meta": meta,
+    **eos_stats,
   }
+  if bool(cfg.first_chunk_only) and eos_stats.get('eos_rate') is not None:
+    # Flag flattering short-chunk PPL after early collapse.
+    if float(eos_stats['eos_rate']) > 0.5 and float(
+        eos_stats['mean_tokens_before_eos']) < 64:
+      metrics['honesty_warning'] = (
+          'high_eos_rate_short_span: first_chunk_only PPL may launder collapse')
 
   print(json.dumps(metrics, indent=2))
   out_path = Path(hydra.utils.to_absolute_path(cfg.metrics_path))
@@ -229,4 +284,3 @@ def main(cfg):
 
 if __name__ == "__main__":
   main()
-

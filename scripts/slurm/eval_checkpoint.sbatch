@@ -1,29 +1,30 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=bqwen-eval
 #SBATCH --output=slurm_logs/%x_%j.out
+#SBATCH --error=slurm_logs/%x_%j.err
+#SBATCH --account=scifi
+#SBATCH --partition=booster
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
-#SBATCH --time=24:00:00
-# Full suite (samples + DepBench grid) needs ~10-14h; 8h was timing out.
-#SBATCH --partition=standard
-#SBATCH --chdir=/fast/project/HFMI_SynergyUnit/asmaa.elsayed/uni-d2
+#SBATCH --cpus-per-task=18
+#SBATCH --time=12:00:00
+#SBATCH --open-mode=append
+#SBATCH --chdir=/e/project1/scifi/elsayed3/Diffusion-new
 #
-# Full eval suite for one block_qwen checkpoint.
+# Full eval suite for one block_qwen checkpoint:
+#   samples → gen-PPL → ELBO sweep
 #
 # Usage:
 #   sbatch scripts/slurm/eval_checkpoint.sbatch <checkpoint_path> [eval args...]
-#   sbatch scripts/slurm/eval_checkpoint.sbatch masked <job_id> [eval args...]
-#   sbatch scripts/slurm/eval_checkpoint.sbatch ar2block masked <job_id> [eval args...]
-#   sbatch scripts/slurm/eval_checkpoint.sbatch block uniform <job_id> [eval args...]
+#   sbatch scripts/slurm/eval_checkpoint.sbatch ar2block masked <job_id>
 #
-# DepBench-only (reuse existing samples/gen-PPL/ELBO):
-#   sbatch scripts/slurm/eval_checkpoint.sbatch <ckpt> \
-#     --skip-samples --skip-gen-ppl --skip-elbo
+# Upstream-only (samples + gen-PPL):
+#   sbatch scripts/slurm/eval_checkpoint.sbatch <ckpt> --upstream-only
 
 set -euo pipefail
+
+export ASMAA_WORKSPACE="${ASMAA_WORKSPACE:-/e/project1/scifi/elsayed3}"
 # shellcheck disable=SC1091
 source scripts/_block_qwen_env.bash
 # shellcheck disable=SC1091

@@ -453,26 +453,95 @@ class TrainerBase(L.LightningModule):
     return None
 
   @torch.no_grad()
-  def generate_samples(self, num_samples, num_steps=None, eps=None):
+  def generate_samples(
+      self,
+      num_samples,
+      num_steps=None,
+      eps=None,
+      *,
+      sample_mode=None,
+      max_new_tokens=None,
+      prefix_ids=None,
+      inject_bos=None,
+  ):
     """Generate samples from the model using the new sampler system.
-    
-    Subclasses should not need to override this method if they have a 
+
+    Subclasses should not need to override this method if they have a
     corresponding Sampler implementation registered in the sampling registry.
+
+    ``sample_mode`` (default from ``sampling.sample_mode``, else ``auto``):
+      native_free / conversion_free / bare_bos / auto — same policy as
+      ``evaluations.generate_samples``.
     """
     if num_steps is None:
       num_steps = self.config.sampling.steps
     if eps is None:
       eps = 1e-5
-    inject_bos = getattr(self.config.sampling, 'inject_bos', True)
-    
+
+    mode = sample_mode
+    if mode is None:
+      mode = getattr(self.config.sampling, 'sample_mode', None)
+    if mode is None or str(mode).strip().lower() in ('', 'null', 'none'):
+      mode = 'auto'
+    mode = str(mode).strip().lower()
+
+    if mode == 'auto':
+      from discrete_diffusion.evaluations.decode_profiles import (
+          infer_sample_mode,
+      )
+      mode = infer_sample_mode(self.config)
+
+    resolved_prefix = prefix_ids
+    resolved_inject = inject_bos
+    if mode == 'conversion_free':
+      if resolved_prefix is None:
+        from discrete_diffusion.evaluations.decode_profiles import (
+            conversion_prefix_ids,
+        )
+        tok = getattr(self, 'tokenizer', None)
+        if tok is None:
+          raise RuntimeError(
+              'conversion_free sample_mode requires model.tokenizer')
+        resolved_prefix, _ = conversion_prefix_ids(tok, None, self.device)
+      resolved_inject = False
+    elif mode == 'bare_bos':
+      resolved_prefix = None
+      if resolved_inject is None:
+        resolved_inject = True
+    elif mode == 'native_free':
+      if resolved_inject is None:
+        resolved_inject = getattr(self.config.sampling, 'inject_bos', True)
+      # keep caller prefix_ids if provided
+    else:
+      raise ValueError(
+          f'sample_mode={mode!r} not in '
+          f'(auto|native_free|conversion_free|bare_bos)')
+
+    if resolved_inject is None:
+      resolved_inject = getattr(self.config.sampling, 'inject_bos', True)
+
+    if max_new_tokens is None:
+      raw_m = getattr(self.config.sampling, 'max_new_tokens', None)
+      if raw_m is not None and str(raw_m).strip().lower() not in (
+          '', 'null', 'none'):
+        max_new_tokens = int(raw_m)
+
     sampler = self._create_sampler()
     if sampler is None:
       raise NotImplementedError(
         f"Algorithm {self.config.algo.name} does not have a configured sampler. "
         "Set 'sampling.sampler._target_' or 'algo.sampler._target_' in the config "
         "to select a Sampler, or override generate_samples().")
-    
-    return sampler.generate(model=self, num_samples=num_samples, num_steps=num_steps, eps=eps, inject_bos=inject_bos)
+
+    return sampler.generate(
+        model=self,
+        num_samples=num_samples,
+        num_steps=num_steps,
+        eps=eps,
+        inject_bos=resolved_inject,
+        prefix_ids=resolved_prefix,
+        max_new_tokens=max_new_tokens,
+    )
 
   def _process_model_input(self, x0, valid_tokens):
     raise NotImplementedError

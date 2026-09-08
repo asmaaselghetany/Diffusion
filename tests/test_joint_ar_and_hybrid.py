@@ -66,8 +66,8 @@ def _bare_joint(*, alpha: float, causal: bool = False) -> SimpleNamespace:
   m._forward_process = object.__new__(BlockMaskedForwardProcess)
   m._forward_process.mask_id = 0
 
-  def _corrupt(x0, t, *, block_size, return_move_mask=False):
-    del t, block_size, return_move_mask
+  def _corrupt(x0, t, *, block_size, return_move_mask=False, corruption_mask=None):
+    del t, block_size, return_move_mask, corruption_mask
     return x0.clone()
 
   def _backbone_logits(xt, x0, *, block_size=None, return_clean=False, **kwargs):

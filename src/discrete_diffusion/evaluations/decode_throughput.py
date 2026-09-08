@@ -1,14 +1,16 @@
 """Decode throughput (tok/s) for ``BlockTrainer`` + ``BlockSampler``.
 
-Measures wall-clock generation speed on our stack — honest UNI-D² decode,
-not Fast-dLLM hierarchical KV / sub-block parallel unmask. Comparable only
-when reported with the same hardware and ``num_steps`` / ``batch_size``.
+Measures wall-clock generation speed on our stack. Optional decode pins
+(``hierarchical_kv`` / DualCache / ``single_stream_decode``) approximate
+Fast-dLLM's *algorithmic* cache path but are **not** their fused CUDA kernels
+— always label systems comparisons accordingly.
 
 Example::
 
   PYTHONPATH=src python -m discrete_diffusion.evaluations.decode_throughput \\
     checkpoint_path=outputs/block_qwen/ar2block_masked_139760/checkpoints/last.ckpt \\
-    metrics_path=outputs/block_qwen/ar2block_masked_139760/lm_eval/tok_s.json
+    metrics_path=outputs/block_qwen/ar2block_masked_139760/lm_eval/tok_s.json \\
+    decode_profile=dual_cache
 """
 
 from __future__ import annotations
@@ -19,9 +21,15 @@ from pathlib import Path
 
 import hydra
 import torch
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 
-from discrete_diffusion.evaluations.checkpoint_utils import load_block_trainer_checkpoint
+from discrete_diffusion.evaluations.checkpoint_utils import (
+    load_block_trainer_checkpoint,
+)
+from discrete_diffusion.evaluations.decode_profiles import DECODE_PROFILES
+
+
+_DECODE_PROFILES = DECODE_PROFILES
 
 
 def _sync(device: torch.device) -> None:
@@ -39,6 +47,7 @@ def _timed_generate(
     prefix_ids: torch.Tensor | None,
     device: torch.device,
     max_new_tokens: int | None,
+    greedy: bool,
 ) -> tuple[torch.Tensor, float]:
   _sync(device)
   t0 = time.perf_counter()
@@ -50,6 +59,7 @@ def _timed_generate(
       inject_bos=prefix_ids is None,
       prefix_ids=prefix_ids,
       max_new_tokens=max_new_tokens,
+      greedy=greedy,
   )
   _sync(device)
   elapsed = time.perf_counter() - t0
@@ -82,6 +92,22 @@ def _count_new_tokens(
   return total
 
 
+def _profile_overrides(cfg: DictConfig) -> list[str]:
+  profile = str(cfg.get('decode_profile', 'baseline') or 'baseline').strip()
+  if profile not in _DECODE_PROFILES:
+    raise ValueError(
+        f'decode_profile={profile!r} not in {sorted(_DECODE_PROFILES)}')
+  overrides = list(_DECODE_PROFILES[profile])
+  extra = cfg.get('hydra_overrides') or []
+  if isinstance(extra, str):
+    extra = [extra]
+  overrides.extend(str(x) for x in extra)
+  thr = cfg.get('unmask_threshold', None)
+  if thr is not None and str(thr).strip().lower() not in ('', 'none', 'null'):
+    overrides.append(f'sampling.unmask_threshold={float(thr)}')
+  return overrides
+
+
 @hydra.main(
     config_path='../../../configs/eval',
     config_name='decode_throughput',
@@ -92,8 +118,11 @@ def main(cfg: DictConfig) -> None:
       cfg.device if torch.cuda.is_available() or cfg.device == 'cpu' else 'cpu')
   torch.set_grad_enabled(False)
 
+  overrides = _profile_overrides(cfg)
   model, config, tokenizer = load_block_trainer_checkpoint(
-      hydra.utils.to_absolute_path(cfg.checkpoint_path), device)
+      hydra.utils.to_absolute_path(cfg.checkpoint_path),
+      device,
+      hydra_overrides=overrides or None)
   sampler = model._create_sampler()
   if sampler is None:
     raise RuntimeError('no BlockSampler configured on checkpoint')
@@ -104,6 +133,8 @@ def main(cfg: DictConfig) -> None:
   warmup = int(cfg.warmup_batches)
   mode = str(cfg.mode)
   max_new_tokens = int(cfg.get('max_new_tokens', 0)) or None
+  greedy = bool(cfg.get('greedy', False))
+  profile = str(cfg.get('decode_profile', 'baseline') or 'baseline')
 
   prefix_ids = None
   prefix_len = 0
@@ -111,7 +142,6 @@ def main(cfg: DictConfig) -> None:
     prompt = str(cfg.prompt)
     ids = tokenizer(prompt, add_special_tokens=False, return_tensors='pt')[
         'input_ids'].to(device)
-    # Cap so there is room to generate.
     max_prefix = max(1, model.num_tokens - int(cfg.min_new_tokens))
     ids = ids[:, :max_prefix]
     prefix_len = int(ids.shape[1])
@@ -120,7 +150,6 @@ def main(cfg: DictConfig) -> None:
     else:
       prefix_ids = ids
 
-  # Warmup (not timed).
   for _ in range(warmup):
     _timed_generate(
         model, sampler,
@@ -129,6 +158,7 @@ def main(cfg: DictConfig) -> None:
         prefix_ids=prefix_ids,
         device=device,
         max_new_tokens=max_new_tokens,
+        greedy=greedy,
     )
 
   elapsed_all = 0.0
@@ -141,6 +171,7 @@ def main(cfg: DictConfig) -> None:
         prefix_ids=prefix_ids,
         device=device,
         max_new_tokens=max_new_tokens,
+        greedy=greedy,
     )
     elapsed_all += elapsed
     tokens_all += _count_new_tokens(
@@ -156,6 +187,14 @@ def main(cfg: DictConfig) -> None:
       'checkpoint_path': str(Path(cfg.checkpoint_path).resolve()),
       'device': str(device),
       'mode': mode,
+      'decode_profile': profile,
+      'hydra_overrides': overrides,
+      'hierarchical_kv': bool(getattr(sampler, 'hierarchical_kv', False)),
+      'use_block_cache': bool(getattr(sampler, 'use_block_cache', False)),
+      'single_stream_decode': bool(
+          getattr(sampler, 'single_stream_decode', False)),
+      'unmask_threshold': getattr(sampler, 'unmask_threshold', None),
+      'greedy': greedy,
       'batch_size': batch_size,
       'num_batches': num_batches,
       'warmup_batches': warmup,
@@ -167,8 +206,10 @@ def main(cfg: DictConfig) -> None:
       'elapsed_s': elapsed_all,
       'tok_s': tok_s,
       'note': (
-          'UNI-D2 BlockSampler throughput (no Fast-dLLM hierarchical KV / '
-          'sub-block parallel unmask).'),
+          'UNI-D2 BlockSampler throughput. decode_profile=dual_cache enables '
+          'our hierarchical KV + DualCache + single_stream ports (algorithmic '
+          'parity with Fast-dLLM). NOT their fused CUDA kernels — do not claim '
+          'paper tok/s numbers.'),
   }
 
   out = Path(hydra.utils.to_absolute_path(cfg.metrics_path))

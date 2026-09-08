@@ -1,5 +1,7 @@
 shift_loss_targets: False
 complementary_masks: False
+# Hub cats m/~m on batch (fused 2B). sequential = two B forwards (OOM fallback).
+complementary_batching: fused
 # alpha = 1-alpha_t(t); fast_dllm = (1-eps)*t+eps (Fast-dLLM v2 modeling.py)
 mask_schedule: alpha
 block_size_mixture: []

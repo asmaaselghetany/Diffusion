@@ -102,6 +102,15 @@ class BlockTrainer(TrainerBase):
         getattr(config.algo, 'shift_loss_targets', False))
     self.complementary_masks = bool(
         getattr(config.algo, 'complementary_masks', False))
+    # Hub modeling.py cats m/~m on the batch dim (fused 2B). ``sequential``
+    # is a memory fallback that runs two B forwards; grads match fused.
+    _cb = str(
+        getattr(config.algo, 'complementary_batching', 'fused') or 'fused'
+    ).lower()
+    if _cb not in ('fused', 'sequential'):
+      raise ValueError(
+          f'algo.complementary_batching must be fused|sequential, got {_cb!r}')
+    self.complementary_batching = _cb
     self.mask_schedule = str(
         getattr(config.algo, 'mask_schedule', 'alpha') or 'alpha')
     self.loss_weighting = str(
@@ -375,7 +384,9 @@ class BlockTrainer(TrainerBase):
 
   def _corrupt(self, x0: torch.Tensor, t: torch.Tensor,
                *, block_size: int,
-               return_move_mask: bool = False) -> torch.Tensor | tuple:
+               return_move_mask: bool = False,
+               corruption_mask: torch.Tensor | None = None
+               ) -> torch.Tensor | tuple:
     if isinstance(self._forward_process, BlockMaskedForwardProcess):
       out = self._forward_process(
           x0, t, block_size=block_size,
@@ -390,6 +401,11 @@ class BlockTrainer(TrainerBase):
     else:
       xt = self._forward_process(x0, t, block_size=block_size)
       move_mask = None
+    if corruption_mask is not None:
+      supervised = corruption_mask.bool()
+      xt = torch.where(supervised, xt, x0)
+      if move_mask is not None:
+        move_mask = move_mask & supervised
     if self.ignore_bos:
       xt[:, 0] = x0[:, 0]
       if move_mask is not None:
@@ -482,9 +498,14 @@ class BlockTrainer(TrainerBase):
       ce = -logits.log_softmax(-1).gather(
           -1, x0.unsqueeze(-1)).squeeze(-1)
       mask_positions = (xt == self.mask_id).to(ce.dtype)
-      masked_neg_ce = mask_positions * (-ce)
+      # plain_ce must return *positive* CE (minimize-oriented), matching
+      # masked_plain_ce_per_token below. Returning -ce here inverted the
+      # Fast-dLLM objective (C2 job 1660576: trainer/loss -6 → -730, logit
+      # explosion on a single attractor token). ELBO still uses -ce so that
+      # (dalpha/(1-alpha)) * (-ce) stays minimize-oriented (dalpha < 0).
       if weight == 'plain_ce':
-        return masked_neg_ce
+        return mask_positions * ce
+      masked_neg_ce = mask_positions * (-ce)
       weighting = dalpha_t / (1.0 - alpha_t)
       return weighting * masked_neg_ce
     if weight == 'plain_ce':
@@ -602,35 +623,58 @@ class BlockTrainer(TrainerBase):
 
     if (self.complementary_masks
         and isinstance(self._forward_process, BlockMaskedForwardProcess)):
-      # Fast-dLLM: paired views m and ~m. We run two forwards of size B
-      # (sequential) instead of one forward of size 2B so paper-scale
-      # seq=2048 + dual-stream concat stays within 2×GPU memory. Gradients
-      # match batch-cat: both views contribute to the summed NLL.
+      # Fast-dLLM Hub: paired m/~m, then ``torch.cat(..., dim=0)`` → fused 2B.
       _, move_mask = self._corrupt(
           x0, t, block_size=bs, return_move_mask=True)
       xt_a, xt_b = complementary_pair_from_mask(x0, move_mask, self.mask_id)
       if self.ignore_bos:
         xt_a[:, 0] = x0[:, 0]
         xt_b[:, 0] = x0[:, 0]
-      if want_clean:
-        out_a = self._backbone_logits(
-            xt_a, x0, block_size=bs, return_clean=True,
-            attention_mask=pad_mask)
-        logits_a, clean_a = out_a
-        self._pending_clean_logits = clean_a
+      if pad_mask is not None:
+        supervised = pad_mask.bool()
+        xt_a = torch.where(supervised, xt_a, x0)
+        xt_b = torch.where(supervised, xt_b, x0)
+      if self.complementary_batching == 'sequential':
+        # Memory fallback: two B forwards; same summed NLL as fused.
+        if want_clean:
+          out_a = self._backbone_logits(
+              xt_a, x0, block_size=bs, return_clean=True,
+              attention_mask=pad_mask)
+          logits_a, clean_a = out_a
+          self._pending_clean_logits = clean_a
+        else:
+          logits_a = self._backbone_logits(
+              xt_a, x0, block_size=bs, attention_mask=pad_mask)
+        loss_a = self._loss_for_block(
+            logits_a, xt_a, x0, alpha_t, dalpha_t, block_size=bs)
+        logits_b = self._backbone_logits(
+            xt_b, x0, block_size=bs, attention_mask=pad_mask)
+        loss_b = self._loss_for_block(
+            logits_b, xt_b, x0, alpha_t, dalpha_t, block_size=bs)
+        loss = torch.cat([loss_a, loss_b], dim=0)
       else:
-        logits_a = self._backbone_logits(
-            xt_a, x0, block_size=bs, attention_mask=pad_mask)
-      loss_a = self._loss_for_block(
-          logits_a, xt_a, x0, alpha_t, dalpha_t, block_size=bs)
-      logits_b = self._backbone_logits(
-          xt_b, x0, block_size=bs, attention_mask=pad_mask)
-      loss_b = self._loss_for_block(
-          logits_b, xt_b, x0, alpha_t, dalpha_t, block_size=bs)
-      loss = torch.cat([loss_a, loss_b], dim=0)
+        xt_pair = torch.cat([xt_a, xt_b], dim=0)
+        x0_pair = torch.cat([x0, x0], dim=0)
+        pad_pair = (
+            torch.cat([pad_mask, pad_mask], dim=0)
+            if pad_mask is not None else None)
+        alpha_pair = torch.cat([alpha_t, alpha_t], dim=0)
+        dalpha_pair = torch.cat([dalpha_t, dalpha_t], dim=0)
+        if want_clean:
+          logits_pair, clean_pair = self._backbone_logits(
+              xt_pair, x0_pair, block_size=bs, return_clean=True,
+              attention_mask=pad_pair)
+          self._pending_clean_logits = clean_pair[:bsz]
+        else:
+          logits_pair = self._backbone_logits(
+              xt_pair, x0_pair, block_size=bs, attention_mask=pad_pair)
+        loss = self._loss_for_block(
+            logits_pair, xt_pair, x0_pair, alpha_pair, dalpha_pair,
+            block_size=bs)
       valid_tokens = torch.cat([valid_tokens, valid_tokens], dim=0)
     else:
-      xt = self._corrupt(x0, t, block_size=bs)
+      xt = self._corrupt(
+          x0, t, block_size=bs, corruption_mask=pad_mask)
       if want_clean:
         logits, clean = self._backbone_logits(
             xt, x0, block_size=bs, return_clean=True,
@@ -699,8 +743,9 @@ class BlockTrainer(TrainerBase):
 
   def training_step(self, batch, batch_idx):
     current_accumulation_step = batch_idx % self.trainer.accumulate_grad_batches
+    valid_tokens = self._batch_valid_tokens(batch)
     losses = self._loss(
-        batch['input_ids'], batch['attention_mask'],
+        batch['input_ids'], valid_tokens,
         current_accumulation_step=current_accumulation_step, train_mode=True)
     self.metrics.update_train(losses.nlls, losses.num_tokens)
     # Step-level train metrics: with max_steps + huge SFT epochs,
@@ -731,7 +776,8 @@ class BlockTrainer(TrainerBase):
 
   def validation_step(self, batch, batch_idx):
     del batch_idx
-    losses = self._loss(batch['input_ids'], batch['attention_mask'])
+    valid_tokens = self._batch_valid_tokens(batch)
+    losses = self._loss(batch['input_ids'], valid_tokens)
     self.metrics.update_valid(losses.nlls, losses.num_tokens)
     if getattr(self, '_last_ar_nll', None) is not None:
       # Epoch-agg of C5 terms (val/nll from metrics stays diffusion-only).
@@ -742,8 +788,18 @@ class BlockTrainer(TrainerBase):
       self.log('val/joint_nll', self._last_joint_nll, on_step=False,
                on_epoch=True, sync_dist=True)
     if bool(getattr(self.config.eval, 't_bucketed_nll', False)):
-      self._log_t_bucketed_nll(batch['input_ids'], batch['attention_mask'])
+      self._log_t_bucketed_nll(batch['input_ids'], valid_tokens)
     return losses.loss
+
+  @staticmethod
+  def _batch_valid_tokens(batch):
+    """Return assistant-label mask for SFT, or the usual padding mask."""
+    labels = batch.get('labels')
+    if labels is None:
+      return batch['attention_mask']
+    return (
+        labels.ne(-100) & batch['attention_mask'].bool()
+    ).to(batch['attention_mask'].dtype)
 
   @torch.no_grad()
   def _log_t_bucketed_nll(self, x0: torch.Tensor, valid_tokens: torch.Tensor):

@@ -6,7 +6,7 @@ Prefer **upstream** entry points when possible:
 |------|--------|
 | Train | `examples/block_qwen/*.sh` → `python -m discrete_diffusion` |
 | Samples + gen-PPL | `examples/block_qwen/eval.sh` → `evaluations.generate_samples` + `generative_ppl` |
-| Full suite + DepBench/ELBO | `run_block_qwen_eval.py` (wraps upstream + fork extras) |
+| Full suite + ELBO | `run_block_qwen_eval.py` (samples, gen-PPL, ELBO; DepBench removed) |
 
 ## Upstream-aligned eval
 

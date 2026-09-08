@@ -5,6 +5,7 @@ batch_size: 4
 max_length: 512
 retokenize: true       # Re-tokenize with eval model's tokenizer
 first_chunk_only: true # Evaluate only up to first EOS
+require_samples_meta: false  # true for block_qwen headlines (fail closed)
 metrics_path: gen_ppl_metrics.json
 torch_compile: false
 

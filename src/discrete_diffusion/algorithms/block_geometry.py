@@ -17,11 +17,18 @@ def parse_block_weights(raw) -> torch.Tensor | None:
   Accepts:
     - ``null`` / empty → None (disabled)
     - space-separated string: ``"0.05 0 0 0 0.95"`` → sizes 1 and 16
-    - list/tuple of floats
+    - list/tuple / OmegaConf ListConfig of floats
   Index ``i`` means block size ``2**i``.
   """
   if raw is None:
     return None
+  # Hydra CLI lists arrive as ListConfig, not plain list.
+  try:
+    from omegaconf import ListConfig, OmegaConf
+    if isinstance(raw, ListConfig):
+      raw = OmegaConf.to_container(raw, resolve=True)
+  except ImportError:
+    pass
   if isinstance(raw, str):
     raw = raw.strip()
     if not raw:

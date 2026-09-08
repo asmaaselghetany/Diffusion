@@ -1,62 +1,59 @@
-# Thesis experiments — AR→block diffusion conversion design space
+# Thesis experiments — conversion + native block design spaces
 
-Draft experimental plan for a **thesis chapter** on the design space of
-autoregressive-to-block diffusion conversion, plus **extras** (appendix /
-exploratory cells) on block geometry, corruption, and decode — same codebase,
-one execution program.
+Draft experimental plan for a **thesis chapter** on two **separate** families
+(same codebase, shared eval harness, **no silent cross-wiring**):
 
-**Two tiers (same experiments, different narrative weight)**
+1. **Conversion** — autoregressive → block diffusion (`LINE=ar2block`)
+2. **Native block** — scratch block diffusion (`LINE=block`), including BlockGen-faithful recipes
+3. **Transfer** (optional extras) — BlockGen *geometry knobs on conversion*
+   (`xfer_*`); never tagged as a BlockGen paper claim
+
+**Three families (enforced in `configs/levers/registry.yaml`)**
+
+| Family | Line | Reference | Literature home | Claim tag |
+|--------|------|-----------|-----------------|-----------|
+| **Conversion** | `ar2block` | `C0` | Fast-dLLM, NLD | AR→block |
+| **Native** | `block` | `N0` / `B2_*` | BlockGen | scratch block / BlockGen |
+| **Transfer** | `ar2block` + native knobs | vs `C0` | — | `xfer_*` only |
+
+```text
+   CONVERSION family              NATIVE family
+   LINE=ar2block                  LINE=block
+┌─────────────────────┐       ┌─────────────────────┐
+│ C0 / C2 / C3 / C5   │       │ N0 / B2 / B3_*      │
+│ B1 corruption slice │       │ blockgen_owt_*      │
+│ B4 hybrid / E_*     │       │ BlockGen recreate   │
+└──────────┬──────────┘       └──────────┬──────────┘
+           │                             │
+           └──────────┬──────────────────┘
+                      ▼
+              optional TRANSFER (xfer_*)
+              BlockGen geometry ON ar2block
+              — different claim, different table
+```
+
+**Narrative weight**
 
 | Tier | Question | Scope |
 |------|----------|-------|
-| **Thesis (main track)** | *What is the design space of AR→block diffusion conversion?* | Axes A, D, E; C0/C2/C3 longitudinal eval; literature map |
-| **Extras (bonus)** | *How do block-native knobs behave under the same skeleton?* | Axes B, C (B1–B4), decode micros (E_*), scratch controls |
-
-The thesis gives **breadth and the conversion story**; extras add **depth on
-block structure and noising** without restructuring the main narrative.
-
-```text
-                    THESIS (main track)
-        ┌──────────────────────────┐
-        │ AR → Block Design Space  │
-        │  A Init & budget         │
-        │  D Conversion recipe     │
-        │  E Decoding (eval)       │
-        │  C0 / C2 / C3 spine      │
-        └────────────┬─────────────┘
-                     │ same cells, lower priority
-                     ▼
-        ┌──────────────────────────┐
-        │ EXTRAS (appendix)        │
-        │  B Geometry (B3)         │
-        │  C Corruption (B1/B4)    │
-        │  Scratch (B2)            │
-        │  Decode speed (E_*)      │
-        └──────────────────────────┘
-```
-
-**Within-thesis scope split**
-
-| Tier | Focus | Role |
-|------|--------|------|
-| **Main track** | Conversion path (init, budget, dual-stream recipe, decode eval) | Chapters 4–5 spine |
-| **Extras** | Block geometry & noising | Appendix / design-space synthesis |
-
-Block structure and noising are valuable for the design-space map but are **not**
-the main-track headline unless results surprise (e.g. B1 corruption inverts
-rankings).
+| **Thesis (main track)** | *Design space of AR→block conversion?* | Axes A, D, E; C0/C2/C3; literature map |
+| **Native track** | *Block diffusion as a paradigm (incl. BlockGen)?* | N0, B2, B3, `blockgen_owt_uniform` |
+| **Extras** | Corruption under conversion; transfer; decode speed | B1, B4, `xfer_*`, E_* |
 
 Implementation: one codebase (`BlockTrainer`), Hydra configs, one Slurm job per
-**design cell** ([§9](#9-implementation-design-cells)).
+**design cell** ([§9](#9-implementation-design-cells)). Registry refuses
+Fast-dLLM levers on `block` and BlockGen/native levers on `ar2block` unless the
+preset is `xfer_*`.
 
 Related notes: [BASELINE_MASKED_UNIFORM_AR.md](BASELINE_MASKED_UNIFORM_AR.md),
-[BLOCK_QWEN_TRAINING.md](BLOCK_QWEN_TRAINING.md), [LEVERS.md](LEVERS.md).
+[BLOCK_QWEN_TRAINING.md](BLOCK_QWEN_TRAINING.md), [LEVERS.md](LEVERS.md),
+[BLOCKGEN_LEVERS.md](BLOCKGEN_LEVERS.md).
 
 ---
 
 ## 1. Research questions
 
-### Main (conversion)
+### Main (conversion family)
 
 **RQ1 (conversion recipe).** Which **conversion-axis** choices—pretrained init,
 SFT token budget, dual-stream training hooks (Fast-dLLM), optional joint AR
@@ -69,28 +66,42 @@ parallel-decode throughput?
 
 **RQ3 (confounding in literature).** Do published systems (Fast-dLLM, NLD,
 BlockGen) **confound** conversion choices with block-native choices (geometry,
-corruption, decode tricks)? Can we separate them experimentally?
+corruption, decode tricks)? Can we separate them experimentally by keeping
+**conversion** and **native** families on different `LINE`s?
 
 **RQ4 (metrics).** For conversion success, does validation NLL/BPD track
 conditional generation and gen-PPL, or mislead (cf. *Scaling Beyond Masked
 Diffusion*)?
 
-### Extras (block structure & noising)
+### Native family (block diffusion / BlockGen)
+
+**RQ-N1 (native reference).** At fixed budget (or OWT scale), does scratch
+block diffusion (`N0` / `B2`) produce non-soup text, and how does it compare
+to conversion `C0` *as a different paradigm* (not as a failed conversion)?
+
+**RQ-N2 (BlockGen geometry).** On **`LINE=block` only**, do mixture /
+u-stratified / CE@1 / ARPC move native quality (B3, `blockgen_owt_uniform`)?
+
+### Extras (under conversion skeleton, or transfer)
 
 **RQ-B1 (corruption under conversion).** Holding the **same AR→block skeleton**,
 does masked vs uniform corruption change gen quality or only likelihood ranking?
 
-**RQ-B2 (geometry / decode extras).** Do BlockGen-style mixture or ARPC matter
-*incrementally* once a conversion baseline works—or only when corruption is
-uniform?
+**RQ-B2 (geometry transfer).** Do BlockGen-style mixture or ARPC help
+**conversion** when applied via `xfer_*` (geometry-on-`ar2block`) — a different
+claim from native B3 / BlockGen recreate?
+
+**RQ-X (transfer vs native).** Does a `xfer_*` gain on `C0` replicate, exceed,
+or contradict the same knob on `N0`? Always report `line × arm × data × budget`.
 
 ---
 
-## 2. Design space — conversion-first notation
+## 2. Design space — family-first notation
 
-Five axes total; **three primary (conversion), two extras (block-native).**
+Five axes total; **three primary (conversion), two native/extras.** Every result
+row must state **`line × arm × data × budget`**.
 
-### Primary axes (thesis spine)
+### Primary axes (conversion spine — `LINE=ar2block`)
 
 | Axis | Name | Question it answers | Neutral reference | Knobs |
 |------|------|---------------------|-------------------|-------|
@@ -98,19 +109,25 @@ Five axes total; **three primary (conversion), two extras (block-native).**
 | **D** | **Conversion recipe** | How is the AR backbone adapted to block training? | hooks off | `submit_lever.sh --preset C2_*` / `C5_*` (`shift`, `complementary`, `joint_ar_alpha`, …) |
 | **E** | **Decode evaluation** | How do we *measure* conversion output? | 32-step BlockSampler | `NUM_STEPS`, `max_new_tokens`, lm-eval harness |
 
-### Extras axes (fixed in main experiments; varied in appendix)
+### Native / extras axes
 
-| Axis | Name | Question it answers | Fixed in main track | Knobs when varied |
-|------|------|---------------------|---------------------|-------------------|
-| **B** | Block geometry | Block size, mixture, t sampling | `block_size=32`, no mixture | `block_size_mixture`, `stratified_gamma` |
-| **C** | Corruption / noising | Masked vs uniform vs hybrid | **masked** (Fast-dLLM-class default) | `algo=block_masked \| block_uniform` |
+| Axis | Name | Home family | Fixed in conversion main | Knobs when varied |
+|------|------|-------------|--------------------------|-------------------|
+| **B** | Block geometry | **Native** (`B3_*`, BlockGen); optional **transfer** (`xfer_*`) | `block_size=32`, no mixture | `block_size_mixture`, `block_weights`, `u-stratified` |
+| **C** | Corruption / noising | Both (arm); B1 under conversion; BlockGen often uniform | **masked** on conversion main | `algo=block_masked \| block_uniform` |
 
-**Main-track reference cell:** `C0` (`C0_ar2block_masked` in narrative) — AR instruct init, masked
-corruption, block 32, hooks off, Nemotron SFT 6000×256.
+**Conversion reference:** `C0` — AR instruct init, masked, block 32, hooks off, Nemotron SFT 6000×256.
 
-**Literature placement (map, not full reproduce):** Fast-dLLM (A+D+C masked),
-NLD (A+D joint AR), BlockGen (B+C+E extras), MDLM/Duo/GIDD (full-seq C, cited in
-extras discussion).
+**Native reference:** `N0` (or `B2_uniform`) — scratch, uniform (or matched arm), hooks off; BlockGen OWT uses separate scale (GBS 512 / len 1024 / 1M).
+
+**Literature placement (map, not full reproduce):**
+
+| System | Family | Axes |
+|--------|--------|------|
+| Fast-dLLM | Conversion | A+D+C masked |
+| NLD | Conversion | A+D joint AR |
+| BlockGen | **Native** | B+C+E (scratch; never `ar2block`) |
+| MDLM/Duo/GIDD | Cited | full-seq C |
 
 ---
 
@@ -143,7 +160,8 @@ val BPD + conditional lm-eval (≥ GSM8K, IFEval) + gen-PPL + optional tok/s.
 
 - Val NLL/BPD (monitoring only; not sole claim)
 - **Conditional tasks:** GSM8K, IFEval, MMLU, HumanEval via `lm_eval.sh`
-- **Gen-PPL** + qualitative free-gen (`eval.sh`)
+- **Gen-PPL** + qualitative samples via `examples/block_qwen/eval.sh`
+  (`sample_mode=auto`, `decode_profile=baseline` — not bare-BOS for Instruct)
 - **Throughput:** BlockSampler tok/s; enable `sampling.hierarchical_kv` (+ optional `sub_block_size`) for truncate-only progressive decode, and `use_block_cache` (lever `dual_cache`) for DualCache splice. Still not identical to Fast-dLLM fused kernels — label systems comparisons carefully.
 
 ### 4.2 Baselines (main)
@@ -155,25 +173,22 @@ val BPD + conditional lm-eval (≥ GSM8K, IFEval) + gen-PPL + optional tok/s.
 | **`C3`** (narrative: `C3_ar_sft`) | Matched AR SFT, same data/steps (axis A) |
 | **External** (Fast-dLLM, NLD) | Cited on design-space map only |
 
-Scratch-init arms (`block_*`) and uniform corruption are **extra controls**, not
-co-equal thesis spines.
+Scratch-init arms (`block_*`, `N0`) are the **native family reference**, not
+failed conversion. Uniform corruption under `ar2block` is a **B1 extra**, not
+co-equal with Fast-dLLM conversion claims.
 
-### 4.3 Main track vs extras
+### 4.3 Main track vs native vs extras
 
-| Experiment | Main track | Extras |
-|------------|------------|--------|
-| C0 neutral conversion | **Core** | — |
-| C2 Fast-dLLM recipe | **Core** | — |
-| C3 matched AR SFT | **Core** | — |
-| C4 NFE/decode sweep | Supporting | — |
-| C5 NLD | Supporting | — |
-| Longitudinal metric suite | **Core** | — |
-| Literature axis map | **Core** (intro / related) | — |
-| B1 masked vs uniform | — | **Extra** (RQ-B1) |
-| B2 scratch vs AR init | — | **Extra** (init interaction) |
-| B3 geometry / ARPC | — | **Extra** (RQ-B2) |
-| B4 hybrid | — | **Extra** (exploration) |
-| E_hierarchical / E_dual_cache | — | **Extra** (decode systems) |
+| Experiment | Conversion main | Native | Extras / transfer |
+|------------|-----------------|--------|-------------------|
+| C0 / C2 / C3 / longitudinal | **Core** | — | — |
+| C4 / C5 / E_* | Supporting | — | decode extras |
+| B1 masked vs uniform | — | — | **Extra** (RQ-B1) |
+| B2 / N0 scratch | — | **Core native** | — |
+| B3 geometry / ARPC | — | **Core native** (RQ-N2) | — |
+| `blockgen_owt_uniform` | — | **BlockGen recreate** | — |
+| `xfer_*` | — | — | **Transfer** (RQ-B2 / RQ-X) |
+| B4 hybrid | — | — | Extra |
 
 ---
 
@@ -331,37 +346,56 @@ GSM8K invert val BPD ranking under the **same conversion pipeline**.
 
 ---
 
-#### B2 — Scratch controls (init interaction)
+#### B2 — Scratch controls / native floor
 
-**Goal:** Show AR init dominates at fixed budget (supports RQ1, not RQ-B1).
+**Goal:** Native-family init baseline (RQ-N1). Also shows AR init dominates at
+**matched conversion budget** (supports RQ1 when compared to C0 — different claim
+from BlockGen OWT scale).
 
-| Cell | Init |
-|------|------|
-| `B2_masked` | scratch |
-| `B2_uniform` | scratch |
+| Cell | Init | Line |
+|------|------|------|
+| `N0` | scratch uniform (hooks off) | `block` |
+| `B2_masked` | scratch | `block` |
+| `B2_uniform` | scratch | `block` |
 
-Short appendix table: scratch ≫ worse than B1/C0 at same steps.
+Short appendix / native table: at Nemotron 6k budget, scratch ≫ worse than B1/C0.
+Do **not** call N0/B2 a BlockGen recreate — that is `blockgen_owt_uniform`.
 
 ---
 
-#### B3 — BlockGen levers (geometry + decode)
+#### B3 — Native BlockGen levers (geometry + decode)
 
-**Goal:** RQ-B2 — incremental gains from axis B/E **after** conversion works.
+**Goal:** RQ-N2 — axis B/E on the **scratch / native** family (`line=block`).
+Compare to **N0** / B2, **not** C0.
 
-| Cell | Registry preset | Knobs |
-|------|-----------------|-------|
-| `B3_mixture` | `--preset B3_mixture` | `algo.block_size_mixture=[16,32]` |
-| `B3_arpc` | `--preset B3_arpc` | mixture incl. size 1 + `arpc_mode=blockgen` (**uniform only**) |
+| Cell | Registry preset | Knobs | Line |
+|------|-----------------|-------|------|
+| `N0` | `--preset N0` | hooks off | `block` |
+| `B3_mixture` | `--preset B3_mixture` | `algo.block_size_mixture=[16,32]` | `block` |
+| `B3_weights_32` | `--preset B3_weights_32` | `bg_weights_1_32` | `block` |
+| `B3_u_stratified` | `--preset B3_u_stratified` | weights 1+16 + u-strat | `block` |
+| `B3_arpc` | `--preset B3_arpc` | mixture size 1 + `arpc_mode=blockgen` (**uniform**) | `block` |
+| `B3_t_strat` | `--preset B3_t_strat` | our `stratified_gamma` (≠ u-strat) | `ar2block` (conversion-track geometry) |
 
 ```bash
-./scripts/submit_lever.sh --preset B3_mixture --arm masked   # or uniform
-./scripts/submit_lever.sh --preset B3_arpc --arm uniform
-# Decode speed (eval-time on conversion ckpt):
-# CKPT=outputs/.../last.ckpt ./scripts/submit_paper_cell.sh E_hierarchical
-# CKPT=... ./scripts/submit_paper_cell.sh E_dual_cache
+./scripts/submit_paper_cell.sh N0
+./scripts/submit_paper_cell.sh B3_mixture --arm masked   # or uniform
+./scripts/submit_paper_cell.sh B3_arpc                    # uniform, line=block
+./scripts/submit_blockgen_owt.sh                         # OWT 1+16 recreate
+# Transfer (different claim — do not tag BlockGen):
+./scripts/submit_lever.sh --preset xfer_mixture --arm masked --paper
+./scripts/submit_lever.sh --preset xfer_arpc --arm uniform --paper
 ```
 
-Single-factor only. **Appendix** unless one lever clearly moves C0 fluency gate.
+Single-factor only on B3 micros. Full recipe = `blockgen_owt_uniform`.
+
+---
+
+#### Xfer — Geometry on conversion (optional)
+
+**Goal:** RQ-B2 / RQ-X. Same BlockGen knobs as B3, but **`LINE=ar2block`**.
+Registry presets: `xfer_mixture`, `xfer_weights_32`, `xfer_u_stratified`,
+`xfer_arpc`. Never appear in BlockGen recreate tables.
 
 ---
 
@@ -384,39 +418,44 @@ ELBO + decode-as-masked); see [`DESIGN_LOCKS.md`](DESIGN_LOCKS.md).
 
 ---
 
-## 6. Pre-registered claims (thesis)
+## 6. Pre-registered claims
 
-### Main track (after C0/C2/C3 program)
+### Conversion main track (after C0/C2/C3)
 
-- A **conversion design-space map** (axes A–E) separating conversion from
-  block-native knobs.
+- A **conversion design-space map** separating conversion from native knobs.
 - Which **conversion recipe** choices (neutral vs Fast-dLLM hooks vs budget) move
   conditional generation.
 - Whether **matched AR SFT** matches or beats neutral AR→block on instruct tasks.
 - Whether **val BPD mis-ranks** conversion success vs gen-PPL / GSM8K.
-- Longitudinal **capability recovery vs conversion compute** from the shared
-  checkpoint schedule ([§7](#7-cross-cutting-measurements-for-downstream-analysis)).
+- Longitudinal **capability recovery vs conversion compute** ([§7](#7-cross-cutting-measurements-for-downstream-analysis)).
 
-### Extras (report when data warrant; not required for main claims)
+### Native track
 
-- Under fixed AR→block skeleton: masked vs uniform and scratch vs AR init
-  (B1/B2).
-- Incremental BlockGen-style geometry / ARPC (B3).
+- Scratch / BlockGen-faithful cells on **`LINE=block` only** (N0, B2, B3,
+  `blockgen_owt_uniform`).
+- Whether BlockGen mixture / ARPC move native quality (RQ-N2).
+
+### Extras / transfer (report when data warrant)
+
+- Under fixed AR→block skeleton: masked vs uniform (B1).
 - Hybrid corruption and decode-speed probes (B4, E_*).
+- Optional `xfer_*` geometry-on-conversion (RQ-B2 / RQ-X) — separate tables.
 
-Plausible emergent findings from extras (data picks which to emphasize in appendix):
+Plausible emergent findings:
 
-| Outcome | Extras angle |
-|---------|--------------|
-| **A** Metric mismatch is large | Likelihood mis-ranks conversion success (also main-track RQ4) |
-| **B** Fast-dLLM recipe dominates | Neutral skeleton was recipe-incomplete (main C2) |
-| **C** Initialization dominates | Scratch ≫ AR at fixed budget (B2) |
-| **D** Corruption surprise | B1 becomes appendix centerpiece (rankings invert) |
+| Outcome | Angle |
+|---------|-------|
+| **A** Metric mismatch is large | Likelihood mis-ranks conversion success (RQ4) |
+| **B** Fast-dLLM recipe dominates | Neutral conversion was recipe-incomplete (C2) |
+| **C** Initialization dominates | Scratch ≫ AR at matched budget (B2 vs C0) |
+| **D** Corruption surprise | B1 rankings invert |
+| **E** Native ≠ transfer | B3 gain does not imply `xfer_*` gain (or vice versa) |
 
 ### Never without external reproduction
 
 - Fast-dLLM / NLD leaderboard parity.
 - “Uniform is the better paradigm” as title claim.
+- Calling `ar2block` + BlockGen knobs a BlockGen recreate.
 
 ---
 
@@ -498,16 +537,17 @@ baseline (C3 uses same schedule on causal SFT).
 
 | ID | Content | Tier |
 |----|---------|------|
-| **Fig 1** | Conversion design space (A,D,E primary; B,C extras inset) | Main |
+| **Fig 1** | Design space: conversion vs native vs transfer | Main |
 | **Fig 2** | C0 train/val curves | Main |
 | **Fig 3** | Capability recovery vs step (C0 / C2 / C3 longitudinal) | Main |
 | **Fig 4** | NFE sweep on conversion ckpt (optional) | Supporting |
 | **Fig 5** | Metric agreement / disagreement (BPD vs gen-PPL vs GSM8K) | Main if Outcome A |
-| **Tab 1** | C0, C2*, C3 — final-step metrics | Main |
-| **Tab 2** | Fast-dLLM lever ablation (C2) | Main |
+| **Tab 1** | C0, C2*, C3 — final-step metrics | Main conversion |
+| **Tab 2** | Fast-dLLM lever ablation (C2) | Main conversion |
+| **Tab N1** | N0 / B2 / B3 / BlockGen OWT | Native |
+| **Tab X1** | `xfer_*` vs C0 (optional) | Transfer |
 | **Tab B1** | B1 masked vs uniform (same conversion skeleton) | Extra |
-| **Tab B2** | Scratch vs AR init (B2 vs C0) | Extra |
-| **Tab A1** | Literature vs axes (full map) | Appendix |
+| **Tab A1** | Literature vs axes / families (full map) | Appendix |
 
 ---
 
@@ -520,33 +560,42 @@ One Slurm job = one cell; resume via `RUN_ROOT`.
 ```bash
 ./scripts/submit_paper_cell.sh --list
 
-# Main track
-./scripts/submit_paper_cell.sh C0                 # or reuse ar2block_masked_141728
+# Main track (conversion)
+./scripts/submit_paper_cell.sh C0
 ./scripts/submit_paper_cell.sh C2_shift
 ./scripts/submit_paper_cell.sh C2_comp
-./scripts/submit_paper_cell.sh C2_fdllm           # job 145506 already queued
-./scripts/submit_paper_cell.sh C3                 # or resume ar_sft run
+./scripts/submit_paper_cell.sh C2_fdllm
+./scripts/submit_paper_cell.sh C3
 CKPT=outputs/.../last.ckpt ./scripts/submit_paper_cell.sh C4
 CKPT=... ./scripts/submit_paper_cell.sh lm_eval
 RUN_ROOT=outputs/.../ar2block_masked_141728 ./scripts/submit_paper_cell.sh longitudinal
 
-# Extras (decode eval on existing ckpt — no retrain)
-CKPT=outputs/.../last.ckpt ./scripts/submit_paper_cell.sh E_hierarchical
-CKPT=... ./scripts/submit_paper_cell.sh E_dual_cache
-CKPT=... ./scripts/submit_paper_cell.sh E_sub_block
-
-# Extras (train cells)
-./scripts/submit_paper_cell.sh B1_uniform
+# Native track (scratch / BlockGen)
+./scripts/submit_paper_cell.sh N0
 ./scripts/submit_paper_cell.sh B2_masked
+./scripts/submit_paper_cell.sh B2_uniform
 ./scripts/submit_paper_cell.sh B3_mixture --arm masked
-./scripts/submit_paper_cell.sh B3_t_strat
 ./scripts/submit_paper_cell.sh B3_u_stratified
 ./scripts/submit_paper_cell.sh B3_weights_32
-./scripts/submit_paper_cell.sh B3_arpc            # uniform
+./scripts/submit_paper_cell.sh B3_arpc            # uniform, line=block
+./scripts/submit_blockgen_owt.sh                  # OWT 1+16
+
+# Transfer (optional — not BlockGen)
+./scripts/submit_lever.sh --preset xfer_mixture --arm masked --paper
+./scripts/submit_lever.sh --preset xfer_arpc --arm uniform --paper
+
+# Conversion extras
+./scripts/submit_paper_cell.sh B1_uniform
+./scripts/submit_paper_cell.sh B3_t_strat         # our t-strat on ar2block
 ./scripts/submit_paper_cell.sh C5_joint_ar
 ./scripts/submit_paper_cell.sh C5_causal_clean
 ./scripts/submit_paper_cell.sh B4_hybrid_p10
 ./scripts/submit_paper_cell.sh B4_hybrid_p50
+
+# Decode eval on existing ckpt
+CKPT=outputs/.../last.ckpt ./scripts/submit_paper_cell.sh E_hierarchical
+CKPT=... ./scripts/submit_paper_cell.sh E_dual_cache
+CKPT=... ./scripts/submit_paper_cell.sh E_sub_block
 ```
 
 `E_*` decode presets require `CKPT=` (eval-time sampling overrides; no retrain).
@@ -560,14 +609,16 @@ Design locks: [`DESIGN_LOCKS.md`](DESIGN_LOCKS.md).
 | C0 / B1_masked | `ar2block_masked.sbatch` |
 | B1_uniform | `ar2block_uniform.sbatch` |
 | B2_* | `block_{masked,uniform}.sbatch` |
-| C2_* / B3_* / C5_* / B4_* | `submit_lever.sh --preset …` (thesis scale) |
-| C3 | `ar_sft.sbatch` (post-train eval + optional `longitudinal`) |
-| C4 | `submit_nfe_sweep.sh` (via `submit_paper_cell.sh C4`) |
-| E_* | `decode_eval` on `CKPT=` (sampling overrides only) |
-| Longitudinal | `submit_longitudinal_eval.sh` or cell `longitudinal` |
-| eval / lm_eval | `eval_checkpoint.sbatch` / `lm_eval.sbatch` |
+| N0 / B3_* (except t_strat) | `submit_lever.sh` → **`block_*.sbatch`** |
+| B3_t_strat / C2_* / C5_* / B4_* | `submit_lever.sh` → `ar2block_*.sbatch` |
+| `xfer_*` | `submit_lever.sh` → `ar2block_*.sbatch` (transfer tag) |
+| `blockgen_owt_uniform` | `submit_blockgen_owt.sh` → `block_uniform.sbatch` |
+| C3 | `ar_sft.sbatch` |
+| C4 / E_* / longitudinal / eval | eval entrypoints as before |
 
-**Axis map:** A = `LINE` / C3; D = `C2_*` / `C5_*`; E = C4 + `E_*` + lm_eval; B = `B3_*`; C = `--arm` / B1 / B4.
+**Axis / family map:** A = `LINE` / C3; D = `C2_*` / `C5_*` (conversion);
+B native = `B3_*` / BlockGen; B transfer = `xfer_*`; C = `--arm` / B1 / B4;
+E = C4 + `E_*` + lm_eval.
 
 ---
 
@@ -579,37 +630,37 @@ Prefer interpreting C0/C2 before writing B3/B4/C5 results (scheduling, not stubs
 
 | Priority | Cell / experiment | Notes |
 |----------|-------------------|-------|
-| P0 | C0 validation + finish `ar2block_masked_141728` | Longitudinal eval at 500/1k/2k/4k/6k |
-| P1 | C2 Fast-dLLM combined control | **Job 145506** queued (`C2_fdllm`). Discard polarity-flip `fastdllm_141924` for Tab 2. |
+| P0 | C0 validation + finish conversion spine | Longitudinal at 500/1k/2k/4k/6k |
+| P1 | C2 Fast-dLLM combined control | Discard polarity-flip micros for Tab 2 |
 | P2 | C3 matched AR SFT | Same schedule; init = pretrained AR |
 | P3 | C4 decode sweep on best conversion ckpt | After P0–P1 |
-| P4 | B1 `B1_uniform` | Extra — corruption slice |
-| P5 | B2 scratch pair | Extra — init interaction |
-| P6 | B3 / B4 / C5 / E_* | **Ready** — extras when reporting bandwidth allows |
-| P7 | Extras write-up | After main-track C0/C2/C3 substantially complete |
+| P4 | B1 `B1_uniform` | Conversion-family corruption slice |
+| P5 | N0 / B2 scratch pair | Native floor at matched budget |
+| P6 | B3 native + `blockgen_owt_uniform` | Native / BlockGen — **line=block** |
+| P7 | B4 / C5 / E_* / optional `xfer_*` | Extras / transfer when bandwidth allows |
+| P8 | Write-up | Separate conversion vs native vs transfer tables |
 
 ---
 
 ## 11. Limitations
 
-- Instruct SFT ~3B tokens, not NLD-scale CPT/SFT.
-- Main track fixes **masked** corruption (Fast-dLLM conversion class).
+- Instruct SFT ~3B tokens, not NLD-scale CPT/SFT (conversion family).
+- Conversion main track fixes **masked** corruption (Fast-dLLM class).
+- Native BlockGen recreate uses different data/scale (OWT 1M) than conversion SFT.
 - DualCache / systems tok/s: locked non-parity — [`DESIGN_LOCKS.md`](DESIGN_LOCKS.md).
 - Single backbone (Qwen2.5-1.5B-Instruct).
-- Extras B/C results are not required for main claims.
+- Transfer (`xfer_*`) is optional and must not be sold as BlockGen.
 
 ---
 
 ## 12. Abstract blurb (thesis draft)
 
-We map the **design space of autoregressive-to-block diffusion conversion**:
-axes of initialization, training recipe, block geometry, corruption, and
-decoding, and how published systems confound them. Using one implementation and
-Nemotron instruct SFT, we run design cells for neutral **AR→block** conversion,
-**Fast-dLLM recipe** controls, **matched AR SFT**, and extras on corruption,
-scratch initialization, geometry, and decode. All primary cells record
-**longitudinal capability and likelihood metrics** at fixed training milestones,
-enabling analysis of capability recovery vs conversion compute and of metric
-agreement without rerunning training. The thesis retains the full map and
-engineering record; appendix material covers block-native knobs that do not
-define the main conversion narrative.
+We map two related but distinct design spaces for discrete block diffusion:
+**(1) AR→block conversion** of a pretrained LM, and **(2) native scratch block
+diffusion** (including BlockGen-faithful recipes). Published systems often
+confound these. Using one implementation, we run conversion cells (neutral
+AR→block, Fast-dLLM recipe controls, matched AR SFT) on `LINE=ar2block`, and
+native / BlockGen cells on `LINE=block`, with an optional **transfer** arm
+(`xfer_*`) that applies BlockGen geometry to conversion without calling it
+BlockGen. All primary conversion cells record **longitudinal** metrics at fixed
+milestones. Results are always reported as **`line × arm × data × budget`**.

@@ -21,7 +21,9 @@ class SampleSaver(L.Callback):
       num_samples: Optional[int] = None,
       num_steps: Optional[int] = None,
       save_dir: str = './samples/',
-      filename_template: str = 'step_{global_step}.json') -> None:
+      filename_template: str = 'step_{global_step}.json',
+      sample_mode: Optional[str] = None,
+      max_new_tokens: Optional[int] = None) -> None:
     super().__init__()
     if every_n_steps <= 0:
       raise ValueError('every_n_steps must be positive')
@@ -32,6 +34,8 @@ class SampleSaver(L.Callback):
     self.num_steps = num_steps
     self.save_dir = Path(save_dir)
     self.filename_template = filename_template
+    self.sample_mode = sample_mode
+    self.max_new_tokens = max_new_tokens
 
   def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
     del outputs, batch, batch_idx
@@ -42,9 +46,21 @@ class SampleSaver(L.Callback):
     if global_step % self.every_n_steps != 0:
       return
 
+    mode = self.sample_mode
+    if mode is None:
+      mode = getattr(pl_module.config.sampling, 'sample_mode', 'auto')
+    max_new = self.max_new_tokens
+    if max_new is None:
+      raw = getattr(pl_module.config.sampling, 'max_new_tokens', None)
+      if raw is not None and str(raw).strip().lower() not in (
+          '', 'null', 'none'):
+        max_new = int(raw)
+
     samples = pl_module.generate_samples(
       num_samples=self._resolve_num_samples(pl_module),
-      num_steps=self._resolve_num_steps(pl_module))
+      num_steps=self._resolve_num_steps(pl_module),
+      sample_mode=mode,
+      max_new_tokens=max_new)
     samples = samples.detach().cpu()
     save_path = self._build_save_path(global_step)
     save_path.parent.mkdir(parents=True, exist_ok=True)
@@ -54,6 +70,8 @@ class SampleSaver(L.Callback):
     metadata = dict(
       text=text_samples,
       entropy=entropy,
+      sample_mode=mode,
+      max_new_tokens=max_new,
       config=OmegaConf.to_container(pl_module.config, resolve=True),
     )
     with open(save_path, 'w', encoding='utf-8') as fp:

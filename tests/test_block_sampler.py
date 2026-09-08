@@ -35,7 +35,9 @@ class _MockBlockTrainer(nn.Module):
     self.sampling_eps = 1e-3
     self.forward_process_name = mode
     self.backbone = _TinyBackbone(n, vocab)
-    self.tokenizer = SimpleNamespace(bos_token_id=0)
+    self.tokenizer = SimpleNamespace(
+        bos_token_id=0, eos_token_id=2, pad_token_id=3)
+
 
     from discrete_diffusion.noise_schedules.log_linear import LogLinear
     self.noise = LogLinear(eps=1e-3)
@@ -68,10 +70,17 @@ def _config(mode: str):
           arpc_diffusion_metric='confidence',
           arpc_ar_metric='nll',
           arpc_warmup_steps=0, arpc_guide_every=1,
+          arpc_temperature=1.0,
           arpc_use_prefix_fill=None,
           hierarchical_kv=False, use_block_cache=False,
+          single_stream_decode=False,
           sub_block_size=None,
           align_shift_logits=None,
+          pad_after_eos=True,
+          stop_on_eos=True,
+          greedy=False,
+          p_nucleus=1.0,
+          unmask_threshold=None,
       ),
   )
 
@@ -109,10 +118,25 @@ def test_block_sampler_prefix_frozen():
   assert torch.equal(out[:, :4], prefix)
 
 
+def test_pad_after_eos_keeps_first_eos_and_pads_rest():
+  """Codex-fixes port: post-EOS tokens become pad in the sample tensor."""
+  samples = torch.tensor([
+      [9, 8, 2, 7, 2, 6],
+      [9, 8, 7, 6, 5, 4],
+  ])
+  out = BlockSampler._pad_after_eos(
+      samples.clone(), start=2, eos_id=2, pad_id=0)
+  assert torch.equal(out[0], torch.tensor([9, 8, 2, 0, 0, 0]))
+  assert torch.equal(out[1], torch.tensor([9, 8, 7, 6, 5, 4]))
+
+
 def test_block_sampler_max_new_tokens_limits_blocks():
   model = _MockBlockTrainer(mode='masked', n=32)
   model.block_size = 8
-  sampler = BlockSampler(_config('masked'))
+  cfg = _config('masked')
+  # Isolate the "don't denoise later blocks" check from pad-after-EOS rewrite.
+  cfg.sampling.pad_after_eos = False
+  sampler = BlockSampler(cfg)
   prefix = torch.tensor([[1, 2, 3, 4]], dtype=torch.long)
   # Only enough for ~8 new tokens → should stop after completing block covering pos 4..12
   out = sampler.generate(
@@ -128,6 +152,37 @@ def test_block_sampler_max_new_tokens_limits_blocks():
   assert torch.equal(out[:, :4], prefix)
   # Later untouched prior region stays mask-filled for masked mode.
   assert (out[:, 16:] == model.mask_id).all()
+
+
+def test_block_sampler_stop_on_eos_skips_later_blocks():
+  model = _MockBlockTrainer(mode='masked', n=32)
+  model.block_size = 8
+  cfg = _config('masked')
+  cfg.sampling.pad_after_eos = False
+  cfg.sampling.stop_on_eos = True
+  sampler = BlockSampler(cfg)
+
+  # After first denoise window, force EOS so the block loop can early-stop.
+  orig_denoise = sampler._denoise_block
+  calls = {'n': 0}
+
+  def denoise_with_early_eos(model_in, xt, x0, start, end, num_steps, eps,
+                             inject_bos=True):
+    xt, x0 = orig_denoise(
+        model_in, xt, x0, start, end, num_steps, eps, inject_bos=inject_bos)
+    calls['n'] += 1
+    if calls['n'] == 1:
+      xt = xt.clone()
+      xt[:, start] = model_in.tokenizer.eos_token_id
+      x0 = x0.clone()
+      x0[:, start] = model_in.tokenizer.eos_token_id
+    return xt, x0
+
+  sampler._denoise_block = denoise_with_early_eos
+  out = sampler.generate(
+      model, num_samples=1, num_steps=2, eps=1e-3, inject_bos=False)
+  assert calls['n'] == 1
+  assert (out[:, 8:] == model.mask_id).all()
 
 
 def test_shared_block_position_ids_duplicate_halves():

@@ -18,6 +18,7 @@ hybrid_decode: masked
 # Neutral defaults — masked-only hooks refused on hybrid.
 shift_loss_targets: False
 complementary_masks: False
+complementary_batching: fused
 mask_schedule: alpha
 block_size_mixture: []
 block_weights: null

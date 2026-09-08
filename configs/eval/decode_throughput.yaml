@@ -13,3 +13,12 @@ num_batches: 4
 warmup_batches: 1
 num_steps: 32
 max_new_tokens: 256
+
+# baseline = shared ancestral core (clears confidence/ARPC/DualCache even if
+# baked into the ckpt). hierarchical = +truncated KV. dual_cache = Fast-dLLM
+# exactness overlay (set unmask_threshold=0.9 for Hub-like confidence).
+# UNI-D2 ports — not fused Fast-dLLM CUDA kernels.
+decode_profile: baseline
+unmask_threshold: null
+greedy: false
+hydra_overrides: []

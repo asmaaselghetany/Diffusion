@@ -1,8 +1,32 @@
 checkpoint_path: ???
-samples_path: samples.pt  # Output path for generated samples (.pt)
-num_samples: 16           # Total number of samples to generate
-batch_size: 16            # Batch size for generation
-num_steps: null           # Number of denoising steps (null = use config value)
-device: cuda              # Device to run generation on
-torch_compile: false      # Whether to use torch.compile
-save_text: true          # Whether to save detokenized text samples
+samples_path: samples.pt
+num_samples: 16
+batch_size: 16
+num_steps: null          # null → config sampling.steps (default 32)
+device: cuda
+torch_compile: false
+save_text: true
+
+# Free-sample policy (native LM vs Instruct conversion):
+#   auto            — infer from data/line (nemotron/sft/ar2block → conversion_free;
+#                     OWT/block → native_free)
+#   native_free     — true LM free-gen: prior canvas + inject_bos (BlockGen/BD3-style)
+#   conversion_free — open-ended gen from train-aligned chat header
+#                     (system + <|im_start|>assistant\\n), not bare BOS
+#   bare_bos        — legacy ablation: only tokenizer BOS / <|im_start|>
+sample_mode: auto
+
+# Decode profile applied as sampling.* overrides before build:
+#   baseline  — shared ancestral core (clears thr/ARPC/DualCache) — default for free-gen
+#   keep      — inherit ckpt sampling pins (exactness / ARPC regen)
+#   dual_cache / hierarchical — see decode_throughput profiles
+decode_profile: baseline
+
+# Optional extra generation controls
+max_new_tokens: 512      # default cap; null → fill full model length
+stop_at_im_end: true     # truncate text export at <|im_end|>
+greedy: null             # null → follow profile / ckpt
+conversion_user_prompt: null  # if set, conversion_free becomes prompted chat instead of open assistant
+
+sampling: {}
+hydra_overrides: []

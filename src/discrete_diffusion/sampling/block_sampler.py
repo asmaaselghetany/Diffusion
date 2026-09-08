@@ -29,7 +29,8 @@ class BlockSampler(Sampler):
   """Semi-autoregressive block generator for ``BlockTrainer``.
 
   Processes the sequence block-by-block. Within each block, runs reverse
-  diffusion steps using ``concat(xt, x0)`` through the Qwen block backbone.
+  diffusion steps. Default path uses ``concat(xt, x0)`` (train graph);
+  ``sampling.single_stream_decode`` uses Hub ``eval_block_diff_mask``.
 
   Mode is taken from ``config.algo.forward_process_name``:
   - ``masked`` / ``hybrid``: absorbing unmask steps (hybrid trains with
@@ -37,9 +38,8 @@ class BlockSampler(Sampler):
   - ``uniform``: uniform-state redraw steps (BlockGen path)
 
   Decode accelerations (default off):
-  - ``hierarchical_kv``: progressive truncated dual-stream forward (prefix+active
-    only; future pads omitted — logits on the active span match full forward)
-    plus HF causal KV for ARPC AR paths.
+  - ``hierarchical_kv``: progressive truncated forward (prefix+active only)
+  - ``single_stream_decode``: Hub single-stream block-causal (+ DualCache)
   - ``sub_block_size``: Fast-dLLM small-block windows inside each attention block.
   """
 
@@ -67,6 +67,8 @@ class BlockSampler(Sampler):
         getattr(sampling, 'arpc_ar_metric', 'nll') or 'nll')
     self.arpc_warmup_steps = int(getattr(sampling, 'arpc_warmup_steps', 0) or 0)
     self.arpc_guide_every = int(getattr(sampling, 'arpc_guide_every', 1) or 1)
+    self.arpc_temperature = float(
+        getattr(sampling, 'arpc_temperature', 1.0) or 1.0)
     raw_prefix = getattr(sampling, 'arpc_use_prefix_fill', None)
     if raw_prefix is None or raw_prefix == 'null':
       self.arpc_use_prefix_fill = self.arpc_mode == 'simplified'
@@ -79,11 +81,19 @@ class BlockSampler(Sampler):
     self.sub_block_size = int(sub) if sub not in (None, 0, 'null') else None
     self.hierarchical_kv = bool(getattr(sampling, 'hierarchical_kv', False))
     self.use_block_cache = bool(getattr(sampling, 'use_block_cache', False))
+    self.single_stream_decode = bool(
+        getattr(sampling, 'single_stream_decode', False))
     self._dual_cache = None  # set per denoise window when use_block_cache
     self.p_nucleus = float(getattr(sampling, 'p_nucleus', 1.0) if sampling else 1.0)
     raw_thr = getattr(sampling, 'unmask_threshold', None) if sampling else None
     self.unmask_threshold = (
         None if raw_thr in (None, 'null', '') else float(raw_thr))
+    # Codex-fixes: pad tokens after first EOS (stops post-EOS soup in token space).
+    self.pad_after_eos = bool(getattr(sampling, 'pad_after_eos', True))
+    # Stop scheduling later blocks once every row has emitted EOS in the
+    # generated span (audit fix: was filling full 2048 after early collapse).
+    self.stop_on_eos = bool(getattr(sampling, 'stop_on_eos', True))
+    self._arpc_warned = False
     self._validate_sampling_flags()
 
   def _validate_sampling_flags(self) -> None:
@@ -113,14 +123,17 @@ class BlockSampler(Sampler):
       raise ValueError('sampling.arpc_guide_every must be >= 1')
     if self.arpc_warmup_steps < 0:
       raise ValueError('sampling.arpc_warmup_steps must be >= 0')
+    if self.arpc_temperature <= 0:
+      raise ValueError(
+          f'sampling.arpc_temperature must be > 0, got {self.arpc_temperature}')
     if self.use_block_cache and not self.hierarchical_kv:
       raise ValueError(
           'sampling.use_block_cache=true requires sampling.hierarchical_kv=true')
-    if self.use_block_cache:
+    if self.use_block_cache and not self.single_stream_decode:
       logger.warning(
-          'sampling.use_block_cache=true: DualCache is a K/V-only approximation '
-          '(DESIGN_LOCKS DualCache). Prefer hierarchical_kv without cache for '
-          'quality metrics; use DualCache for tok/s probes.')
+          'sampling.use_block_cache=true without single_stream_decode: '
+          'using dual-stream DualCache splice. Prefer '
+          'sampling.single_stream_decode=true for Hub DualCache semantics.')
     if (self.forward_process_name == 'hybrid'
         and str(getattr(self.config.algo, 'hybrid_decode', 'masked')) != 'masked'):
       raise ValueError(
@@ -128,24 +141,103 @@ class BlockSampler(Sampler):
           '(DESIGN_LOCKS B4v1); got '
           f'{getattr(self.config.algo, "hybrid_decode", None)!r}')
 
+  def _maybe_warn_arpc_mixture(self, model) -> None:
+    """Codex-fixes: BlockGen ARPC needs size-1 in the train mixture."""
+    if self._arpc_warned or not self.use_arpc:
+      return
+    mixture = list(getattr(model, 'block_size_mixture', None) or [])
+    weights = getattr(model, 'block_weights', None)
+    cfg = getattr(model, 'config', None)
+    if not mixture and cfg is not None:
+      algo = getattr(cfg, 'algo', None)
+      mixture = list(getattr(algo, 'block_size_mixture', None) or [])
+      if weights is None:
+        weights = getattr(algo, 'block_weights', None)
+    has_size1 = 1 in mixture
+    if not has_size1 and weights is not None:
+      # Weighted 2^k: index 0 → size 1.
+      try:
+        w = list(weights)
+        has_size1 = len(w) > 0 and float(w[0]) > 0
+      except (TypeError, ValueError):
+        has_size1 = False
+    if not has_size1:
+      logger.warning(
+          'BlockGen ARPC needs algo.block_size_mixture including 1 '
+          '(or block_weights with mass on size 1); got mixture=%r weights=%r. '
+          'AR verify (L\'=1) is untrained on this ckpt.',
+          mixture or [], weights)
+    self._arpc_warned = True
+
+  @staticmethod
+  def _pad_after_eos(
+      samples: torch.Tensor,
+      *,
+      start: int,
+      eos_id: int | None,
+      pad_id: int | None,
+  ) -> torch.Tensor:
+    """Keep the first EOS and replace every later token with padding.
+
+    Ported from Diffusion-codex-fixes: stops post-EOS garbage in token space
+    (text ``stop_at_im_end`` alone still leaves junk ids in the tensor).
+    """
+    if eos_id is None:
+      return samples
+    fill_id = eos_id if pad_id is None else int(pad_id)
+    out = samples
+    for row in out:
+      hits = row[start:].eq(eos_id).nonzero(as_tuple=False)
+      if hits.numel() > 0:
+        eos_pos = start + int(hits[0, 0])
+        row[eos_pos + 1:] = fill_id
+    return out
+
   @property
   def is_masked(self) -> bool:
     return self.mode == 'masked'
+
+  def _scale_logits(self, logits: torch.Tensor) -> torch.Tensor:
+    """Apply ``arpc_temperature`` (1.0 = identity) before ARPC softmax."""
+    if self.arpc_temperature == 1.0:
+      return logits
+    return logits / self.arpc_temperature
 
   def _logits(
       self, model, xt: torch.Tensor, x0: torch.Tensor,
       *, active_end: int | None = None,
       window: tuple[int, int] | None = None,
   ) -> torch.Tensor:
-    """Dual-stream logits; hierarchical_kv truncates; DualCache splices window."""
+    """Decode logits; Hub single-stream or dual-stream train graph."""
+    bs = getattr(model, 'block_size', None)
     use_dc = (
         self.use_block_cache and self.hierarchical_kv
         and active_end is not None
-        and window is not None
-        and hasattr(model.backbone, 'block_diff_prefill'))
-    if use_dc:
+        and window is not None)
+
+    if self.single_stream_decode:
+      if use_dc and hasattr(model.backbone, 'block_eval_prefill'):
+        w0, w1 = window
+        if self._dual_cache is None:
+          logits, self._dual_cache = model.backbone.block_eval_prefill(
+              xt, active_len=active_end, block_size=bs)
+          return logits
+        return model.backbone.block_eval_replace(
+            xt, active_len=active_end, window=(w0, w1),
+            cache=self._dual_cache, block_size=bs)
+      a = active_end if (
+          self.hierarchical_kv and active_end is not None
+          and active_end < xt.shape[1]) else None
+      if hasattr(model.backbone, 'block_eval_logits'):
+        return model.backbone.block_eval_logits(
+            xt, active_len=a, block_size=bs)
+      # Fallback: dual-stream with x0 tracking xt (quality-equivalent).
+      return model.backbone_logits(
+          xt, x0, active_len=a if a is not None else active_end)
+
+    use_dc_dual = use_dc and hasattr(model.backbone, 'block_diff_prefill')
+    if use_dc_dual:
       w0, w1 = window
-      bs = getattr(model, 'block_size', None)
       if self._dual_cache is None:
         logits, self._dual_cache = model.backbone.block_diff_prefill(
             xt, x0, active_len=active_end, block_size=bs)
@@ -234,8 +326,18 @@ class BlockSampler(Sampler):
       sampled = sample_categorical(p_x0)
     is_masked = xt == model.mask_id
     if self.unmask_threshold is not None:
+      # Fast-dLLM confidence commit: unmask sites with conf >= threshold,
+      # and always commit the highest-confidence masked token (Hub generate).
       conf = p_x0.gather(-1, sampled.unsqueeze(-1)).squeeze(-1)
       commit = is_masked & (conf >= self.unmask_threshold)
+      # Force at least one unmask per row among still-masked positions.
+      conf_masked = conf.masked_fill(~is_masked, float('-inf'))
+      max_idx = conf_masked.argmax(dim=-1)
+      rows = torch.arange(b, device=xt.device)
+      still = is_masked.any(dim=-1)
+      commit = commit.clone()
+      commit[rows[still], max_idx[still]] = True
+      commit = commit & is_masked
       out = torch.where(commit, sampled, xt)
       return torch.where(~is_masked, xt, out)
     prob_denoise = (alpha_s - alpha_t) / (1 - alpha_t).clamp(min=1e-8)
@@ -341,8 +443,8 @@ class BlockSampler(Sampler):
       end: int,
   ) -> torch.Tensor:
     """Resample low-confidence tokens after block denoising (simplified)."""
-    logits = self._logits(
-        model, xt, x0, active_end=end, window=(start, end))[:, start:end]
+    logits = self._scale_logits(self._logits(
+        model, xt, x0, active_end=end, window=(start, end))[:, start:end])
     probs = F.log_softmax(logits, dim=-1).exp()
     conf = probs.gather(-1, xt[:, start:end].unsqueeze(-1)).squeeze(-1)
     low = conf < self.arpc_resample_tau
@@ -380,7 +482,8 @@ class BlockSampler(Sampler):
     t_prev = (t_scalar - dt).clamp(min=0.0)
     alpha_s = self._expand_alpha(model, t_prev, xt.shape[1])
 
-    logits = self._logits(model, xt, x0, active_end=end, window=(start, end))
+    logits = self._scale_logits(
+        self._logits(model, xt, x0, active_end=end, window=(start, end)))
     if self.is_masked:
       logits = self._prepare_masked_logits(model, logits)
     log_p = F.log_softmax(logits[:, start:end], dim=-1)
@@ -531,6 +634,32 @@ class BlockSampler(Sampler):
     use_blockgen = (
         self.use_arpc and not self.is_masked and self.arpc_mode == 'blockgen')
 
+    # Fast-dLLM confidence decode: iterate until the block has no masks
+    # (Hub generate while-loop), not a fixed α-schedule of length ``steps``.
+    # Bound = remaining mask count (codex-fixes): each pass must make progress.
+    if self.is_masked and self.unmask_threshold is not None:
+      t_full = torch.ones(xt.shape[0], device=xt.device)
+      max_iters = max(int((xt[:, start:end] == model.mask_id).sum().item()), 1)
+      max_iters = max(max_iters, end - start)
+      for _ in range(max_iters):
+        if not (xt[:, start:end] == model.mask_id).any():
+          break
+        before = int((xt[:, start:end] == model.mask_id).sum().item())
+        _apply(t_full, None)
+        after = int((xt[:, start:end] == model.mask_id).sum().item())
+        if after >= before:
+          raise RuntimeError(
+              'masked confidence decoding failed to make progress '
+              f'(masks {before} → {after} in [{start},{end}))')
+      else:
+        if (xt[:, start:end] == model.mask_id).any():
+          raise RuntimeError(
+              'masked confidence decoding exhausted its forced-progress bound '
+              f'in [{start},{end})')
+      _restore()
+      x0[:, start:end] = xt[:, start:end]
+      return xt, x0
+
     for i in range(num_steps):
       t = timesteps[i].expand(xt.shape[0])
       is_guided = (
@@ -584,6 +713,7 @@ class BlockSampler(Sampler):
     if greedy is None:
       greedy = bool(getattr(self.config.sampling, 'greedy', False))
     self._greedy_decode = bool(greedy)
+    self._maybe_warn_arpc_mixture(model)
 
     n = model.num_tokens
     bs = model.block_size
@@ -658,6 +788,27 @@ class BlockSampler(Sampler):
         xt[:, :prefix_len] = prefix_ids[:, :prefix_len].to(xt.device)
         x0[:, :prefix_len] = xt[:, :prefix_len]
 
+      # Early-stop: all rows already produced EOS in the generated region.
+      if self.stop_on_eos:
+        tok = getattr(model, 'tokenizer', None)
+        eos_id = getattr(tok, 'eos_token_id', None) if tok is not None else None
+        gen_start = (
+            prefix_len if prefix_ids is not None else (1 if inject_bos else 0))
+        if eos_id is not None and end > gen_start:
+          has_eos = (xt[:, gen_start:end] == eos_id).any(dim=-1)
+          if bool(has_eos.all()):
+            break
+
+    generated_start = (
+        prefix_len if prefix_ids is not None else (1 if inject_bos else 0))
+    if self.pad_after_eos:
+      tok = getattr(model, 'tokenizer', None)
+      xt = self._pad_after_eos(
+          xt,
+          start=generated_start,
+          eos_id=getattr(tok, 'eos_token_id', None),
+          pad_id=getattr(tok, 'pad_token_id', None),
+      )
     return xt
 
 

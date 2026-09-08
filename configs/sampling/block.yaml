@@ -1,4 +1,8 @@
-# BlockTrainer sampling defaults (masked | uniform share sampler)
+# BlockTrainer sampling defaults — SHARED ANCESTRAL CORE for all pipelines
+# (conversion|native × masked|uniform). Paper overlays are eval/train pins only:
+#   Fast-dLLM exactness → unmask_threshold + greedy + DualCache/single_stream
+#   BlockGen exactness  → use_arpc + arpc_mode=blockgen
+# Default below = DECODE_PROFILE=baseline (no confidence, no ARPC, no DualCache).
 predictor: ddpm_cache
 steps: 32
 inject_bos: True
@@ -19,6 +23,8 @@ arpc_diffusion_metric: confidence  # entropy|confidence|margin
 arpc_ar_metric: nll                # nll|gap_to_top1|entropy
 arpc_warmup_steps: 0
 arpc_guide_every: 1
+# Softmax temperature for ARPC proposal / resample (1.0 = unchanged).
+arpc_temperature: 1.0
 # null → true for simplified, false for blockgen (set explicitly to override)
 arpc_use_prefix_fill: null
 # null = follow algo.shift_loss_targets; true/false forces A/B.
@@ -30,10 +36,20 @@ sub_block_size: null
 greedy: False
 # Fast-dLLM confidence commit (null = ancestral random denoise step).
 unmask_threshold: null
-# Progressive truncated dual-stream decode (prefix+active only) + causal KV
-# for ARPC AR paths.
+# Progressive truncated decode (prefix+active only) + causal KV for ARPC.
 hierarchical_kv: False
 # Fast-dLLM DualCache replace_position splice (requires hierarchical_kv).
 use_block_cache: False
+# Hub generate: single-stream block-causal (not dual-stream train concat).
+single_stream_decode: False
+# Pad tokens after first EOS (stops post-EOS soup in token space).
+pad_after_eos: True
+# Stop scheduling later blocks once all rows emitted EOS.
+stop_on_eos: True
+# Family-aware free sample mode for train SampleSaver / base.generate_samples.
+# auto → conversion_free (Nemotron/ar2block) vs native_free (OWT/block).
+sample_mode: auto
+# Cap generated tokens during train callbacks (null = full seq / sampler default).
+max_new_tokens: 512
 sampler:
   _target_: discrete_diffusion.sampling.block_sampler.BlockSampler
