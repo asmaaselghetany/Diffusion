@@ -1,8 +1,12 @@
 # Shared Slurm/Lightning DDP resource wiring for block_qwen jobs.
 # Source from _block_qwen_launch.bash and ar_sft.sbatch.
 #
-# Codex pattern: one Slurm task per GPU (external process group). Never combine
-# trainer.devices=N with --gpus-per-task=1 on the same node.
+# Proven pattern (job 1701099): one Slurm task per GPU, trainer.devices =
+# GPUs/node, all node GPUs visible, LOCAL_RANK selects the device.
+# Do NOT use --gpus-per-task=1 with devices=N (exclusive CVD=[0] breaks
+# parallel_devices[local_rank] and world-size = nodes*devices).
+
+_BLOCK_QWEN_DDP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 resolve_block_qwen_ddp_resources() {
   NUM_NODES="${NUM_NODES:-${SLURM_NNODES:-1}}"
@@ -20,22 +24,72 @@ resolve_block_qwen_ddp_resources() {
   export NUM_NODES GPUS_PER_NODE NUM_GPUS
 }
 
+_force_override() {
+  # Replace key=… if present; else append.
+  local key="$1"
+  local value="$2"
+  if [[ "${HYDRA_OVERRIDES:-}" == *"${key}="* ]]; then
+    HYDRA_OVERRIDES="$(python - "${HYDRA_OVERRIDES}" "${key}" "${value}" <<'PY'
+import shlex, sys
+old, key, value = sys.argv[1], sys.argv[2], sys.argv[3]
+out = []
+for tok in shlex.split(old):
+  if tok.startswith(key + "="):
+    out.append(f"{key}={value}")
+  else:
+    out.append(tok)
+print(" ".join(shlex.quote(t) for t in out))
+PY
+)"
+  else
+    HYDRA_OVERRIDES="${HYDRA_OVERRIDES:+${HYDRA_OVERRIDES} }${key}=${value}"
+  fi
+}
+
 append_block_qwen_trainer_overrides() {
   # Lightning: devices = GPUs per node; num_nodes = Slurm nodes.
-  _append_override "trainer.devices" "${GPUS_PER_NODE}"
-  _append_override "trainer.num_nodes" "${NUM_NODES}"
+  # World size = devices * num_nodes (= SLURM_NTASKS with one task/GPU).
+  _force_override "trainer.devices" "${GPUS_PER_NODE}"
+  _force_override "trainer.num_nodes" "${NUM_NODES}"
   if [[ "${NUM_GPUS}" -gt 1 ]]; then
-    _append_override "strategy" "ddp"
+    _force_override "strategy" "ddp"
   fi
-  _append_override "loader.eval_global_batch_size" "${NUM_GPUS}"
+  _force_override "loader.eval_global_batch_size" "${NUM_GPUS}"
+}
+
+# Slurm prologs may set CUDA_VISIBLE_DEVICES to a single GPU per task.
+# Lightning with devices=N needs all node GPUs visible; LOCAL_RANK picks one.
+_cuda_visible_all_node_gpus() {
+  local last=$((GPUS_PER_NODE - 1))
+  local ids
+  ids="$(seq -s, 0 "${last}")"
+  echo "CUDA_VISIBLE_DEVICES=${ids}"
 }
 
 run_block_qwen_srun_train() {
   local train_rc=0
+  local py_bin
+  local cvd
+  py_bin="$(command -v python)"
+  # Absolute path — ParaStation spawn is less brittle than PATH lookup.
+  if [[ "${py_bin}" != /* ]]; then
+    py_bin="$(readlink -f "${py_bin}" 2>/dev/null || true)"
+  fi
+  py_bin="${py_bin:-python}"
+  cvd="$(_cuda_visible_all_node_gpus)"
+
+  # Jupiter ParaStation: first multi-node srun often fails with
+  #   PSI: doSpawn … Invalid argument / PSI_spawnRsrvtn
+  # Warm up + retry (see scripts/_srun_retry.bash).
+  # shellcheck disable=SC1091
+  source "${_BLOCK_QWEN_DDP_DIR}/_srun_retry.bash"
+  srun_warmup
+
   if [[ "${NUM_NODES}" -gt 1 ]]; then
     # Multi-node: one Slurm task per GPU; Lightning uses the external process group.
-    srun --ntasks-per-node="${GPUS_PER_NODE}" --cpu-bind=cores \
-      python -u -m discrete_diffusion "+experiment=${EXPERIMENT}" "algo=${ALGO}" \
+    srun_retry --ntasks-per-node="${GPUS_PER_NODE}" --cpu-bind=cores \
+      env "${cvd}" \
+      "${py_bin}" -u -m discrete_diffusion "+experiment=${EXPERIMENT}" "algo=${ALGO}" \
       data.cache_dir="${DATA_CACHE}" \
       checkpointing.save_dir="${RUN_ROOT}" \
       checkpointing.resume_from_ckpt="${RESUME_FROM_CKPT:-true}" \
@@ -46,13 +100,11 @@ run_block_qwen_srun_train() {
       "wandb.resume=${WANDB_RESUME}" \
       "${EXTRA_OVERRIDES[@]}" || train_rc=$?
   else
-    # Single-node: still launch one task per GPU. SlurmEnvironment does not
-    # spawn sibling ranks from a lone task (ntasks=1 + devices=2 wastes GPUs).
-    # Do not add --gpus-per-task=1: Lightning validates devices against all
-    # visible GPUs, then binds each rank via LOCAL_RANK.
-    srun --ntasks="${GPUS_PER_NODE}" --ntasks-per-node="${GPUS_PER_NODE}" \
+    # Single-node: still launch one task per GPU.
+    srun_retry --ntasks="${GPUS_PER_NODE}" --ntasks-per-node="${GPUS_PER_NODE}" \
       --cpu-bind=cores \
-      python -u -m discrete_diffusion "+experiment=${EXPERIMENT}" "algo=${ALGO}" \
+      env "${cvd}" \
+      "${py_bin}" -u -m discrete_diffusion "+experiment=${EXPERIMENT}" "algo=${ALGO}" \
       data.cache_dir="${DATA_CACHE}" \
       checkpointing.save_dir="${RUN_ROOT}" \
       checkpointing.resume_from_ckpt="${RESUME_FROM_CKPT:-true}" \

@@ -64,8 +64,19 @@ activate_jupiter_modules() {
       || true
   fi
   set -u
+  # Slurm often propagates the *parent* job's TMPDIR (e.g. train sets
+  # /tmp/block_qwen_<train_jid>). Child evals then mktemp into a path that
+  # does not exist on the new node → immediate FAIL (jobs 1774111/1774569).
+  local _job="${SLURM_JOB_ID:-local}"
+  local _want="/tmp/block_qwen_${_job}"
+  if [[ -z "${TMPDIR:-}" || "${TMPDIR}" == /tmp/block_qwen_* ]]; then
+    if [[ "${TMPDIR:-}" != "${_want}" || ! -d "${TMPDIR:-}" ]]; then
+      export TMPDIR="${_want}"
+    fi
+  fi
+  mkdir -p "${TMPDIR:-/tmp}" || export TMPDIR=/tmp
   local _modlog
-  _modlog="$(mktemp -t modlog.XXXXXX)"
+  _modlog="$(mktemp "${TMPDIR}/modlog.XXXXXX")"
   module load Stages/2026 GCC Python CUDA >"${_modlog}" 2>&1 \
     || module load Stages/2025 GCC Python CUDA >"${_modlog}" 2>&1 \
     || true

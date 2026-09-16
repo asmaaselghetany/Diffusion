@@ -44,6 +44,7 @@ wrong family, conflicts, and missing prerequisites are refused.
 | `shift_loss_targets` | Fast-dLLM v2 | **conversion + masked** | `algo.shift_loss_targets` | yes | **no** | Prefer shift-only micro before full fdllm |
 | `complementary_masks` | Fast-dLLM v2 | **conversion + masked** | `algo.complementary_masks` (+ `complementary_batching=fused`) | yes | **no** | Paired m/~m; Hub fused 2B |
 | `mask_schedule=fast_dllm` | Fast-dLLM v2 | **conversion + masked** | `algo.mask_schedule` | unit | **no** | `p_mask=(1-ε)t+ε` |
+| `loss_weighting=plain_ce` | Fast-dLLM v2 Hub CE | **conversion + masked** | `algo.loss_weighting` | yes (denom tests) | **no** | Mask-site mean only; see **PLAIN-CE-DENOM** |
 | `sub_block_size` | Fast-dLLM decode | shared / decode | `sampling.sub_block_size` | sampler | **no** | Pair with `hierarchical_kv` |
 | `hierarchical_kv` | Fast-dLLM decode | shared / decode | `sampling.hierarchical_kv` | sampler | **no** | Truncate-only progressive |
 | `dual_cache` | Fast-dLLM DualCache | shared / decode | `sampling.use_block_cache` | unit | **no** | Requires `hierarchical_kv` |
@@ -75,6 +76,11 @@ See also: `BLOCK_QWEN_TRAINING.md`, `DESIGN_LOCKS.md`, `LOSS_SPECIAL_CASE_POLICY
 | **HYDRA-CKPT-MUL** | Loading a saved Lightning/`OmegaConf` ckpt config into `get_dataloaders` fails with `Unsupported interpolation type mul` on `trainer.accumulate_grad_batches` (and similar `${mul:…}` / `${div_up:…}` keys). Hit by `run_copy_x0_probe.py --real-batch`. | Real-batch diagnostics from ckpt config break; synthetic path OK. | **fixed** — `register_config_resolvers()` + `OmegaConf.resolve` in `run_copy_x0_probe.py` / `run_block_arm_sanity.py` before dataloader/model use |
 | **TBUCKET-SHIFT-TRIM** | `_log_t_bucketed_nll` × `shift_loss_targets` → loss T-1 vs valid T (511 vs 512). Crashed Track 2 `138103` after step 500. | End-of-val logging only; ckpt at 500 may still be usable. | **fixed** in `block_trainer.py` + `test_t_bucketed_nll_shift_trim_aligns` |
 | **COMP-POLARITY** | Old `complementary_masks` flipped `~move_mask` in-place (wrong vs Fast-dLLM paired views). | Comp/both micros BPD ~24 | **fixed** — Hub fused 2B `m`/`~m` in `BlockTrainer.nll` (`complementary_batching=fused`) |
+| **PLAIN-CE-DENOM** | `plain_ce` zeroed clean sites in the numerator but `_loss` divided by `valid_tokens.sum()` (all positions). Complementary doubles valid → ~½ Hub scale at same LR. | C2 ≪ C0 on same skeleton (~10 pp GSM8K) | **fixed** — mask-site denom (`_plain_ce_token_count`); tests in `test_block_shift_loss.py` |
+| **SFT-ATTN-PROMPT** | `nll` passed assistant-only `valid_tokens` as backbone `attention_mask`, so SDPA blocked attending to user/system prompt. Hub train only uses structural block-diff mask (prompt stays visible; `labels=-100` drops prompt from CE). | Absolute Hub gap (GSM8K/IFEval) on **both** C0 and C2 | **fixed** — `attention_mask=batch['attention_mask']` for attn; assistant mask only for corrupt/loss; `tests/test_sft_attention_prompt.py` |
+| **FAST-DLLM-DOUBLE-EPS** | `sample_block_timesteps` floored `t` to `[eps,1]` then `fast_dllm` applied `p=(1-ε)t+ε` again → min `p≈2ε` vs Hub `t~U(0,1)`. | Mild C2-only schedule bias | **fixed** — `fast_dllm` uses `sampling_eps=0` for `t`; test in `test_mask_schedule_elbo.py` |
+| **HUB-STRUCT-ATTN** | Hub train overwrites attn with structural mask only; we still applied pad blocking → different softmax on packed MASK pads. | Grad diff on padded rows | **fixed** — `algo.hub_struct_attn_only` via `hub_train_parity` on C2_fdllm_full |
+| **HUB-ANTITHETIC / ignore_bos** | Default antithetic + ignore_bos≠Hub | Mild C2 t-law / corrupt | **fixed** — antithetic off under `fast_dllm`; `ignore_bos=false` in `hub_train_parity` |
 
 BlockGen-derived levers: [`BLOCKGEN_LEVERS.md`](BLOCKGEN_LEVERS.md) (**native
 `LINE=block`**). Prefer `submit_lever.sh` / `submit_blockgen_owt.sh`. Legacy

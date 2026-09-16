@@ -12,7 +12,14 @@ def masked_plain_ce_per_token(
     xt: torch.Tensor,
     mask_id: int,
 ) -> torch.Tensor:
-  """Unweighted masked-token CE (Fast-dLLM complementary objective)."""
+  """Unweighted masked-token CE (Fast-dLLM complementary objective).
+
+  Returns per-token CE with zeros on clean sites. Callers that mean-reduce
+  (``BlockTrainer._loss`` with ``loss_weighting=plain_ce``) MUST divide by
+  the count of mask sites only — Hub ``ForCausalLMLoss`` ignores ``labels=-100``
+  on clean tokens. Dividing by all valid tokens under-scales vs Hub (~½ with
+  complementary 2B).
+  """
   log_probs = F.log_softmax(log_x_theta, dim=-1)
   ce = -log_probs.gather(-1, x0.unsqueeze(-1)).squeeze(-1)
   return (xt == mask_id).to(ce.dtype) * ce

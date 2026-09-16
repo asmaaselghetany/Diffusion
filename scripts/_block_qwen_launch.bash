@@ -162,8 +162,24 @@ fi
 if [[ -n "${CKPT}" && "${STEP}" =~ ^[0-9]+$ && "${STEP}" -ge "${MAX_STEPS}" ]]; then
   if [[ "${RUN_FULL_EVAL:-true}" == "true" ]]; then
     echo "=== Training finished at step ${STEP} (>= max_steps=${MAX_STEPS}); submitting eval for ${CKPT} ==="
-    sbatch scripts/slurm/eval_checkpoint.sbatch "${CKPT}" \
-      || echo "WARNING: failed to submit eval job for ${CKPT}" >&2
+    # Critical: unset TMPDIR/TEMP/TMP so the child does not inherit
+    # /tmp/block_qwen_<this_train_jid> (missing on the eval node → mktemp FAIL).
+    # Family router: masked → 8×4 hubmatch lm-eval; uniform → offline/ARPC.
+    # shellcheck disable=SC1091
+    if [[ -x "${REPO_ROOT}/scripts/submit_family_eval.sh" ]]; then
+      env -u TMPDIR -u TEMP -u TMP \
+        NUM_NODES="${AUTO_EVAL_NUM_NODES:-${NUM_NODES:-8}}" \
+        FORCE_STACK="${FORCE_STACK:-fastdllm_lm_eval}" \
+        FORCE_DECODE_PROFILE="${FORCE_DECODE_PROFILE:-hubmatch}" \
+        FORCE_UNMASK_THRESHOLD="${FORCE_UNMASK_THRESHOLD:-1}" \
+        FORCE_GREEDY_PIN="${FORCE_GREEDY_PIN:-1}" \
+        bash "${REPO_ROOT}/scripts/submit_family_eval.sh" "${CKPT}" \
+        || echo "WARNING: failed to submit family eval for ${CKPT}" >&2
+    else
+      env -u TMPDIR -u TEMP -u TMP \
+        sbatch scripts/slurm/eval_checkpoint.sbatch "${CKPT}" \
+        || echo "WARNING: failed to submit eval job for ${CKPT}" >&2
+    fi
   fi
 elif [[ -n "${CKPT}" && "${STEP}" =~ ^[0-9]+$ && "${STEP}" -lt "${MAX_STEPS}" ]]; then
   echo "=== Incomplete: step ${STEP} < max_steps=${MAX_STEPS} (train_rc=${TRAIN_RC}) ==="

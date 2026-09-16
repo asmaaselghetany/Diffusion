@@ -53,12 +53,17 @@ CKPT="$(readlink -f "${CKPT}")"
 
 export SUITE="${SUITE:-fastdllm}"
 export TASKS="${TASKS:-}"
-export MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-512}"
+# Hub eval.py default; override to 512 only for smoke.
+export MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-2048}"
+# Allow lm-eval to extend buffer past train length (Hub max_new=2048 parity).
+export EVAL_MAX_SEQ_LEN="${EVAL_MAX_SEQ_LEN:-8192}"
 export NUM_STEPS="${NUM_STEPS:-32}"
 export SKIP_THROUGHPUT="${SKIP_THROUGHPUT:-0}"
 export UNMASK_THRESHOLD="${UNMASK_THRESHOLD:-}"
 export FORCE_GREEDY="${FORCE_GREEDY:-}"
 export DECODE_PROFILE="${DECODE_PROFILE:-baseline}"
+# Optional OUT_DIR so thr=1 vs thr=0.9 / old 512 runs do not clobber.
+export OUT_DIR="${OUT_DIR:-}"
 
 # Parallelism: sbatch --nodes must match NUM_NODES (default 8).
 export NUM_NODES="${NUM_NODES:-${SLURM_JOB_NUM_NODES:-8}}"
@@ -84,7 +89,9 @@ if [[ "${DECODE_PROFILE}" == "auto" ]]; then
   case "${EVAL_STACK}" in
     fastdllm_lm_eval)
       export DECODE_PROFILE=dual_cache
-      export UNMASK_THRESHOLD="${UNMASK_THRESHOLD:-${EVAL_UNMASK_THRESHOLD:-0.9}}"
+      # Paper §4 accuracy default thr=1; Hub/speed often 0.9.
+      # Prefer explicit UNMASK_THRESHOLD; else paper thr=1 (ignore ckpt 0.9).
+      export UNMASK_THRESHOLD="${UNMASK_THRESHOLD:-1}"
       export FORCE_GREEDY="${FORCE_GREEDY:-1}"
       ;;
     conversion_lm_eval)
@@ -112,7 +119,12 @@ echo "  master: ${MASTER_ADDR}:${MASTER_PORT}"
 echo "  dist timeout: LM_EVAL_DIST_TIMEOUT_SEC=${LM_EVAL_DIST_TIMEOUT_SEC}s (NCCL heartbeat matched)"
 echo "  HF_HOME=${HF_HOME} offline=${HF_HUB_OFFLINE}"
 
+# Jupiter ParaStation: first multi-node srun often fails (PSI doSpawn).
+# shellcheck disable=SC1091
+source scripts/_srun_retry.bash
+srun_warmup
+
 # One Accelerate launcher per node (spawns GPUS_PER_NODE workers locally).
-srun --nodes="${NUM_NODES}" --ntasks="${NUM_NODES}" --ntasks-per-node=1 \
+srun_retry --nodes="${NUM_NODES}" --ntasks="${NUM_NODES}" --ntasks-per-node=1 \
   --cpu-bind=none \
   bash examples/block_qwen/lm_eval.sh "${CKPT}"

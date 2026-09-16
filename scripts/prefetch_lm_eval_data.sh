@@ -65,6 +65,8 @@ direct = [
     ('google-research-datasets/mbpp', 'full'),
     ('evalplus/mbppplus', None),
     ('google/IFEval', None),
+    # Official Fast-dLLM / lm-eval mmlu loads cais/mmlu *per subject*
+    # (prehistory, …). Caching only name='all' breaks offline Hub eval.
     ('cais/mmlu', 'all'),
     ('Idavidrein/gpqa', 'gpqa_main'),
 ]
@@ -79,6 +81,19 @@ for path, name in direct:
   except Exception as e:
     print(f'  direct load failed (TaskManager may still work): {e}', flush=True)
 
+# Every cais/mmlu config (subjects + all). Skip train-only auxiliary_train
+# test-split checks later; still download the config for completeness.
+from datasets import get_dataset_config_names
+mmlu_cfgs = get_dataset_config_names('cais/mmlu')
+print(f'cais/mmlu configs={len(mmlu_cfgs)}', flush=True)
+for i, cfg in enumerate(mmlu_cfgs):
+  print(f'HF load cais/mmlu name={cfg} [{i+1}/{len(mmlu_cfgs)}]', flush=True)
+  try:
+    load_dataset('cais/mmlu', cfg, trust_remote_code=True)
+  except Exception as e:
+    print(f'  FAIL {cfg}: {e}', flush=True)
+    raise
+
 tm = TaskManager()
 tasks = [t.strip() for t in os.environ['TASKS'].split(',') if t.strip()]
 for name in tasks:
@@ -89,9 +104,10 @@ for name in tasks:
 
 os.environ['HF_HUB_OFFLINE'] = '1'
 os.environ['HF_DATASETS_OFFLINE'] = '1'
-print('Offline reload gsm8k...', flush=True)
+print('Offline reload gsm8k + cais/mmlu:prehistory...', flush=True)
 load_dataset('gsm8k', 'main')
-print('Offline OK', flush=True)
+n = len(load_dataset('cais/mmlu', 'prehistory', split='test'))
+print(f'Offline OK (mmlu_prehistory test={n})', flush=True)
 PY
 
 echo "=== Done ==="

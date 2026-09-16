@@ -12,7 +12,7 @@ from .arpc import (
     corruption_indices,
 )
 from .base import Sampler
-from .shift_logits import align_shift_logits
+from .shift_logits import ShiftMode, align_shift_logits
 
 
 logger = logging.getLogger(__name__)
@@ -41,6 +41,7 @@ class BlockSampler(Sampler):
   - ``hierarchical_kv``: progressive truncated forward (prefix+active only)
   - ``single_stream_decode``: Hub single-stream block-causal (+ DualCache)
   - ``sub_block_size``: Fast-dLLM small-block windows inside each attention block.
+  - ``ar_block_bridge``: Hub post-block AR append (auto ON for masked+shift).
   """
 
   def __init__(self, config, forward_process=None) -> None:
@@ -83,11 +84,26 @@ class BlockSampler(Sampler):
     self.use_block_cache = bool(getattr(sampling, 'use_block_cache', False))
     self.single_stream_decode = bool(
         getattr(sampling, 'single_stream_decode', False))
-    self._dual_cache = None  # set per denoise window when use_block_cache
+    # DualCache lifetime matches Hub ``block_past_key_values``: keep across
+    # sub-windows inside one attention block; invalidate on new attention
+    # block or Hub refresh (first small-block token still MASK).
+    self._dual_cache = None
     self.p_nucleus = float(getattr(sampling, 'p_nucleus', 1.0) if sampling else 1.0)
     raw_thr = getattr(sampling, 'unmask_threshold', None) if sampling else None
     self.unmask_threshold = (
         None if raw_thr in (None, 'null', '') else float(raw_thr))
+    # Hub AR block-bridge (generation_functions.py ~81-85). null = auto:
+    # ON for masked + shift (Fast-dLLM parity), OFF for uniform/ARPC.
+    raw_bridge = (
+        getattr(sampling, 'ar_block_bridge', None) if sampling else None)
+    if raw_bridge is None or raw_bridge == 'null':
+      self._ar_block_bridge_override = None
+    else:
+      self._ar_block_bridge_override = bool(raw_bridge)
+    # Ban MASK/PAD in denoise logits (safety). Hub does not ban; set false for
+    # bit-closer Hub parity when probing decode mismatches.
+    self.ban_mask_pad_logits = bool(
+        getattr(sampling, 'ban_mask_pad_logits', True) if sampling else True)
     # Codex-fixes: pad tokens after first EOS (stops post-EOS soup in token space).
     self.pad_after_eos = bool(getattr(sampling, 'pad_after_eos', True))
     # Stop scheduling later blocks once every row has emitted EOS in the
@@ -95,6 +111,18 @@ class BlockSampler(Sampler):
     self.stop_on_eos = bool(getattr(sampling, 'stop_on_eos', True))
     self._arpc_warned = False
     self._validate_sampling_flags()
+
+  def _use_block_scope(self) -> bool:
+    """Hub densifies only the current attention block (not future MASKs).
+
+    True for hierarchical / DualCache / single-stream / confidence decode.
+    Plain ancestral baseline keeps full-seq forwards (legacy C0 path).
+    """
+    return bool(
+        self.hierarchical_kv
+        or self.use_block_cache
+        or self.single_stream_decode
+        or self.unmask_threshold is not None)
 
   def _validate_sampling_flags(self) -> None:
     if self.use_arpc and self.forward_process_name != 'uniform':
@@ -203,57 +231,127 @@ class BlockSampler(Sampler):
       return logits
     return logits / self.arpc_temperature
 
+  @staticmethod
+  def _attention_block_end(end: int, block_size: int, seq_len: int) -> int:
+    """Ceil ``end`` to the enclosing attention-block boundary (Hub span)."""
+    if block_size <= 0:
+      raise ValueError(f'block_size must be >0, got {block_size}')
+    return min(seq_len, ((end + block_size - 1) // block_size) * block_size)
+
+  def _truncated_active_end(
+      self, model, end: int, seq_len: int,
+  ) -> int:
+    """Forward span for Hub-style block scope; else ``end`` (legacy).
+
+    Hub densifies the full current attention block then slices the denoise
+    window. Sub-window ``end`` must therefore be rounded up to the block
+    boundary when truncated / DualCache / confidence forwards are active.
+    """
+    if not self._use_block_scope():
+      return end
+    bs = getattr(model, 'block_size', None)
+    if bs is None:
+      return end
+    return self._attention_block_end(end, int(bs), seq_len)
+
   def _logits(
       self, model, xt: torch.Tensor, x0: torch.Tensor,
       *, active_end: int | None = None,
       window: tuple[int, int] | None = None,
-  ) -> torch.Tensor:
-    """Decode logits; Hub single-stream or dual-stream train graph."""
+  ) -> tuple[torch.Tensor, ShiftMode]:
+    """Decode logits; Hub single-stream or dual-stream train graph.
+
+    Returns ``(logits, shift_mode)``. ``shift_mode='window'`` only on the
+    DualCache *replace* path (zeros outside the denoise window); prefill /
+    dense / hierarchical full forwards use ``'full'``.
+    """
     bs = getattr(model, 'block_size', None)
     use_dc = (
         self.use_block_cache and self.hierarchical_kv
         and active_end is not None
         and window is not None)
 
+    # Truncate to attention-block end whenever Hub block-scope is active
+    # (not only hierarchical_kv) so baseline+threshold / hubmatch do not
+    # attend future MASK tokens outside the current block.
+    a = active_end if (
+        self._use_block_scope()
+        and active_end is not None
+        and active_end < xt.shape[1]) else None
+
     if self.single_stream_decode:
       if use_dc and hasattr(model.backbone, 'block_eval_prefill'):
         w0, w1 = window
+        self._maybe_refresh_dual_cache(
+            model, xt, window_start=w0, active_end=active_end)
         if self._dual_cache is None:
           logits, self._dual_cache = model.backbone.block_eval_prefill(
               xt, active_len=active_end, block_size=bs)
-          return logits
+          return logits, 'full'
         return model.backbone.block_eval_replace(
             xt, active_len=active_end, window=(w0, w1),
-            cache=self._dual_cache, block_size=bs)
-      a = active_end if (
-          self.hierarchical_kv and active_end is not None
-          and active_end < xt.shape[1]) else None
+            cache=self._dual_cache, block_size=bs), 'window'
       if hasattr(model.backbone, 'block_eval_logits'):
         return model.backbone.block_eval_logits(
-            xt, active_len=a, block_size=bs)
+            xt, active_len=a, block_size=bs), 'full'
       # Fallback: dual-stream with x0 tracking xt (quality-equivalent).
       return model.backbone_logits(
-          xt, x0, active_len=a if a is not None else active_end)
+          xt, x0, active_len=a if a is not None else active_end), 'full'
 
     use_dc_dual = use_dc and hasattr(model.backbone, 'block_diff_prefill')
     if use_dc_dual:
       w0, w1 = window
+      self._maybe_refresh_dual_cache(
+          model, xt, window_start=w0, active_end=active_end)
       if self._dual_cache is None:
         logits, self._dual_cache = model.backbone.block_diff_prefill(
             xt, x0, active_len=active_end, block_size=bs)
-        return logits
+        return logits, 'full'
       return model.backbone.block_diff_replace(
           xt, x0, active_len=active_end, window=(w0, w1),
-          cache=self._dual_cache, block_size=bs)
-    if (self.hierarchical_kv and active_end is not None
-        and active_end < xt.shape[1]):
-      return model.backbone_logits(xt, x0, active_len=active_end)
-    return model.backbone_logits(xt, x0)
+          cache=self._dual_cache, block_size=bs), 'window'
+    if a is not None:
+      return model.backbone_logits(xt, x0, active_len=a), 'full'
+    return model.backbone_logits(xt, x0), 'full'
 
   def _shift_align_enabled(self, model) -> bool:
     if self._align_shift_logits_override is not None:
       return bool(self._align_shift_logits_override)
     return bool(getattr(model, 'shift_loss_targets', False))
+
+  def _ar_block_bridge_enabled(self, model) -> bool:
+    """Whether to run Hub's post-block AR append (masked Fast-dLLM path)."""
+    if self._ar_block_bridge_override is not None:
+      return bool(self._ar_block_bridge_override)
+    # Auto: Hub parity for masked + shift; never on uniform/ARPC by default.
+    return self.is_masked and self._shift_align_enabled(model)
+
+  def _maybe_refresh_dual_cache(
+      self,
+      model,
+      xt: torch.Tensor,
+      *,
+      window_start: int,
+      active_end: int | None,
+  ) -> None:
+    """Invalidate DualCache like Hub ``block_past_key_values`` refresh.
+
+    Hub ``generation_functions.py`` ~102: refresh when cache is missing or the
+    first token of the current small block is still MASK. Also drop on
+    ``active_len`` mismatch (attention-block span changed).
+    """
+    if self._dual_cache is None or not self.use_block_cache:
+      return
+    cache_len = getattr(self._dual_cache, 'active_len', None)
+    # Only compare when the cache object carries ``active_len`` (real DualCache).
+    if (active_end is not None and cache_len is not None
+        and int(cache_len) != int(active_end)):
+      self._dual_cache = None
+      return
+    mask_id = getattr(model, 'mask_id', None)
+    if (self.is_masked and mask_id is not None
+        and (xt[:, window_start] == mask_id).any()):
+      self._dual_cache = None
 
   @staticmethod
   def _apply_top_p(probs: torch.Tensor, top_p: float) -> torch.Tensor:
@@ -268,8 +366,24 @@ class BlockSampler(Sampler):
     out = torch.zeros_like(probs)
     return out.scatter(-1, sorted_idx, sorted_probs)
 
-  def _prepare_masked_logits(self, model, logits: torch.Tensor) -> torch.Tensor:
-    logits = align_shift_logits(logits, enabled=self._shift_align_enabled(model))
+  def _prepare_masked_logits(
+      self,
+      model,
+      logits: torch.Tensor,
+      *,
+      window: tuple[int, int] | None = None,
+      shift_mode: ShiftMode = 'full',
+  ) -> torch.Tensor:
+    # Window-local shift ONLY for DualCache replace (zero-padded outsides).
+    # Dense / prefill keep full-tensor shift even when a denoise window is set.
+    logits = align_shift_logits(
+        logits,
+        enabled=self._shift_align_enabled(model),
+        window=window if shift_mode == 'window' else None,
+        mode=shift_mode,
+    )
+    if not self.ban_mask_pad_logits:
+      return logits
     if getattr(model, 'mask_id', None) is not None:
       logits = logits.clone()
       neg = float(getattr(model, 'neg_infinity', -1e6))
@@ -309,9 +423,10 @@ class BlockSampler(Sampler):
       t_prev = (t_scalar - dt).clamp(min=0.0)
       alpha_s = self._expand_alpha(model, t_prev, seq_len)
 
+    raw, shift_mode = self._logits(
+        model, xt, x0, active_end=active_end, window=window)
     logits = self._prepare_masked_logits(
-        model, self._logits(
-            model, xt, x0, active_end=active_end, window=window))
+        model, raw, window=window, shift_mode=shift_mode)
     # Truncated / DualCache forward may return length active_end — pad back.
     if logits.size(1) < seq_len:
       pad = torch.zeros(
@@ -325,6 +440,15 @@ class BlockSampler(Sampler):
     else:
       sampled = sample_categorical(p_x0)
     is_masked = xt == model.mask_id
+    # Hub confidence unmask is scoped to the active small-block / denoise
+    # window. Full-sequence force-max can "commit" future MASK positions that
+    # are then discarded by ``xt[:, start:end] = …`` → zero progress (hubmatch
+    # crash) or DualCache zero-logit ``!`` at the window edge.
+    if window is not None:
+      w0, w1 = window
+      active = torch.zeros_like(is_masked)
+      active[:, w0:w1] = True
+      is_masked = is_masked & active
     if self.unmask_threshold is not None:
       # Fast-dLLM confidence commit: unmask sites with conf >= threshold,
       # and always commit the highest-confidence masked token (Hub generate).
@@ -366,7 +490,7 @@ class BlockSampler(Sampler):
       t_prev = (t_scalar - dt).clamp(min=0.0)
       alpha_s = self._expand_alpha(model, t_prev, seq_len).unsqueeze(-1)
 
-    logits = self._logits(
+    logits, _shift_mode = self._logits(
         model, xt, x0, active_end=active_end, window=window)
     if logits.size(1) < seq_len:
       pad = torch.zeros(
@@ -443,8 +567,10 @@ class BlockSampler(Sampler):
       end: int,
   ) -> torch.Tensor:
     """Resample low-confidence tokens after block denoising (simplified)."""
-    logits = self._scale_logits(self._logits(
-        model, xt, x0, active_end=end, window=(start, end))[:, start:end])
+    active_end = self._truncated_active_end(model, end, xt.shape[1])
+    raw, _shift_mode = self._logits(
+        model, xt, x0, active_end=active_end, window=(start, end))
+    logits = self._scale_logits(raw[:, start:end])
     probs = F.log_softmax(logits, dim=-1).exp()
     conf = probs.gather(-1, xt[:, start:end].unsqueeze(-1)).squeeze(-1)
     low = conf < self.arpc_resample_tau
@@ -482,10 +608,13 @@ class BlockSampler(Sampler):
     t_prev = (t_scalar - dt).clamp(min=0.0)
     alpha_s = self._expand_alpha(model, t_prev, xt.shape[1])
 
-    logits = self._scale_logits(
-        self._logits(model, xt, x0, active_end=end, window=(start, end)))
+    active_end = self._truncated_active_end(model, end, xt.shape[1])
+    raw, shift_mode = self._logits(
+        model, xt, x0, active_end=active_end, window=(start, end))
+    logits = self._scale_logits(raw)
     if self.is_masked:
-      logits = self._prepare_masked_logits(model, logits)
+      logits = self._prepare_masked_logits(
+          model, logits, window=(start, end), shift_mode=shift_mode)
     log_p = F.log_softmax(logits[:, start:end], dim=-1)
     # Predictor: sample clean proposal for the active block.
     proposal = sample_categorical(log_p.exp())
@@ -526,6 +655,39 @@ class BlockSampler(Sampler):
     x0[:, start:end] = block
 
   @staticmethod
+  def _eos_stop_ready(
+      xt: torch.Tensor,
+      *,
+      gen_start: int,
+      end: int,
+      eos_id: int,
+      mask_id: int | None,
+  ) -> bool:
+    """Hub early-stop: every row has EOS with no MASK before it in gen span."""
+    if end <= gen_start:
+      return False
+    span = xt[:, gen_start:end]
+    has_eos = (span == eos_id).any(dim=-1)
+    if not bool(has_eos.all()):
+      return False
+    if mask_id is None:
+      return True
+    # For each row: no MASK strictly before the first EOS.
+    b = span.shape[0]
+    for i in range(b):
+      row = span[i]
+      eos_pos = (row == eos_id).nonzero(as_tuple=False)
+      if eos_pos.numel() == 0:
+        return False
+      first = int(eos_pos[0].item())
+      if (row[:first] == mask_id).any():
+        return False
+    return True
+
+  def _gen_start(self, prefix_len: int, inject_bos: bool) -> int:
+    return prefix_len if prefix_len > 0 else (1 if inject_bos else 0)
+
+  @staticmethod
   def _ignore_bos(model) -> bool:
     if bool(getattr(model, 'ignore_bos', False)):
       return True
@@ -544,7 +706,12 @@ class BlockSampler(Sampler):
   ) -> tuple[torch.Tensor, torch.Tensor]:
     # Keep already-committed prefix; only reset the active block to prior.
     committed = x0[:, :start].clone()
+    # Hub AR block-bridge seeds the first token of the next attention block
+    # (generation_functions.py ~83-85 / ~130-140). Preserve non-MASK tokens
+    # already present in this window so `_init_block` does not wipe the seed.
+    seeded = None
     if self.is_masked:
+      seeded = x0[:, start:end].clone()
       xt[:, start:end] = model.mask_id
     else:
       xt[:, start:end] = torch.randint(
@@ -558,9 +725,58 @@ class BlockSampler(Sampler):
         x0[:, 0] = bos
     xt[:, :start] = committed
     x0[:, :start] = committed
+    if seeded is not None:
+      keep = seeded != model.mask_id
+      if keep.any():
+        xt[:, start:end] = torch.where(keep, seeded, xt[:, start:end])
     x0[:, start:end] = xt[:, start:end]
     if (self.use_arpc and not self.is_masked and self.arpc_use_prefix_fill):
       xt, x0 = self._arpc_prefix_fill(model, xt, x0, start, end)
+    return xt, x0
+
+  def _ar_block_bridge(
+      self,
+      model,
+      xt: torch.Tensor,
+      x0: torch.Tensor,
+      end: int,
+  ) -> tuple[torch.Tensor, torch.Tensor]:
+    """One AR step after a fully unmasked attention block (Hub ~81-85).
+
+    Hub forwards the completed block, takes ``logits[:, -1].argmax``, and
+    appends that token (seeds the next block). Fixed-length: write into
+    position ``end`` when it is still MASK. Uses *unshifted* logits so that
+    with ``shift_loss_targets`` position ``end-1`` predicts token ``end``.
+    """
+    n = xt.shape[1]
+    if end < 1 or end >= n:
+      return xt, x0
+    # Dense / hierarchical full forward — not DualCache replace.
+    self._dual_cache = None
+    bs = getattr(model, 'block_size', None)
+    if self.single_stream_decode and hasattr(model.backbone, 'block_eval_logits'):
+      logits = model.backbone.block_eval_logits(
+          xt, active_len=end, block_size=bs)
+    elif self.hierarchical_kv:
+      logits = model.backbone_logits(xt, x0, active_len=end)
+    else:
+      logits = model.backbone_logits(xt, x0)
+    if logits.size(1) < end:
+      raise RuntimeError(
+          f'AR block-bridge expected >= {end} logits, got {logits.size(1)}')
+    logits = logits.clone()
+    if self.ban_mask_pad_logits:
+      if getattr(model, 'mask_id', None) is not None:
+        neg = float(getattr(model, 'neg_infinity', -1e6))
+        logits[..., model.mask_id] = neg
+      pad_id = getattr(getattr(model, 'tokenizer', None), 'pad_token_id', None)
+      if pad_id is not None:
+        logits[..., int(pad_id)] = float('-inf')
+    next_tok = logits[:, end - 1, :].argmax(dim=-1)
+    is_mask = xt[:, end] == model.mask_id
+    if is_mask.any():
+      xt[is_mask, end] = next_tok[is_mask]
+      x0[is_mask, end] = next_tok[is_mask]
     return xt, x0
 
   def _denoise_block(
@@ -592,9 +808,16 @@ class BlockSampler(Sampler):
       if bos is not None:
         bos_id = bos
 
-    # Fresh DualCache for this window (invalidate after prior redraw in init).
-    self._dual_cache = None
+    # Do NOT reset DualCache here — Hub keeps ``block_past_key_values`` across
+    # small blocks in the same attention block (generation_functions.py ~71,
+    # ~101-108). ``generate`` clears on new attention block; ``_logits``
+    # refreshes when the first small-block token is still MASK.
     window = (start, end)
+    # Prefill / hierarchical forward span = attention-block end (Hub), while
+    # commit / unmask stay on the sub-window ``(start, end)``.
+    active_end = self._truncated_active_end(model, end, xt.shape[1])
+    self._maybe_refresh_dual_cache(
+        model, xt, window_start=start, active_end=active_end)
 
     # Tokens already filled by ARPC prefix fill stay protected across reverse
     # steps (and in blockgen guided corruption).
@@ -626,7 +849,7 @@ class BlockSampler(Sampler):
       x0[:, start:end] = xt[:, start:end]
       xt_new = step_fn(
           model, xt, x0, t_scalar, step_dt,
-          active_end=end, window=window)
+          active_end=active_end, window=window)
       xt[:, start:end] = xt_new[:, start:end]
       _restore()
       x0[:, start:end] = xt[:, start:end]
@@ -762,6 +985,8 @@ class BlockSampler(Sampler):
       denoise_start = max(start, prefix_len)
       if denoise_start >= end:
         continue
+      # Hub: ``block_past_key_values = None`` at each attention block (~71).
+      self._dual_cache = None
       # Sub-block windows (Fast-dLLM small_block_size analogue).
       windows: list[tuple[int, int]] = []
       if sub is None:
@@ -773,6 +998,7 @@ class BlockSampler(Sampler):
           s2 = max(s, denoise_start)
           if s2 < e:
             windows.append((s2, e))
+      early_stop = False
       for w_start, w_end in windows:
         xt, x0 = self._init_block(
             model, xt, x0, w_start, w_end, inject_bos=inject_bos)
@@ -783,24 +1009,48 @@ class BlockSampler(Sampler):
             and self.arpc_mode == 'simplified'):
           xt = self._arpc_correct_block(model, xt, x0, w_start, w_end)
           x0[:, w_start:w_end] = xt[:, w_start:w_end]
+        # Hub mid-block early stop after a small-block commit (~722-725).
+        if self.stop_on_eos:
+          tok = getattr(model, 'tokenizer', None)
+          eos_id = getattr(tok, 'eos_token_id', None) if tok is not None else None
+          if eos_id is not None and self._eos_stop_ready(
+              xt,
+              gen_start=self._gen_start(prefix_len, inject_bos),
+              end=w_end,
+              eos_id=int(eos_id),
+              mask_id=(
+                  getattr(model, 'mask_id', None) if self.is_masked else None),
+          ):
+            early_stop = True
+            break
       x0[:, :end] = xt[:, :end]
       if prefix_len > 0:
         xt[:, :prefix_len] = prefix_ids[:, :prefix_len].to(xt.device)
         x0[:, :prefix_len] = xt[:, :prefix_len]
 
-      # Early-stop: all rows already produced EOS in the generated region.
+      # Hub AR block-bridge after the attention block is fully unmasked (~81-85).
+      if (not early_stop
+          and self._ar_block_bridge_enabled(model)
+          and not (xt[:, denoise_start:end] == model.mask_id).any()):
+        xt, x0 = self._ar_block_bridge(model, xt, x0, end)
+
+      if early_stop:
+        break
+      # Early-stop at attention-block boundary (same EOS/MASK rule).
       if self.stop_on_eos:
         tok = getattr(model, 'tokenizer', None)
         eos_id = getattr(tok, 'eos_token_id', None) if tok is not None else None
-        gen_start = (
-            prefix_len if prefix_ids is not None else (1 if inject_bos else 0))
-        if eos_id is not None and end > gen_start:
-          has_eos = (xt[:, gen_start:end] == eos_id).any(dim=-1)
-          if bool(has_eos.all()):
-            break
+        if eos_id is not None and self._eos_stop_ready(
+            xt,
+            gen_start=self._gen_start(prefix_len, inject_bos),
+            end=end,
+            eos_id=int(eos_id),
+            mask_id=(
+                getattr(model, 'mask_id', None) if self.is_masked else None),
+        ):
+          break
 
-    generated_start = (
-        prefix_len if prefix_ids is not None else (1 if inject_bos else 0))
+    generated_start = self._gen_start(prefix_len, inject_bos)
     if self.pad_after_eos:
       tok = getattr(model, 'tokenizer', None)
       xt = self._pad_after_eos(

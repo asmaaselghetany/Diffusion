@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import functools
-import hashlib
 import os
 from typing import Optional
 
@@ -34,50 +33,18 @@ from .flex_chunking import chunk_documents
 
 LOGGER = utils.get_logger(__name__)
 
-# Llama-Nemotron post-training SFT (Fast-dLLM-style data). Full code+math is
-# tens of millions of rows / ~100GB+; default to chat+safety+science and allow
-# optional capped code/math via NEMOTRON_SFT_SPLITS / NEMOTRON_SFT_MAX_PER_SPLIT.
+# Llama-Nemotron post-training SFT (Fast-dLLM-style data). Defaults + chat
+# template live in conversion_baseline (shared masked + uniform hygiene).
+from .conversion_baseline import (
+    apply_conversion_chat_template,
+    install_conversion_chat_template,
+    maybe_keep_hub_vocab_size,
+    nemotron_cache_fingerprint as _nemotron_cache_fingerprint,
+)
+
 _NEMOTRON_HUB = 'nvidia/Llama-Nemotron-Post-Training-Dataset'
 _NEMOTRON_CONFIG = 'SFT'
-_NEMOTRON_DEFAULT_SPLITS = ('chat', 'safety', 'science')
 _NEMOTRON_VALID_SIZE = 5000
-_NEMOTRON_DEFAULT_MAX_PER_SPLIT = {
-    'chat': None,
-    'safety': None,
-    'science': None,
-    # Caps only apply when these splits are explicitly enabled.
-    'code': 100_000,
-    'math': 100_000,
-}
-
-_NEMOTRON_PREPROCESSING_VERSION = 'qwen-chat-block-aligned-v1'
-
-# Qwen2.5's bundled template in transformers 4.45 predates assistant-token
-# masks. This is the regular Qwen ChatML layout with generation tags marking
-# assistant content and <|im_end|>, matching Fast-dLLM v2's SFT template.
-_FAST_DLLM_SFT_CHAT_TEMPLATE = (
-    "{%- if messages[0]['role'] == 'system' %}"
-    "{{- '<|im_start|>system\\n' + messages[0]['content'] + "
-    "'<|im_end|>\\n' }}"
-    "{%- else %}"
-    "{{- '<|im_start|>system\\nYou are a helpful assistant."
-    "<|im_end|>\\n' }}"
-    "{%- endif %}"
-    "{%- for message in messages %}"
-    "{%- if message['role'] == 'assistant' %}"
-    "{{- '<|im_start|>assistant\\n' }}"
-    "{% generation %}"
-    "{{- message['content'] + '<|im_end|>\\n' }}"
-    "{% endgeneration %}"
-    "{%- elif message['role'] == 'user' %}"
-    "{{- '<|im_start|>user\\n' + message['content'] + "
-    "'<|im_end|>\\n' }}"
-    "{%- elif message['role'] == 'system' and not loop.first %}"
-    "{{- '<|im_start|>system\\n' + message['content'] + "
-    "'<|im_end|>\\n' }}"
-    "{%- endif %}"
-    "{%- endfor %}"
-)
 
 
 def _default_num_proc() -> int:
@@ -87,32 +54,13 @@ def _default_num_proc() -> int:
 
 
 def _nemotron_split_list() -> list[str]:
-  raw = os.environ.get('NEMOTRON_SFT_SPLITS', '').strip()
-  if not raw:
-    return list(_NEMOTRON_DEFAULT_SPLITS)
-  splits = [s.strip() for s in raw.split(',') if s.strip()]
-  if not splits:
-    raise ValueError('NEMOTRON_SFT_SPLITS is set but empty')
-  return splits
+  from .conversion_baseline import nemotron_split_list
+  return nemotron_split_list()
 
 
 def _nemotron_max_for_split(split: str) -> int | None:
-  raw = os.environ.get('NEMOTRON_SFT_MAX_PER_SPLIT', '').strip()
-  overrides: dict[str, int | None] = {}
-  if raw:
-    for part in raw.split(','):
-      if not part.strip():
-        continue
-      if '=' not in part:
-        raise ValueError(
-            f'NEMOTRON_SFT_MAX_PER_SPLIT entries must be split=N, got {part!r}')
-      key, val = part.split('=', 1)
-      key = key.strip()
-      val = val.strip().lower()
-      overrides[key] = None if val in {'none', 'all', ''} else int(val)
-  if split in overrides:
-    return overrides[split]
-  return _NEMOTRON_DEFAULT_MAX_PER_SPLIT.get(split)
+  from .conversion_baseline import nemotron_max_for_split
+  return nemotron_max_for_split(split)
 
 
 def _nemotron_to_messages(example: dict) -> list[dict[str, str]]:
@@ -151,9 +99,9 @@ def _tokenize_nemotron_sft_batch(examples: dict, tokenizer) -> dict:
   result = {'input_ids': [], 'attention_mask': [], 'labels': []}
   for idx in range(size):
     row = {key: values[idx] for key, values in examples.items()}
-    encoded = tokenizer.apply_chat_template(
+    encoded = apply_conversion_chat_template(
+        tokenizer,
         _nemotron_to_messages(row),
-        chat_template=_FAST_DLLM_SFT_CHAT_TEMPLATE,
         tokenize=True,
         add_generation_prompt=False,
         return_assistant_tokens_mask=True,
@@ -172,41 +120,6 @@ def _tokenize_nemotron_sft_batch(examples: dict, tokenizer) -> dict:
         for token_id, is_assistant in zip(input_ids, assistant_mask)
     ])
   return result
-
-
-def _nemotron_cache_fingerprint(tokenizer, revision, diffusion_block_size):
-  cached_identity = getattr(
-      tokenizer, '_discrete_diffusion_cache_identity', None)
-  if cached_identity is None:
-    vocab_hash = hashlib.sha256()
-    for token, token_id in sorted(
-        tokenizer.get_vocab().items(), key=lambda item: (item[1], item[0])):
-      vocab_hash.update(str(token_id).encode('ascii'))
-      vocab_hash.update(b'\0')
-      vocab_hash.update(token.encode('utf-8'))
-      vocab_hash.update(b'\0')
-    cached_identity = (
-        tokenizer.__class__.__name__,
-        getattr(tokenizer, 'name_or_path', None),
-        getattr(tokenizer, '_commit_hash', None),
-        len(tokenizer),
-        tokenizer.bos_token_id,
-        tokenizer.eos_token_id,
-        tokenizer.pad_token_id,
-        tokenizer.mask_token_id,
-        vocab_hash.hexdigest(),
-    )
-    setattr(
-        tokenizer, '_discrete_diffusion_cache_identity', cached_identity)
-  payload = repr((
-      _NEMOTRON_PREPROCESSING_VERSION,
-      cached_identity,
-      revision,
-      diffusion_block_size,
-      tuple(_nemotron_split_list()),
-      os.environ.get('NEMOTRON_SFT_MAX_PER_SPLIT', '').strip(),
-  ))
-  return hashlib.sha256(payload.encode('utf-8')).hexdigest()[:12]
 
 
 def _nemotron_to_text(example: dict) -> dict:
@@ -709,6 +622,10 @@ def _finalize_tokenizer(tokenizer):
     tokenizer.add_special_tokens({'pad_token': '[PAD]'})
   if getattr(tokenizer, 'mask_token', None) is None:
     tokenizer.add_special_tokens({'mask_token': '[MASK]'})
+  # Hub-like: keep padded HF vocab (e.g. 151936) after MASK add.
+  maybe_keep_hub_vocab_size(tokenizer)
+  # Train↔eval: install conversion ChatML (short system prompt).
+  install_conversion_chat_template(tokenizer)
   return tokenizer
 
 

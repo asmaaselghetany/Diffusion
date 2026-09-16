@@ -19,7 +19,10 @@ loss_type_special_cases: []
 joint_ar_alpha: 0.0
 # True → AR term uses token-causal HF forward (C5_causal_clean).
 causal_clean_stream: False
-loss_weighting: elbo  # elbo | plain_ce (Fast-dLLM complementary uses plain_ce)
+loss_weighting: elbo  # elbo | plain_ce (plain_ce = Hub mask-site CE mean; never valid.sum())
+# Hub modeling.py training: overwrite attention with structural block-diff only
+# (no pad masking). When true, backbone gets attention_mask=None.
+hub_struct_attn_only: false
 hybrid_p_uniform: 0.1
 # B4v1 locked decode (DESIGN_LOCKS.md).
 hybrid_decode: masked

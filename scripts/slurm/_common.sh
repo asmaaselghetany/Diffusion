@@ -34,6 +34,9 @@ source "${ASMAA_WORKSPACE}/env.sh" 2>/dev/null || true
 export SCRATCH="${SCRATCH:-${SCIFI_SCRATCH}/elsayed3}"
 export REPO_ROOT
 
+# Before module load / mktemp: never keep a parent job's TMPDIR.
+export TMPDIR="/tmp/block_qwen_${SLURM_JOB_ID:-local}"
+mkdir -p "${TMPDIR}"
 activate_jupiter_modules
 
 if [[ -n "${SLURM_JOB_ID:-}" ]]; then
@@ -77,7 +80,6 @@ export GLOO_SOCKET_IFNAME="${GLOO_SOCKET_IFNAME:-ib0}"
 export SRUN_CPUS_PER_TASK="${SRUN_CPUS_PER_TASK:-${SLURM_CPUS_PER_TASK:-72}}"
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 
-export TMPDIR="/tmp/block_qwen_${SLURM_JOB_ID:-local}"
 mkdir -p "${TMPDIR}" "${HF_HOME}" "${DISCRETE_DIFFUSION_SCRATCH_DIR}" slurm_logs outputs
 
 echo "[common] node=$(hostname) job=${SLURM_JOB_ID:-local} repo=${REPO_ROOT}"

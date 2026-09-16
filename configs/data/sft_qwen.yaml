@@ -1,11 +1,15 @@
-# Instruction SFT data for Qwen block diffusion.
+# Instruction SFT data for Qwen block diffusion (masked + uniform arms).
 # Default: Llama-Nemotron post-training SFT (Fast-dLLM-style).
 # Rollback to Alpaca: override /data: sft_qwen_alpaca
 #
-# Default splits: chat + safety + science (~0.8M rows).
-# Optional env:
-#   NEMOTRON_SFT_SPLITS=chat,safety,science,code,math
-#   NEMOTRON_SFT_MAX_PER_SPLIT=code=100000,math=100000
+# Enhanced conversion baseline (NOT a Fast-dLLM lever):
+#   defaults = chat,safety,science,math,code
+#   math≤1M, code≤500k (v3-richmath; was 100k)
+# Override:
+#   NEMOTRON_SFT_SPLITS=chat,safety,science
+#   NEMOTRON_SFT_MAX_PER_SPLIT=code=500000,math=1000000
+# ChatML + Hub-like vocab keep + shared cache fingerprint live in
+#   discrete_diffusion.data.conversion_baseline
 train: nemotron-sft-train
 valid: nemotron-sft-valid
 tokenizer_name_or_path: Qwen/Qwen2.5-1.5B-Instruct

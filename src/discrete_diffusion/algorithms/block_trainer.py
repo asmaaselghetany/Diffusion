@@ -52,6 +52,8 @@ LOSS_SPECIAL_CASE_POLICY: dict[str, str] = {
     'complementary_masks': 'masked_only',
     # Fast-dLLM p_mask=(1-eps)t+eps; ELBO uses α_eff=1-p (see _elbo_schedule_weights).
     'mask_schedule': 'masked_only',
+    # Fast-dLLM unweighted CE on mask sites; denom MUST be mask-count
+    # (Hub ForCausalLMLoss ignore_index), never valid_tokens.sum().
     'loss_weighting': 'masked_only',
     # SUBS log-probs / mask-site NLL — absorbing parameterization.
     'subs_log_probs': 'masked_only',
@@ -115,6 +117,10 @@ class BlockTrainer(TrainerBase):
         getattr(config.algo, 'mask_schedule', 'alpha') or 'alpha')
     self.loss_weighting = str(
         getattr(config.algo, 'loss_weighting', 'elbo') or 'elbo')
+    # Hub train: gen_mask overwrites batch attention (pads stay visible).
+    # When True, do not pass padding into SDPA — structural block-diff only.
+    self.hub_struct_attn_only = bool(
+        getattr(config.algo, 'hub_struct_attn_only', False))
     mixture = getattr(config.algo, 'block_size_mixture', None) or []
     self.block_size_mixture = [int(x) for x in mixture]
     stratified = getattr(config.algo, 'stratified_gamma', None)
@@ -141,6 +147,11 @@ class BlockTrainer(TrainerBase):
         getattr(config.algo, 'hybrid_decode', 'masked') or 'masked')
     # Clean-stream logits from the last dual forward (joint AR, non-causal).
     self._pending_clean_logits: torch.Tensor | None = None
+    # plain_ce: Hub ForCausalLMLoss averages over labels != -100 (mask sites
+    # only). Buffer mask indicators across fused/sequential complementary
+    # forwards so _loss can use the same denom (not valid_tokens.sum()).
+    self._plain_ce_mask_buf: list[torch.Tensor] | None = None
+    self._plain_ce_token_count: torch.Tensor | None = None
 
     self._block_size_generator: torch.Generator | None = None
     self._u_rv_state: dict = {'u_rv': None}
@@ -483,6 +494,12 @@ class BlockTrainer(TrainerBase):
       return alpha_t, dalpha_t
     return self.noise.alpha_t(t), self.noise.alpha_prime_t(t)
 
+  def _record_plain_ce_mask(self, mask_positions: torch.Tensor) -> None:
+    """Accumulate mask-site indicators for Hub-faithful plain_ce averaging."""
+    buf = self._plain_ce_mask_buf
+    if buf is not None:
+      buf.append(mask_positions.detach())
+
   def _masked_loss(self, logits, xt, x0, alpha_t, dalpha_t):
     # Shift must mirror Diffusion.nll (base.py): raw next-token CE on
     # mask positions only. Applying SUBS *then* shifting scores x0[i+1]
@@ -504,11 +521,15 @@ class BlockTrainer(TrainerBase):
       # explosion on a single attractor token). ELBO still uses -ce so that
       # (dalpha/(1-alpha)) * (-ce) stays minimize-oriented (dalpha < 0).
       if weight == 'plain_ce':
+        self._record_plain_ce_mask(mask_positions)
         return mask_positions * ce
       masked_neg_ce = mask_positions * (-ce)
       weighting = dalpha_t / (1.0 - alpha_t)
       return weighting * masked_neg_ce
     if weight == 'plain_ce':
+      mask_positions = (xt == self.mask_id).to(
+          dtype=logits.dtype if logits.is_floating_point() else torch.float32)
+      self._record_plain_ce_mask(mask_positions)
       return masked_plain_ce_per_token(logits, x0, xt, self.mask_id)
     log_probs = subs_log_probs(logits, xt, self.mask_id, self.neg_infinity)
     return masked_block_nll_per_token(log_probs, x0, alpha_t, dalpha_t)
@@ -600,17 +621,30 @@ class BlockTrainer(TrainerBase):
     return self._masked_loss(logits, xt, x0, alpha_t, dalpha_t)
 
   def nll(self, x0, valid_tokens, current_accumulation_step=None,
-          train_mode=False, block_size: int | None = None):
+          train_mode=False, block_size: int | None = None,
+          attention_mask: torch.Tensor | None = None):
     del train_mode
     self._pending_clean_logits = None
+    self._plain_ce_token_count = None
+    self._plain_ce_mask_buf = (
+        [] if self.loss_weighting == 'plain_ce' else None)
     bsz = x0.shape[0]
     bs = (
         block_size if block_size is not None
         else self._sample_training_block_size(current_accumulation_step))
+    # Hub modeling.py: t ~ U(0,1), then p=(1-ε)t+ε. Our sample_block_timesteps
+    # normally floors t to [sampling_eps,1]. Applying that *and* fast_dllm's
+    # p-map double-counts ε (min p≈2ε). Use raw U(0,1) t only for fast_dllm.
+    # Hub also uses i.i.d. block times (no antithetic); keep that for fast_dllm.
+    t_eps = (
+        0.0 if self.mask_schedule == 'fast_dllm' else self.sampling_eps)
+    use_antithetic = (
+        False if self.mask_schedule == 'fast_dllm'
+        else self.antithetic_sampling)
     t = sample_block_timesteps(
         bsz, self.num_tokens, bs, self.device,
-        sampling_eps=self.sampling_eps,
-        antithetic=self.antithetic_sampling,
+        sampling_eps=t_eps,
+        antithetic=use_antithetic,
         stratified_gamma=self.stratified_gamma)
 
     if bs in self.pure_noise_block_sizes:
@@ -619,70 +653,79 @@ class BlockTrainer(TrainerBase):
     alpha_t, dalpha_t = self._elbo_schedule_weights(t)
     want_clean = (
         self.joint_ar_alpha > 0 and not self.causal_clean_stream)
-    pad_mask = valid_tokens
+    # valid_tokens = supervised sites (assistant labels != -100).
+    # Hub modeling.py training overwrites attention with structural gen_mask
+    # only — prompt *and* pad positions stay visible; labels=-100 drop CE.
+    # Passing assistant-only masks as attention blocked the prompt (fixed).
+    # hub_struct_attn_only=True goes further and matches Hub (no pad mask).
+    supervised = valid_tokens
+    if getattr(self, 'hub_struct_attn_only', False):
+      attn = None
+    else:
+      attn = attention_mask if attention_mask is not None else valid_tokens
 
     if (self.complementary_masks
         and isinstance(self._forward_process, BlockMaskedForwardProcess)):
       # Fast-dLLM Hub: paired m/~m, then ``torch.cat(..., dim=0)`` → fused 2B.
       _, move_mask = self._corrupt(
-          x0, t, block_size=bs, return_move_mask=True)
+          x0, t, block_size=bs, return_move_mask=True,
+          corruption_mask=supervised)
       xt_a, xt_b = complementary_pair_from_mask(x0, move_mask, self.mask_id)
       if self.ignore_bos:
         xt_a[:, 0] = x0[:, 0]
         xt_b[:, 0] = x0[:, 0]
-      if pad_mask is not None:
-        supervised = pad_mask.bool()
-        xt_a = torch.where(supervised, xt_a, x0)
-        xt_b = torch.where(supervised, xt_b, x0)
+      if supervised is not None:
+        keep = supervised.bool()
+        xt_a = torch.where(keep, xt_a, x0)
+        xt_b = torch.where(keep, xt_b, x0)
       if self.complementary_batching == 'sequential':
         # Memory fallback: two B forwards; same summed NLL as fused.
         if want_clean:
           out_a = self._backbone_logits(
               xt_a, x0, block_size=bs, return_clean=True,
-              attention_mask=pad_mask)
+              attention_mask=attn)
           logits_a, clean_a = out_a
           self._pending_clean_logits = clean_a
         else:
           logits_a = self._backbone_logits(
-              xt_a, x0, block_size=bs, attention_mask=pad_mask)
+              xt_a, x0, block_size=bs, attention_mask=attn)
         loss_a = self._loss_for_block(
             logits_a, xt_a, x0, alpha_t, dalpha_t, block_size=bs)
         logits_b = self._backbone_logits(
-            xt_b, x0, block_size=bs, attention_mask=pad_mask)
+            xt_b, x0, block_size=bs, attention_mask=attn)
         loss_b = self._loss_for_block(
             logits_b, xt_b, x0, alpha_t, dalpha_t, block_size=bs)
         loss = torch.cat([loss_a, loss_b], dim=0)
       else:
         xt_pair = torch.cat([xt_a, xt_b], dim=0)
         x0_pair = torch.cat([x0, x0], dim=0)
-        pad_pair = (
-            torch.cat([pad_mask, pad_mask], dim=0)
-            if pad_mask is not None else None)
+        attn_pair = (
+            torch.cat([attn, attn], dim=0) if attn is not None else None)
         alpha_pair = torch.cat([alpha_t, alpha_t], dim=0)
         dalpha_pair = torch.cat([dalpha_t, dalpha_t], dim=0)
         if want_clean:
           logits_pair, clean_pair = self._backbone_logits(
               xt_pair, x0_pair, block_size=bs, return_clean=True,
-              attention_mask=pad_pair)
+              attention_mask=attn_pair)
           self._pending_clean_logits = clean_pair[:bsz]
         else:
           logits_pair = self._backbone_logits(
-              xt_pair, x0_pair, block_size=bs, attention_mask=pad_pair)
+              xt_pair, x0_pair, block_size=bs, attention_mask=attn_pair)
         loss = self._loss_for_block(
             logits_pair, xt_pair, x0_pair, alpha_pair, dalpha_pair,
             block_size=bs)
       valid_tokens = torch.cat([valid_tokens, valid_tokens], dim=0)
     else:
       xt = self._corrupt(
-          x0, t, block_size=bs, corruption_mask=pad_mask)
+          x0, t, block_size=bs, corruption_mask=supervised)
       if want_clean:
         logits, clean = self._backbone_logits(
             xt, x0, block_size=bs, return_clean=True,
-            attention_mask=pad_mask)
+            attention_mask=attn)
         self._pending_clean_logits = clean
       else:
         logits = self._backbone_logits(
-            xt, x0, block_size=bs, attention_mask=pad_mask)
+            xt, x0, block_size=bs, attention_mask=attn)
       loss = self._loss_for_block(
           logits, xt, x0, alpha_t, dalpha_t, block_size=bs)
 
@@ -696,16 +739,44 @@ class BlockTrainer(TrainerBase):
     if (self.shift_loss_targets
         and valid_tokens.size(-1) == loss.size(-1) + 1):
       valid_tokens = valid_tokens[:, 1:]
+    if self._plain_ce_mask_buf is not None:
+      # Hub modeling.py sets labels=-100 on clean sites, then
+      # ForCausalLMLoss averages only over remaining (mask) labels. With
+      # complementary, that is mask sites across both views — NOT 2B×T
+      # valid tokens. Using valid.sum() here halves the gradient vs Hub.
+      if not self._plain_ce_mask_buf:
+        raise RuntimeError(
+            'plain_ce requested but no mask indicators were recorded')
+      pcm = (
+          self._plain_ce_mask_buf[0]
+          if len(self._plain_ce_mask_buf) == 1
+          else torch.cat(self._plain_ce_mask_buf, dim=0))
+      if pcm.shape != loss.shape:
+        raise RuntimeError(
+            f'plain_ce mask shape {tuple(pcm.shape)} vs loss '
+            f'{tuple(loss.shape)}')
+      self._plain_ce_token_count = (
+          pcm * valid_tokens.to(dtype=pcm.dtype)).sum()
+      self._plain_ce_mask_buf = None
     return loss * valid_tokens
 
-  def _loss(self, x0, valid_tokens, current_accumulation_step=None, train_mode=False):
+  def _loss(self, x0, valid_tokens, current_accumulation_step=None,
+            train_mode=False, attention_mask: torch.Tensor | None = None):
     input_tokens, valid_tokens = self._process_model_input(x0, valid_tokens)
+    attn = attention_mask
+    if attn is not None:
+      # Keep attn aligned with any _process_model_input length changes.
+      if attn.size(-1) != input_tokens.size(-1):
+        raise RuntimeError(
+            f'attention_mask length {attn.size(-1)} vs input '
+            f'{input_tokens.size(-1)}')
     # Keep pre-complementary / pre-shift-trim mask for the AR term (full T).
     ar_valid = valid_tokens
     nlls = self.nll(
         input_tokens, valid_tokens,
         current_accumulation_step=current_accumulation_step,
-        train_mode=train_mode)
+        train_mode=train_mode,
+        attention_mask=attn)
     # Metrics expect (nll_sum, num_tokens) where num_tokens is the total
     # count used as the aggregation weight. Using a per-position tensor
     # here would broadcast the scalar weight across positions and mis-scale
@@ -724,7 +795,15 @@ class BlockTrainer(TrainerBase):
         raise RuntimeError(
             f'nlls batch {nlls.size(0)} vs valid_tokens {valid_tokens.size(0)}')
     nll_sum = nlls.sum()
-    num_tokens = valid_tokens.sum()
+    # plain_ce: Hub mean over mask labels only (see nll / modeling.py).
+    # ELBO keeps valid_tokens.sum() (per-position weighted terms).
+    if self.loss_weighting == 'plain_ce':
+      if self._plain_ce_token_count is None:
+        raise RuntimeError(
+            'plain_ce loss missing mask-site token count from nll()')
+      num_tokens = self._plain_ce_token_count
+    else:
+      num_tokens = valid_tokens.sum()
     diff_nll = nll_sum / num_tokens.clamp(min=1)
     if self.joint_ar_alpha > 0:
       # AR once on clean stream (not doubled under complementary).
@@ -746,7 +825,8 @@ class BlockTrainer(TrainerBase):
     valid_tokens = self._batch_valid_tokens(batch)
     losses = self._loss(
         batch['input_ids'], valid_tokens,
-        current_accumulation_step=current_accumulation_step, train_mode=True)
+        current_accumulation_step=current_accumulation_step, train_mode=True,
+        attention_mask=batch['attention_mask'])
     self.metrics.update_train(losses.nlls, losses.num_tokens)
     # Step-level train metrics: with max_steps + huge SFT epochs,
     # on_train_epoch_end (train/nll|bpd|ppl) almost never fires.
@@ -777,7 +857,9 @@ class BlockTrainer(TrainerBase):
   def validation_step(self, batch, batch_idx):
     del batch_idx
     valid_tokens = self._batch_valid_tokens(batch)
-    losses = self._loss(batch['input_ids'], valid_tokens)
+    losses = self._loss(
+        batch['input_ids'], valid_tokens,
+        attention_mask=batch['attention_mask'])
     self.metrics.update_valid(losses.nlls, losses.num_tokens)
     if getattr(self, '_last_ar_nll', None) is not None:
       # Epoch-agg of C5 terms (val/nll from metrics stays diffusion-only).
@@ -788,7 +870,9 @@ class BlockTrainer(TrainerBase):
       self.log('val/joint_nll', self._last_joint_nll, on_step=False,
                on_epoch=True, sync_dist=True)
     if bool(getattr(self.config.eval, 't_bucketed_nll', False)):
-      self._log_t_bucketed_nll(batch['input_ids'], valid_tokens)
+      self._log_t_bucketed_nll(
+          batch['input_ids'], valid_tokens,
+          attention_mask=batch['attention_mask'])
     return losses.loss
 
   @staticmethod
@@ -802,13 +886,18 @@ class BlockTrainer(TrainerBase):
     ).to(batch['attention_mask'].dtype)
 
   @torch.no_grad()
-  def _log_t_bucketed_nll(self, x0: torch.Tensor, valid_tokens: torch.Tensor):
+  def _log_t_bucketed_nll(
+      self, x0: torch.Tensor, valid_tokens: torch.Tensor,
+      attention_mask: torch.Tensor | None = None):
     """Layer-3 diagnostic: NLL vs corruption level (AR-init cliff detector).
 
     Logs ``val/{nll,bpd,ppl}_alpha_{lo}_{hi}`` for fixed α bands.
     Aggregate val/nll alone can hide a high-t cliff on ar2block_uniform.
     """
     x0, valid_tokens = self._process_model_input(x0, valid_tokens)
+    attn = attention_mask if attention_mask is not None else valid_tokens
+    if getattr(self, 'hub_struct_attn_only', False):
+      attn = None
     bsz, seq = x0.shape
     bs = self.block_size
     # α bands: high α = low corruption. Use midpoints via LogLinear inverse.
@@ -836,9 +925,9 @@ class BlockTrainer(TrainerBase):
           sl = slice(bi * bs, (bi + 1) * bs)
           t[:, sl] = t[:, bi * bs: bi * bs + 1]
         alpha_t, dalpha_t = self._elbo_schedule_weights(t)
-        xt = self._corrupt(x0, t, block_size=bs)
+        xt = self._corrupt(x0, t, block_size=bs, corruption_mask=valid_tokens)
         logits = self._backbone_logits(
-            xt, x0, block_size=bs, attention_mask=valid_tokens)
+            xt, x0, block_size=bs, attention_mask=attn)
         loss = self._loss_for_block(
             logits, xt, x0, alpha_t, dalpha_t, block_size=bs)
         vt = valid_tokens
@@ -849,7 +938,20 @@ class BlockTrainer(TrainerBase):
             and vt.size(-1) == loss.size(-1) + 1):
           vt = vt[:, 1:]
         weighted = loss * vt
-        nll = weighted.sum() / vt.sum().clamp(min=1)
+        if self.loss_weighting == 'plain_ce':
+          # Match train Hub-CE mean (mask sites), not all valid — otherwise
+          # t-bucket curves under-scale vs trainer/loss under plain_ce.
+          xt_m = xt[:, 1:] if (
+              self.shift_loss_targets and xt.size(-1) == vt.size(-1) + 1
+          ) else xt
+          if xt_m.size(-1) != vt.size(-1):
+            xt_m = xt_m[:, : vt.size(-1)]
+          denom = (
+              (xt_m == self.mask_id).to(weighted.dtype) * vt
+          ).sum().clamp(min=1)
+        else:
+          denom = vt.sum().clamp(min=1)
+        nll = weighted.sum() / denom
         band = f'{lo:.2f}_{hi:.2f}'.replace('.', 'p')
         # NLL plus BPD/PPL (same transforms as aggregate val/{bpd,ppl}).
         self.log(f'val/nll_alpha_{band}', nll, on_step=False, on_epoch=True,

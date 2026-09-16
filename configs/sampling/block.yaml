@@ -42,6 +42,13 @@ hierarchical_kv: False
 use_block_cache: False
 # Hub generate: single-stream block-causal (not dual-stream train concat).
 single_stream_decode: False
+# Hub AR block-bridge after each fully unmasked attention block
+# (generation_functions.py ~81-85). null = auto ON for masked+shift, OFF else.
+# Set false to disable; true forces on for masked even without shift.
+ar_block_bridge: null
+# Ban MASK/PAD logits during denoise (default on). Hub does not ban — set
+# false for closer bit-parity probes.
+ban_mask_pad_logits: True
 # Pad tokens after first EOS (stops post-EOS soup in token space).
 pad_after_eos: True
 # Stop scheduling later blocks once all rows emitted EOS.

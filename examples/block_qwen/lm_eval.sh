@@ -25,15 +25,24 @@ CKPT="$(readlink -f "${CKPT}")"
 OUT_DIR="${OUT_DIR:-$(dirname "$(dirname "${CKPT}")")/lm_eval}"
 mkdir -p "${OUT_DIR}"
 export CKPT OUT_DIR
+# Isolate HF evaluate/metrics caches per job so concurrent lm-evals and
+# multi-rank HumanEval/MBPP ``code_eval`` loads do not collide on
+# default_experiment-*.arrow (see patch_code_eval_metric_cache).
+export HF_METRICS_CACHE="${HF_METRICS_CACHE:-${OUT_DIR}/hf_metrics_cache}"
+export HF_EVALUATE_CACHE="${HF_EVALUATE_CACHE:-${OUT_DIR}/hf_evaluate_cache}"
+mkdir -p "${HF_METRICS_CACHE}" "${HF_EVALUATE_CACHE}"
 
 # Suites (override with TASKS=...):
-#   core     — Fast-dLLM v2 eval_script.sh (no code)
-#   code     — HumanEval/MBPP base+plus (lm-eval EvalPlus datasets)
-#   fastdllm — core + code  (default; paper table columns)
+#   paper_acc — MMLU + GSM8K + IFEval (paper Table 1 accuracy core; no code)
+#   core      — Fast-dLLM v2 eval_script.sh tasks without code
+#   code      — HumanEval/MBPP base+plus (lm-eval EvalPlus datasets)
+#   fastdllm  — core + code  (full paper columns; code tasks are fragile offline)
 SUITE="${SUITE:-fastdllm}"
+PAPER_ACC_TASKS="mmlu,gsm8k,ifeval"
 CORE_TASKS="mmlu,gpqa_main_n_shot,gsm8k,minerva_math,ifeval"
 CODE_TASKS="humaneval,humaneval_plus,mbpp,mbpp_plus"
 case "${SUITE}" in
+  paper_acc|paper-acc) DEFAULT_TASKS="${PAPER_ACC_TASKS}" ;;
   core) DEFAULT_TASKS="${CORE_TASKS}" ;;
   code) DEFAULT_TASKS="${CODE_TASKS}" ;;
   fastdllm|full|paper) DEFAULT_TASKS="${CORE_TASKS},${CODE_TASKS}" ;;
@@ -44,7 +53,7 @@ case "${SUITE}" in
     fi
     DEFAULT_TASKS="${TASKS}"
     ;;
-  *) echo "Unknown SUITE=${SUITE} (core|code|fastdllm|custom)" >&2; exit 2 ;;
+  *) echo "Unknown SUITE=${SUITE} (paper_acc|core|code|fastdllm|custom)" >&2; exit 2 ;;
 esac
 # Empty TASKS (e.g. sbatch export) → suite default.
 if [[ -z "${TASKS:-}" ]]; then
@@ -68,17 +77,25 @@ export LM_EVAL_DIST_TIMEOUT_SEC="${LM_EVAL_DIST_TIMEOUT_SEC:-21600}"
 export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC="${TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC:-${LM_EVAL_DIST_TIMEOUT_SEC}}"
 export NCCL_TIMEOUT="${NCCL_TIMEOUT:-${LM_EVAL_DIST_TIMEOUT_SEC}}"
 BATCH_SIZE="${BATCH_SIZE:-1}"
-MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-512}"
+# Hub Fast-dLLM v2/eval.py default max_new_tokens=2048 (paper accuracy tables).
+# Hub Fast-dLLM eval.py defaults to 2048 (context 32k). Our conversion
+# models are usually length=2048 — block_qwen_lm_eval clamps max_new so the
+# prompt is not wiped (seq_len-max_new must stay >>1). Prefer 512 for fair
+# 2k-context roofs unless you know the ckpt context is larger.
+MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-2048}"
 NUM_STEPS="${NUM_STEPS:-32}"
 LIMIT="${LIMIT:-}"   # e.g. LIMIT=8 for smoke
 SKIP_THROUGHPUT="${SKIP_THROUGHPUT:-0}"
 # Match Hub eval.py model_args threshold=… / greedy decode.
+# Paper §4 accuracy default: threshold=1 (parallel decode off). Hub scripts often 0.9.
 UNMASK_THRESHOLD="${UNMASK_THRESHOLD:-}"
 FORCE_GREEDY="${FORCE_GREEDY:-}"
 # Throughput / generate decode path:
 #   baseline     — shared ancestral core for ALL pipelines (clears confidence/ARPC/DualCache)
 #   hierarchical — baseline + hierarchical_kv speed knob
-#   dual_cache   — Fast-dLLM exactness overlay (masked); pair with UNMASK_THRESHOLD=0.9
+#   dual_cache   — Fast-dLLM exactness overlay (masked); pair with UNMASK_THRESHOLD=1 (paper)
+#                  or 0.9 (Hub/speed). Pins sub_block_size=8.
+#   hubmatch     — Hub use_block_cache=False: hierarchical + single_stream + sub8 + greedy.
 # (UNI-D2 ports — NOT Fast-dLLM fused CUDA kernels).
 DECODE_PROFILE="${DECODE_PROFILE:-baseline}"
 
@@ -93,11 +110,11 @@ if [[ -n "${FORCE_GREEDY}" ]]; then
   MODEL_ARGS="${MODEL_ARGS},greedy=${FORCE_GREEDY}"
 fi
 case "${DECODE_PROFILE}" in
-  baseline|hierarchical|dual_cache)
+  baseline|hierarchical|hubmatch|dual_cache)
     # Pins applied inside block_qwen_lm_eval via decode_profile=…
     ;;
   *)
-    echo "Unknown DECODE_PROFILE=${DECODE_PROFILE} (baseline|hierarchical|dual_cache)" >&2
+    echo "Unknown DECODE_PROFILE=${DECODE_PROFILE} (baseline|hierarchical|hubmatch|dual_cache)" >&2
     exit 2
     ;;
 esac
@@ -193,7 +210,7 @@ if [[ "${SKIP_THROUGHPUT}" != "1" ]]; then
     2>&1 | tee -a "${OUT_DIR}/lm_eval.log"
 fi
 
-export SUITE DECODE_PROFILE UNMASK_THRESHOLD FORCE_GREEDY
+export SUITE DECODE_PROFILE UNMASK_THRESHOLD FORCE_GREEDY MAX_NEW_TOKENS NUM_STEPS
 python -u - <<'PY'
 import json
 import os
@@ -206,6 +223,8 @@ summary = {
     "decode_profile": os.environ.get("DECODE_PROFILE", "baseline"),
     "unmask_threshold": os.environ.get("UNMASK_THRESHOLD") or None,
     "force_greedy": os.environ.get("FORCE_GREEDY") or None,
+    "max_new_tokens": int(os.environ.get("MAX_NEW_TOKENS") or 0) or None,
+    "num_steps": int(os.environ.get("NUM_STEPS") or 0) or None,
     "tasks": {},
     "tok_s_lm_eval": None,
     "tok_s_dedicated": None,
@@ -213,7 +232,9 @@ summary = {
         "task_accuracy": (
             "lm-eval HumanEval(+)/MBPP(+) use EvalPlus HF datasets "
             "(evalplus/humanevalplus, evalplus/mbppplus) — comparable to "
-            "paper Base/Plus columns when prompts/stops match."),
+            "paper Base/Plus columns when prompts/stops match. "
+            "Hub-parity gen: max_new_tokens=2048; paper accuracy thr=1; "
+            "Hub/speed thr=0.9."),
         "throughput": (
             "tok/s is UNI-D2 BlockSampler; DECODE_PROFILE=dual_cache is "
             "algorithmic DualCache/single_stream — NOT Fast-dLLM fused "

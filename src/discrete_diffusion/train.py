@@ -83,6 +83,29 @@ def train(config):
   logger.info('Starting Training.')
   
   tokenizer = get_tokenizer(config)
+  # Match embed table when resuming / finetuning an older (shrunk) ckpt.
+  for ckpt_candidate in (
+      getattr(config.checkpointing, 'resume_ckpt_path', None)
+      if getattr(config.checkpointing, 'resume_from_ckpt', False) else None,
+      getattr(config.training, 'finetune_path', None) or None,
+  ):
+    if not ckpt_candidate or not utils.fsspec_exists(ckpt_candidate):
+      continue
+    try:
+      from discrete_diffusion.data.conversion_baseline import (
+          apply_checkpoint_embed_vocab_size,
+          checkpoint_embed_vocab_size,
+      )
+      peek = torch.load(ckpt_candidate, map_location='cpu', weights_only=False)
+      embed_v = checkpoint_embed_vocab_size(peek)
+      if embed_v is not None:
+        apply_checkpoint_embed_vocab_size(tokenizer, embed_v)
+        logger.info(
+            'Matched tokenizer embed vocab_size=%s from %s',
+            embed_v, ckpt_candidate)
+      break
+    except Exception as exc:
+      logger.warning('Could not peek ckpt vocab from %s: %s', ckpt_candidate, exc)
   algo_cls = hydra.utils.get_class(config.algo._target_)
   
   accel = _resolve_accelerator(config)

@@ -16,6 +16,18 @@ This verified stack does **not** use BD3LM or BlockDiT. See [BLOCK_PATH.md](BLOC
 
 Optional hooks (`shift_loss_targets`, `complementary_masks`, `block_size_mixture`, `stratified_gamma`, `use_arpc`) default to **off** in both `configs/algo/block_*.yaml`. See [BLOCK_QWEN_TRAINING.md](BLOCK_QWEN_TRAINING.md) for literature sources and how to enable them via `HYDRA_OVERRIDES`.
 
+## Enhanced conversion baseline (not levers)
+
+Shared by **masked and uniform** arms — see
+`src/discrete_diffusion/data/conversion_baseline.py`:
+
+- Train↔eval ChatML (short system prompt; not stock Alibaba Qwen template)
+- Hub-like vocab keep (`151936` padded table; never shrink after MASK)
+- Nemotron defaults: `chat,safety,science,math,code` (math/code capped at 100k)
+- Ancestral decode floor: `decode_profile=baseline` (no DualCache / ARPC)
+
+Fast-dLLM / ARPC overlays stay in `configs/levers/registry.yaml`.
+
 ## Masked arm (per-block absorbing diffusion)
 
 | Adopted | Location |

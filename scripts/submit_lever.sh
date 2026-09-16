@@ -226,8 +226,29 @@ PY
   # Symlink audit name with job id → unique stamp file.
   ln -sfn "$(basename "${ov_file}.oneline")" \
     "${ov_dir}/${tag}_${line}_${arm}_job${jid}.txt"
+  # Shared conversion-baseline lock (fingerprint / caps) for all arms.
+  local data_env="${ov_dir}/${tag}_${line}_${arm}_job${jid}.data_env.txt"
+  python - <<PY > "${data_env}"
+from discrete_diffusion.data.conversion_baseline import conversion_baseline_manifest
+import json, os
+m = conversion_baseline_manifest()
+print(f"job: ${jid}")
+print(f"preset: ${PRESET}")
+print(f"levers: ${lever_list}")
+print(f"tag: ${tag}")
+print(f"NEMOTRON_SFT_SPLITS={os.environ.get('NEMOTRON_SFT_SPLITS','')}")
+print(f"NEMOTRON_SFT_MAX_PER_SPLIT={os.environ.get('NEMOTRON_SFT_MAX_PER_SPLIT','')}")
+print(f"DATA_CACHE={os.environ.get('DATA_CACHE','')}")
+print(f"preprocessing: {m['preprocessing_version']}")
+print(f"resolved_caps: {json.dumps(m['max_per_split'])}")
+print(f"packing: {m['packing']}")
+print(f"eval_max_seq_len_default: {m['eval_max_seq_len_default']}")
+print("vocab: Hub-keep when train init (see conversion_baseline)")
+print("chat: conversion short system")
+PY
   echo "Submitted batch job ${jid}"
   echo "  audit: ${ov_dir}/${tag}_${line}_${arm}_job${jid}.txt -> ${LEVER_OVERRIDES_FILE}"
+  echo "  data:  ${data_env}"
   return 0
 }
 

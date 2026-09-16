@@ -117,15 +117,19 @@ fi
 if [[ -n "${CKPT}" && "${STEP}" =~ ^[0-9]+$ && "${STEP}" -ge "${MAX_STEPS}" ]]; then
   if [[ "${RUN_FULL_EVAL:-true}" == "true" ]]; then
     echo "=== AR SFT finished at step ${STEP}; submitting eval for ${CKPT} ==="
-    sbatch scripts/slurm/eval_checkpoint.sbatch "${CKPT}" \
+    # Drop inherited /tmp/block_qwen_<train_jid> (child mktemp FAIL otherwise).
+    env -u TMPDIR -u TEMP -u TMP \
+      sbatch scripts/slurm/eval_checkpoint.sbatch "${CKPT}" \
       --skip-elbo --skip-depbench \
       || echo "WARNING: failed to submit eval job for ${CKPT}" >&2
     export CKPT
-    sbatch --export=ALL,CKPT,TASKS,NUM_STEPS,MAX_NEW_TOKENS,SKIP_THROUGHPUT,OUT_DIR \
+    env -u TMPDIR -u TEMP -u TMP \
+      sbatch --export=ALL,CKPT,TASKS,NUM_STEPS,MAX_NEW_TOKENS,SKIP_THROUGHPUT,OUT_DIR \
       scripts/slurm/lm_eval.sbatch \
       || echo "WARNING: failed to submit lm_eval for ${CKPT}" >&2
     if [[ "${RUN_LONGITUDINAL:-false}" == "true" ]]; then
-      RUN_ROOT="${RUN_ROOT}" sbatch --export=ALL,RUN_ROOT \
+      RUN_ROOT="${RUN_ROOT}" env -u TMPDIR -u TEMP -u TMP \
+        sbatch --export=ALL,RUN_ROOT \
         --wrap="bash scripts/submit_longitudinal_eval.sh '${RUN_ROOT}'" \
         || echo "WARNING: failed to submit longitudinal eval" >&2
     fi

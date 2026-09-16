@@ -26,6 +26,7 @@ loss_type_special_cases: []
 # NLD-style joint AR (C5); 0 = off.
 joint_ar_alpha: 0.0
 causal_clean_stream: False
+hub_struct_attn_only: false
 # Hybrid arm only (ignored on masked/uniform).
 hybrid_p_uniform: 0.1
 hybrid_decode: masked

@@ -28,3 +28,4 @@ pure_noise_block_sizes: []
 loss_type_special_cases: []
 joint_ar_alpha: 0.0
 causal_clean_stream: False
+hub_struct_attn_only: false

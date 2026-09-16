@@ -41,6 +41,9 @@ def _bare_masked_trainer(*, shift: bool) -> SimpleNamespace:
       joint_ar_alpha=0.0,
       causal_clean_stream=False,
       _pending_clean_logits=None,
+      loss_weighting='elbo',
+      _plain_ce_mask_buf=None,
+      _plain_ce_token_count=None,
   )
 
   def _corrupt(x0, t, *, block_size, corruption_mask=None, **_kwargs):
@@ -64,6 +67,8 @@ def _bare_masked_trainer(*, shift: bool) -> SimpleNamespace:
   m._apply_ignore_bos_mask = lambda *a, **k: BlockTrainer._apply_ignore_bos_mask(m, *a, **k)
   m.nll = lambda *a, **k: BlockTrainer.nll(m, *a, **k)
   m._elbo_schedule_weights = lambda t: BlockTrainer._elbo_schedule_weights(m, t)
+  m._record_plain_ce_mask = lambda mp: BlockTrainer._record_plain_ce_mask(m, mp)
+  m._loss = lambda *a, **k: BlockTrainer._loss(m, *a, **k)
   return m
 
 
@@ -158,3 +163,84 @@ def test_shift_plain_ce_is_minimize_oriented():
   assert float(loss_wrong.mean()) > 1.0  # large positive CE
   assert float(loss_right.mean()) < 0.1  # near-zero CE
   assert float(loss_wrong.mean()) > float(loss_right.mean())
+
+
+def test_plain_ce_num_tokens_is_mask_sites_only():
+  """Hub ForCausalLMLoss averages over labels!=-100 (= mask sites), not all T.
+
+  Regression: dividing by valid_tokens.sum() under-scales plain_ce vs Hub
+  (and vs ELBO), especially with complementary 2B (~½).
+  """
+  m = _bare_masked_trainer(shift=True)
+  m.loss_weighting = 'plain_ce'
+  b, t = 2, 8
+  torch.manual_seed(0)
+  x0 = torch.randint(1, m.vocab_size, (b, t))
+  valid = torch.ones(b, t)
+  out = BlockTrainer._loss(m, x0, valid)
+  # Fake corrupt masks xt[:, 1::2]; after shift that is 4 mask sites / row.
+  expected_masks = float(b * 4)
+  assert out.num_tokens.item() == expected_masks
+  # Must NOT equal all valid positions on the T-1 grid (2*7=14).
+  assert out.num_tokens.item() != float(valid[:, 1:].sum())
+  assert torch.isfinite(out.loss)
+
+
+def test_plain_ce_mean_matches_mask_only_average():
+  """Optimized loss == nll_sum / mask_site_count (Hub CE reduction)."""
+  m = _bare_masked_trainer(shift=True)
+  m.loss_weighting = 'plain_ce'
+  b, t = 2, 8
+  torch.manual_seed(1)
+  x0 = torch.randint(1, m.vocab_size, (b, t))
+  valid = torch.ones(b, t)
+  out = BlockTrainer._loss(m, x0, valid)
+  assert out.num_tokens.item() > 0
+  assert out.num_tokens.item() < float(valid[:, 1:].sum())
+  expected = out.nlls / out.num_tokens.clamp(min=1)
+  assert torch.allclose(out.loss, expected, rtol=1e-5, atol=1e-5)
+
+
+def test_plain_ce_complementary_denom_is_mask_union_not_2b_valid():
+  """Complementary cats m/~m on batch; Hub still means over mask labels only.
+
+  Across both views each supervised token is masked in exactly one view, so
+  denom ≈ B*(T-1), not 2B*(T-1).
+  """
+  from discrete_diffusion.forward_process.block_masked import (
+      BlockMaskedForwardProcess,
+  )
+
+  m = _bare_masked_trainer(shift=True)
+  m.loss_weighting = 'plain_ce'
+  m.complementary_masks = True
+  m.complementary_batching = 'fused'
+  # isinstance gate only — corrupt is mocked below.
+  m._forward_process = BlockMaskedForwardProcess.__new__(
+      BlockMaskedForwardProcess)
+
+  def _corrupt(x0, t, *, block_size, return_move_mask=False, **_kwargs):
+    del t, block_size
+    # Partition: odd positions in view A, even in view B (after BOS).
+    move = torch.zeros_like(x0, dtype=torch.bool)
+    move[:, 1::2] = True
+    xt = x0.clone()
+    xt[move] = m.mask_id
+    if return_move_mask:
+      return xt, move
+    return xt
+
+  m._corrupt = _corrupt
+
+  b, t = 2, 8
+  torch.manual_seed(2)
+  x0 = torch.randint(1, m.vocab_size, (b, t))
+  valid = torch.ones(b, t)
+  out = BlockTrainer._loss(m, x0, valid)
+  # Shift grid T-1=7; move masks odds 1,3,5,7 → 4; complement masks 2,4,6
+  # (original 0 was ~move but dropped by shift). Total = 4+3 = 7 per row
+  # × B = 14 — equals one full shifted sequence, NOT 2B*(T-1)=28.
+  assert out.num_tokens.item() == float(b * 7)
+  doubled_valid = float(2 * b * (t - 1))
+  assert out.num_tokens.item() != doubled_valid
+  assert torch.isfinite(out.loss)

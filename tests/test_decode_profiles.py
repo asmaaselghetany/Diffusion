@@ -20,12 +20,20 @@ import numpy as np
 
 
 def test_decode_profiles_shared_keys():
-  assert set(DECODE_PROFILES) == {'baseline', 'hierarchical', 'dual_cache'}
+  assert set(DECODE_PROFILES) == {
+      'baseline', 'hierarchical', 'hubmatch', 'dual_cache'}
   assert set(LM_EVAL_DECODE_PROFILES) == set(DECODE_PROFILES)
   baseline = profile_overrides('baseline')
   assert any('use_arpc=false' in t for t in baseline)
   assert any('unmask_threshold=null' in t for t in baseline)
   assert any('use_block_cache=false' in t for t in baseline)
+  hub = profile_overrides('hubmatch')
+  assert any('single_stream_decode=true' in t for t in hub)
+  assert any('sub_block_size=8' in t for t in hub)
+  assert any('use_block_cache=false' in t for t in hub)
+  assert any('ban_mask_pad_logits=false' in t for t in hub)
+  assert LM_EVAL_DECODE_PROFILES['hubmatch'].get('ban_mask_pad_logits') is False
+  assert LM_EVAL_DECODE_PROFILES['dual_cache'].get('ban_mask_pad_logits') is False
   assert profile_overrides('keep') == []
 
 

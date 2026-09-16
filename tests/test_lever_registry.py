@@ -43,6 +43,16 @@ def test_paper_C2_fdllm_full_adds_schedule(reg):
       preset='C2_fdllm_full', arm='masked', line='ar2block', registry=reg)
   assert 'algo.mask_schedule=fast_dllm' in r['overrides']
   assert 'algo.loss_weighting=plain_ce' in r['overrides']
+  assert 'algo.hub_struct_attn_only=true' in r['overrides']
+  assert 'algo.ignore_bos=false' in r['overrides']
+
+
+def test_fdllm_confidence_decode_matches_eval_script_thr1(reg):
+  r = resolve(
+      lever_ids=['fdllm_confidence_decode'], arm='masked', line='ar2block',
+      registry=reg)
+  assert 'sampling.unmask_threshold=1.0' in r['overrides']
+  assert 'sampling.ban_mask_pad_logits=false' in r['overrides']
 
 
 def test_paper_C0_empty(reg):

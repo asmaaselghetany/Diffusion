@@ -47,8 +47,14 @@ from discrete_diffusion.data import get_tokenizer
 from discrete_diffusion.evaluations.block_qwen_eval_utils import (
     encode_context_continuation,
     generation_request_args,
+    humaneval_until_for_chat,
+    prepare_code_completion,
     require_masked_likelihood,
     truncate_at_stops,
+)
+from discrete_diffusion.evaluations.code_eval_patches import (
+    patch_code_eval_metric_cache,
+    patch_humaneval_chat_predictions,
 )
 from discrete_diffusion.evaluations.checkpoint_utils import load_block_trainer_checkpoint
 
@@ -74,6 +80,11 @@ def _load_block_trainer(checkpoint_path: str, device: torch.device):
 
 
 from discrete_diffusion.evaluations.decode_profiles import LM_EVAL_DECODE_PROFILES
+from discrete_diffusion.data.conversion_baseline import (
+    apply_conversion_chat_template,
+    eval_max_seq_len,
+    install_conversion_chat_template,
+)
 
 
 def _as_bool(v) -> bool:
@@ -152,6 +163,8 @@ class BlockQwenEvalHarness(LM):
       self.accelerator = None
     self.model, self.config, self.tokenizer = _load_block_trainer(
         checkpoint_path, self._device)
+    # Conversion baseline: train↔eval ChatML (not stock Alibaba system).
+    install_conversion_chat_template(self.tokenizer)
     self.batch_size = int(batch_size)
     self.max_new_tokens = int(max_new_tokens)
     self.num_steps = (
@@ -192,7 +205,9 @@ class BlockQwenEvalHarness(LM):
     self._force_greedy = None if greedy is None else _as_bool(greedy)
     self.mask_id = int(self.model.mask_id)
     self.block_size = int(self.model.block_size)
-    self.seq_len = int(self.model.num_tokens)
+    self.train_seq_len = int(self.model.num_tokens)
+    self.seq_len = self.train_seq_len
+    self._eval_max_seq_len = eval_max_seq_len()
     self._speed_tokens = 0
     self._speed_elapsed = 0.0
     self._sampler = self.model._create_sampler()
@@ -211,6 +226,9 @@ class BlockQwenEvalHarness(LM):
         self._sampler.use_arpc = bool(prof['use_arpc'])
       if 'sub_block_size' in prof and hasattr(self._sampler, 'sub_block_size'):
         self._sampler.sub_block_size = prof['sub_block_size']
+      if 'ban_mask_pad_logits' in prof and hasattr(
+          self._sampler, 'ban_mask_pad_logits'):
+        self._sampler.ban_mask_pad_logits = bool(prof['ban_mask_pad_logits'])
       if clear_thr:
         self._sampler.unmask_threshold = None
       elif self._force_unmask_threshold is not None:
@@ -255,7 +273,8 @@ class BlockQwenEvalHarness(LM):
     return str(getattr(self.config.data, 'tokenizer_name_or_path', 'qwen'))
 
   def apply_chat_template(self, chat_history, add_generation_prompt=True):
-    return self.tokenizer.apply_chat_template(
+    return apply_conversion_chat_template(
+        self.tokenizer,
         chat_history,
         add_generation_prompt=add_generation_prompt,
         tokenize=False,
@@ -269,35 +288,63 @@ class BlockQwenEvalHarness(LM):
 
   @torch.no_grad()
   def get_loglikelihood(self, prefix, target) -> float:
-    """One-shot masked CE on the continuation (Fast-dLLM-style approximation)."""
+    """Hub ``eval.py`` one-token masked CE on the single-stream eval path.
+
+    Matches Fast-dLLM v2 likelihood as closely as our stack allows:
+    - mask only the first continuation token
+    - pad to the next ``block_size`` multiple (not full train ``seq_len``)
+    - write EOS on the first pad site
+    - ``block_eval_logits`` (single-stream block-causal), not dual-stream clean ``x0``
+    - always shift logits the Hub way
+    - CE only on MASK sites (pad labels ``-100``)
+
+    Pad-to-2048 dual-stream LL was an OOD meter (MASK ocean + clean answer
+    stream) and is not comparable to Hub MMLU.
+    """
     require_masked_likelihood(self.model.forward_process_name)
+    if not target:
+      return 0.0
     seq = torch.tensor(prefix + target, dtype=torch.long, device=self._device)
     if seq.numel() > self.seq_len:
       return -1e8
-    # Pad to full model length with masks / ignore.
-    pad_len = self.seq_len - seq.numel()
-    if pad_len > 0:
-      pad = torch.full(
-          (pad_len,), self.mask_id, dtype=torch.long, device=self._device)
-      clean = torch.cat([seq, pad], dim=0)
-    else:
-      clean = seq
-    xt = clean.clone()
-    # Mask the continuation region (and pads).
-    start = len(prefix)
-    xt[start:] = self.mask_id
-    xt = xt.unsqueeze(0)
-    x0 = clean.unsqueeze(0)
-    logits = self.model.backbone_logits(xt, x0)
-    # Optional shift alignment used in Fast-dLLM eval.
-    if bool(getattr(self.config.algo, 'shift_loss_targets', False)):
-      logits = torch.cat([logits[:, :1], logits[:, :-1]], dim=1)
-    mask = torch.zeros_like(clean, dtype=torch.bool)
-    mask[start:start + len(target)] = True
-    if not mask.any():
+    prompt_len = len(prefix)
+    content_len = int(seq.numel())
+    bd = max(int(self.block_size), 1)
+    # Hub: ``bd_size - (L % bd_size)`` — when L is already a multiple this
+    # is ``bd_size`` (always pads 1..bd tokens), not zero.
+    pad_len = bd - (content_len % bd)
+    xt = seq.clone()
+    xt[prompt_len] = self.mask_id
+    pad = torch.full(
+        (pad_len,), self.mask_id, dtype=torch.long, device=self._device)
+    xt = torch.cat([xt, pad], dim=0)
+    # Hub: first pad site is EOS (not MASK), so it is not scored.
+    eos_id = getattr(self.tokenizer, 'eos_token_id', None)
+    if eos_id is None:
+      raise ValueError('tokenizer.eos_token_id required for Hub-matched LL')
+    xt[content_len] = int(eos_id)
+    labels = torch.cat([
+        seq,
+        torch.full((pad_len,), -100, dtype=torch.long, device=self._device),
+    ], dim=0)
+    backbone = getattr(self.model, 'backbone', None)
+    eval_logits = getattr(backbone, 'block_eval_logits', None)
+    if eval_logits is None:
+      raise RuntimeError(
+          'Hub-matched LL requires backbone.block_eval_logits '
+          '(single-stream block-causal)')
+    logits = eval_logits(
+        xt.unsqueeze(0), active_len=int(xt.numel()), block_size=bd)
+    # Hub always shifts for likelihood.
+    logits = torch.cat([logits[:, :1], logits[:, :-1]], dim=1)
+    mask_indices = xt == self.mask_id
+    if not mask_indices.any():
       return 0.0
     loss = F.cross_entropy(
-        logits[0, mask], clean[mask], reduction='sum')
+        logits[0, mask_indices],
+        labels[mask_indices],
+        reduction='sum',
+        ignore_index=-100)
     return float(-loss.item())
 
   def loglikelihood(self, requests):
@@ -345,11 +392,54 @@ class BlockQwenEvalHarness(LM):
             'input_ids'][0]
         for q in questions
     ]
-    # Left-truncate prompts so the tail (question) is kept.
-    max_prefix = max(1, self.seq_len - max(1, max_new))
+    # Hub eval.py: max_new=2048 with ~32k context. Train length is often 2048.
+    # Extend the generation buffer (RoPE already supports long positions on
+    # Qwen) up to EVAL_MAX_SEQ_LEN so we do not wipe prompts or clamp max_new
+    # for typical GSM8K/IFEval prefixes. Only left-truncate if the prompt
+    # itself exceeds eval_cap-1.
+    #
+    # Keep BlockTrainer.num_tokens and backbone.n_tokens in lockstep, then
+    # restore after the batch so loglikelihood / later tasks do not inherit a
+    # ratcheted buffer (dual-stream forward bounds active_len by n_tokens).
+    bs = max(1, int(self.block_size))
+    eval_cap = max(int(self.train_seq_len), int(self._eval_max_seq_len))
+    eval_cap = (eval_cap // bs) * bs
+    hard_cap = max(1, eval_cap - 1)
     encoded = [
-        ids[-max_prefix:] if ids.numel() > max_prefix else ids
-        for ids in encoded]
+        ids[-hard_cap:] if ids.numel() > hard_cap else ids
+        for ids in encoded
+    ]
+    longest = max(int(ids.numel()) for ids in encoded)
+    needed = longest + max_new
+    needed = ((needed + bs - 1) // bs) * bs
+    seq_len = max(int(self.train_seq_len), min(needed, eval_cap))
+    prev_num_tokens = int(self.model.num_tokens)
+    backbone = getattr(self.model, 'backbone', None)
+    prev_n_tokens = (
+        int(getattr(backbone, 'n_tokens', prev_num_tokens))
+        if backbone is not None else prev_num_tokens)
+    extended = seq_len != prev_num_tokens
+    if extended:
+      print(
+          f'[block_qwen_lm_eval] extend seq_len '
+          f'{prev_num_tokens}→{seq_len} '
+          f'(train={self.train_seq_len}, eval_cap={eval_cap}, '
+          f'longest_prefix={longest}, max_new={max_new})',
+          flush=True,
+      )
+      self.model.num_tokens = seq_len
+      self.seq_len = seq_len
+      if backbone is not None and hasattr(backbone, 'n_tokens'):
+        backbone.n_tokens = seq_len
+    room = max(1, seq_len - longest)
+    if max_new > room:
+      print(
+          f'[block_qwen_lm_eval] clamp max_new_tokens {max_new}→{room} '
+          f'(seq_len={seq_len}, longest_prefix={longest}, '
+          f'eval_cap={eval_cap})',
+          flush=True,
+      )
+      max_new = room
     max_len = max(int(ids.numel()) for ids in encoded)
     padded = []
     lengths = []
@@ -363,50 +453,57 @@ class BlockQwenEvalHarness(LM):
     prefix_batch = torch.stack(padded, dim=0).to(self._device)
     answers = []
     n_tokens = 0
-    if self._device.type == 'cuda' and torch.cuda.is_available():
-      torch.cuda.synchronize(self._device)
-    t0 = time.perf_counter()
-    for i, plen in enumerate(lengths):
-      prefix = prefix_batch[i:i + 1, :plen]
-      if self._is_causal_ar:
-        out = self.model.backbone.model.generate(
-            prefix,
-            max_new_tokens=max_new,
-            do_sample=not greedy,
-            top_p=float(getattr(self.config.sampling, 'p_nucleus', 0.9)),
-            pad_token_id=self.tokenizer.pad_token_id or self.tokenizer.eos_token_id,
-            eos_token_id=self.tokenizer.eos_token_id,
-        )
-        cont = out[0, plen:plen + max_new]
-      else:
-        samples = self._sampler.generate(
-            self.model,
-            num_samples=1,
-            num_steps=self.num_steps,
-            eps=None,
-            inject_bos=False,
-            prefix_ids=prefix,
-            max_new_tokens=max_new,
-            greedy=greedy,
-        )
-        cont = samples[0, plen:plen + max_new]
-      eos = self.tokenizer.eos_token_id
-      if eos is not None:
-        eos_hits = (cont == eos).nonzero(as_tuple=False)
-        if eos_hits.numel() > 0:
-          cont = cont[: int(eos_hits[0]) + 1]
-      # Count non-mask continuation tokens for tok/s.
-      if self._is_causal_ar:
-        n_tokens += int(cont.numel())
-      else:
-        n_tokens += int((cont != self.mask_id).sum().item())
-      text = self.tokenizer.decode(cont, skip_special_tokens=True)
-      text = self._truncate_at_stop(text, until)
-      answers.append(text)
-    if self._device.type == 'cuda' and torch.cuda.is_available():
-      torch.cuda.synchronize(self._device)
-    elapsed = time.perf_counter() - t0
-    return answers, n_tokens, elapsed
+    try:
+      if self._device.type == 'cuda' and torch.cuda.is_available():
+        torch.cuda.synchronize(self._device)
+      t0 = time.perf_counter()
+      for i, plen in enumerate(lengths):
+        prefix = prefix_batch[i:i + 1, :plen]
+        if self._is_causal_ar:
+          out = self.model.backbone.model.generate(
+              prefix,
+              max_new_tokens=max_new,
+              do_sample=not greedy,
+              top_p=float(getattr(self.config.sampling, 'p_nucleus', 0.9)),
+              pad_token_id=self.tokenizer.pad_token_id or self.tokenizer.eos_token_id,
+              eos_token_id=self.tokenizer.eos_token_id,
+          )
+          cont = out[0, plen:plen + max_new]
+        else:
+          samples = self._sampler.generate(
+              self.model,
+              num_samples=1,
+              num_steps=self.num_steps,
+              eps=None,
+              inject_bos=False,
+              prefix_ids=prefix,
+              max_new_tokens=max_new,
+              greedy=greedy,
+          )
+          cont = samples[0, plen:plen + max_new]
+        eos = self.tokenizer.eos_token_id
+        if eos is not None:
+          eos_hits = (cont == eos).nonzero(as_tuple=False)
+          if eos_hits.numel() > 0:
+            cont = cont[: int(eos_hits[0]) + 1]
+        # Count non-mask continuation tokens for tok/s.
+        if self._is_causal_ar:
+          n_tokens += int(cont.numel())
+        else:
+          n_tokens += int((cont != self.mask_id).sum().item())
+        text = self.tokenizer.decode(cont, skip_special_tokens=True)
+        text = self._truncate_at_stop(text, until)
+        answers.append(text)
+      if self._device.type == 'cuda' and torch.cuda.is_available():
+        torch.cuda.synchronize(self._device)
+      elapsed = time.perf_counter() - t0
+      return answers, n_tokens, elapsed
+    finally:
+      if extended:
+        self.model.num_tokens = prev_num_tokens
+        self.seq_len = prev_num_tokens
+        if backbone is not None and hasattr(backbone, 'n_tokens'):
+          backbone.n_tokens = prev_n_tokens
 
   def _write_speed_metrics(self) -> None:
     if self._rank != 0:
@@ -454,17 +551,23 @@ class BlockQwenEvalHarness(LM):
     buckets: dict[tuple, list[tuple[int, object]]] = {}
     for idx, req in enumerate(requests):
       gen_kwargs = self._parse_gen_kwargs(req)
+      until = list(gen_kwargs.get('until') or ())
+      task = str(getattr(req, 'task_name', '') or '')
+      # Chat-templated HumanEval must not use mid-function completion stops.
+      if task.startswith('humaneval'):
+        until = humaneval_until_for_chat(until)
       key = (
           int(gen_kwargs.get('max_gen_toks', self.max_new_tokens)),
-          tuple(gen_kwargs.get('until') or ()),
+          tuple(until),
           bool(gen_kwargs.get('do_sample', False)),
+          task.split('_')[0],  # keep humaneval vs mbpp buckets separate
       )
       buckets.setdefault(key, []).append((idx, req))
 
     self._speed_tokens = 0
     self._speed_elapsed = 0.0
     for key, batch in buckets.items():
-      max_gen, until_tuple, do_sample = key
+      max_gen, until_tuple, do_sample, _task_prefix = key
       until = list(until_tuple)
       greedy = (
           self._force_greedy if self._force_greedy is not None
@@ -495,6 +598,9 @@ class BlockQwenEvalHarness(LM):
         self._speed_tokens += n_tok
         self._speed_elapsed += elapsed
         for (orig_idx, req), ans in zip(chunk, answers):
+          task = str(getattr(req, 'task_name', '') or '')
+          if task.startswith('humaneval') or task.startswith('mbpp'):
+            ans = prepare_code_completion(ans, task)
           output[orig_idx] = ans
           print('=' * 20)
           print('question:', req.args[0][:200])
@@ -510,4 +616,7 @@ if __name__ == '__main__':
   # Allow code-eval datasets (HumanEval) when users pass confirm flags.
   os.environ.setdefault('HF_ALLOW_CODE_EVAL', '1')
   os.environ.setdefault('HF_DATASETS_TRUST_REMOTE_CODE', 'true')
+  # Must run before lm_eval imports humaneval/mbpp utils (load code_eval).
+  patch_code_eval_metric_cache()
+  patch_humaneval_chat_predictions()
   cli_evaluate()

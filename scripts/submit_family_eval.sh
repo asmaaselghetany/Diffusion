@@ -95,9 +95,31 @@ submit_lm_eval() {
   export DECODE_PROFILE="${profile}"
   export UNMASK_THRESHOLD="${thr}"
   export FORCE_GREEDY="${greedy}"
-  export SUITE="${SUITE:-custom}"
-  # Keep TASKS if caller set it; else partial paper suite that is prefetched.
-  export TASKS="${TASKS:-gsm8k,ifeval,humaneval,humaneval_plus,mbpp,mbpp_plus}"
+  export SUITE="${SUITE:-paper_acc}"
+  # Hub Fast-dLLM v2/eval.py parity (paper accuracy tables).
+  export MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-2048}"
+  # Hub has ~32k context; extend gen buffer beyond train length=2048 when needed.
+  export EVAL_MAX_SEQ_LEN="${EVAL_MAX_SEQ_LEN:-8192}"
+  export NUM_STEPS="${NUM_STEPS:-32}"
+  # Empty TASKS → lm_eval.sh expands full Fast-dLLM suite from SUITE.
+  # Callers may still set TASKS=... for partial / resume runs.
+  if [[ -z "${TASKS:-}" ]]; then
+    unset TASKS || true
+  else
+    export TASKS
+  fi
+  # Tag OUT_DIR so thr/max_new cells do not clobber older lm_eval/ (512) trees.
+  if [[ -z "${OUT_DIR:-}" ]]; then
+    local run_dir
+    run_dir="$(dirname "$(dirname "${CKPT}")")"
+    local tag="m${MAX_NEW_TOKENS}_${profile}"
+    if [[ -n "${thr}" ]]; then
+      tag="${tag}_t${thr}"
+    fi
+    export OUT_DIR="${run_dir}/lm_eval_${tag}"
+  else
+    export OUT_DIR
+  fi
   export NUM_NODES="${NUM_NODES:-8}"
   export GPUS_PER_NODE="${GPUS_PER_NODE:-4}"
   export NUM_PROCESSES="${NUM_PROCESSES:-$((NUM_NODES * GPUS_PER_NODE))}"
@@ -105,15 +127,18 @@ submit_lm_eval() {
   export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC="${TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC:-${LM_EVAL_DIST_TIMEOUT_SEC}}"
   export NCCL_TIMEOUT="${NCCL_TIMEOUT:-${LM_EVAL_DIST_TIMEOUT_SEC}}"
   local job_name="${JOB_NAME:-bqwen-lm-eval}"
-  echo "  lm_eval: profile=${DECODE_PROFILE} thr=${UNMASK_THRESHOLD:-none} greedy=${FORCE_GREEDY:-task} tasks=${TASKS} nodes=${NUM_NODES}x${GPUS_PER_NODE}"
-  run sbatch --parsable --job-name="${job_name}" --nodes="${NUM_NODES}" --time="${TIME_LIMIT:-12:00:00}" \
+  echo "  lm_eval: profile=${DECODE_PROFILE} thr=${UNMASK_THRESHOLD:-none} greedy=${FORCE_GREEDY:-task} max_new=${MAX_NEW_TOKENS} suite=${SUITE} tasks=${TASKS:-<suite default>} out=${OUT_DIR} nodes=${NUM_NODES}x${GPUS_PER_NODE}"
+  # Never propagate a parent job's /tmp/block_qwen_<jid> into the eval allocation.
+  run env -u TMPDIR -u TEMP -u TMP \
+    sbatch --parsable --job-name="${job_name}" --nodes="${NUM_NODES}" --time="${TIME_LIMIT:-12:00:00}" \
     --export=ALL \
     scripts/slurm/lm_eval.sbatch
 }
 
 submit_offline() {
   echo "  offline: eval_checkpoint.sbatch"
-  run sbatch --parsable --job-name="${JOB_NAME:-bqwen-eval}" \
+  run env -u TMPDIR -u TEMP -u TMP \
+    sbatch --parsable --job-name="${JOB_NAME:-bqwen-eval}" \
     scripts/slurm/eval_checkpoint.sbatch "${CKPT}"
 }
 
@@ -123,7 +148,8 @@ submit_arpc() {
   local out="${ARPC_OUT:-${run_dir}/eval_arpc}"
   export ARPC_MODE="${ARPC_MODE:-${EVAL_ARPC_MODE:-blockgen}}"
   echo "  arpc: out=${out} mode=${ARPC_MODE}"
-  run sbatch --parsable --job-name="${JOB_NAME:-bqwen-arpc}" --export=ALL \
+  run env -u TMPDIR -u TEMP -u TMP \
+    sbatch --parsable --job-name="${JOB_NAME:-bqwen-arpc}" --export=ALL \
     scripts/slurm/arpc_decode_eval.sbatch "${CKPT}" "${out}" "${NUM_SAMPLES:-8}"
 }
 
@@ -132,9 +158,20 @@ case "${STACK}" in
     if [[ "${OFFLINE_ONLY}" -eq 1 ]]; then
       submit_offline
     else
-      # Exactness defaults; caller can still override DECODE_PROFILE=baseline.
-      id="$(submit_lm_eval dual_cache "${EVAL_UNMASK_THRESHOLD:-0.9}" 1)"
-      echo "Submitted lm_eval job: ${id}"
+      # Paper §4 accuracy default: DualCache + thr=1 (parallel decode off).
+      # Do NOT inherit ckpt-baked thr=0.9 via EVAL_UNMASK_THRESHOLD.
+      # Override with FORCE_UNMASK_THRESHOLD=0.9, or PAPER_BOTH_THR=1.
+      id="$(submit_lm_eval dual_cache 1 1)"
+      echo "Submitted lm_eval job (paper thr): ${id}"
+      if [[ "${PAPER_BOTH_THR:-0}" == "1" ]]; then
+        _saved_out="${OUT_DIR:-}"
+        unset OUT_DIR || true
+        JOB_NAME="${JOB_NAME:-bqwen-lm-eval}-thr09" \
+          FORCE_UNMASK_THRESHOLD=0.9 \
+          id09="$(submit_lm_eval dual_cache 0.9 1)"
+        echo "Submitted lm_eval job (Hub thr=0.9): ${id09}"
+        if [[ -n "${_saved_out}" ]]; then export OUT_DIR="${_saved_out}"; fi
+      fi
       if [[ "${LM_ONLY}" -eq 0 ]]; then
         # Optional offline samples/ELBO alongside (uses ckpt pins).
         oid="$(submit_offline || true)"

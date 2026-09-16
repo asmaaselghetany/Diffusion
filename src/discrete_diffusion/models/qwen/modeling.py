@@ -69,8 +69,13 @@ class QwenBlockForCausalLM(nn.Module):
     if getattr(model_cfg, 'gradient_checkpointing', False):
       self.model.gradient_checkpointing_enable()
 
-    if vocab_size > 0 and vocab_size != self.model.config.vocab_size:
-      self.model.resize_token_embeddings(vocab_size)
+    if vocab_size > 0:
+      cur = int(self.model.config.vocab_size)
+      # Match requested V exactly. New trains pass Hub-padded 151936 (no-op
+      # after from_pretrained). Eval load of old ckpts passes 151666 so we
+      # shrink to the checkpoint embed table.
+      if vocab_size != cur:
+        self.model.resize_token_embeddings(vocab_size)
 
   def compare_hf_keys(self, other_state_dict: dict):
     own = set(self.model.state_dict().keys())

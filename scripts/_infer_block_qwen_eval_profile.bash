@@ -8,7 +8,8 @@
 #   with Fast-dLLM/BlockGen paper pins.
 #
 # Exactness overlays (recipe-specific):
-#   fastdllm_lm_eval  → dual_cache + thr=0.9 + greedy
+#   fastdllm_lm_eval  → dual_cache + thr=1 (paper accuracy) + greedy
+#                       (Hub/speed overlay: FORCE_UNMASK_THRESHOLD=0.9)
 #   blockgen_arpc     → offline ELBO/gen-PPL + ARPC samples
 
 infer_block_qwen_eval_profile() {

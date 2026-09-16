@@ -35,13 +35,13 @@ presets:
     arms: [masked]
     line: [ar2block]
   C2_fdllm_full:
-    levers: [shift, complementary, mask_schedule_fdllm, loss_plain_ce]
+    levers: [shift, complementary, mask_schedule_fdllm, loss_plain_ce, hub_train_parity]
     arms: [masked]
     line: [ar2block]
   # Fast-dLLM v2 one-to-one on our stack: full train recipe + decode caches.
   # Pair with scripts/submit_fastdllm.sh (locks line=ar2block, Nemotron, paper scale).
   fastdllm_v2:
-    levers: [shift, complementary, mask_schedule_fdllm, loss_plain_ce, hierarchical_kv, dual_cache, fdllm_confidence_decode, single_stream_decode]
+    levers: [shift, complementary, mask_schedule_fdllm, loss_plain_ce, hub_train_parity, hierarchical_kv, dual_cache, fdllm_confidence_decode, single_stream_decode]
     arms: [masked]
     line: [ar2block]
   C5_joint_ar:
@@ -190,7 +190,7 @@ levers:
     notes: "p_mask=(1-eps)*t+eps instead of 1-alpha_t."
 
   loss_plain_ce:
-    source: Fast-dLLM v2 Appendix A.3
+    source: Fast-dLLM v2 Appendix A.3 / Hub modeling.py labels=-100 on clean
     family: conversion
     overrides:
       - algo.loss_weighting=plain_ce
@@ -198,23 +198,42 @@ levers:
     line: [ar2block]
     conflicts: []
     requires: []
-    notes: "Unweighted masked CE (omit dalpha/(1-alpha)); pair with complementary."
+    notes: >
+      Unweighted masked CE (omit dalpha/(1-alpha)); pair with complementary.
+      CRITICAL: mean over mask sites only (Hub ForCausalLMLoss ignore_index),
+      not valid_tokens.sum() — complementary 2B would otherwise ~halve the loss.
 
-  fdllm_confidence_decode:
-    source: Fast-dLLM v2 Hub generate / generation_functions.py
+  hub_train_parity:
+    source: Fast-dLLM v2 hub_ref/modeling.py train attention + corrupt
     family: conversion
     overrides:
-      - sampling.unmask_threshold=0.9
-      - sampling.greedy=true
-      - sampling.p_nucleus=1.0
+      - algo.hub_struct_attn_only=true
+      - algo.ignore_bos=false
     arms: [masked]
     line: [ar2block]
     conflicts: []
     requires: []
     notes: >
-      Confidence-threshold unmask + greedy argmax (official eval defaults).
-      Sampler uses while-masks-remain loop when unmask_threshold is set.
-      Pair with hierarchical_kv / dual_cache for decode-path fidelity.
+      Hub overwrites attention with structural block-diff only (pads stay
+      visible) and has no ignore_bos. Pair with C2_fdllm_full / fastdllm_v2.
+      fast_dllm also forces antithetic off + t~U(0,1) in BlockTrainer.nll.
+
+  fdllm_confidence_decode:
+    source: Fast-dLLM v2 eval_script.sh (GSM8K/Math/IFEval use threshold=1)
+    family: conversion
+    overrides:
+      - sampling.unmask_threshold=1.0
+      - sampling.greedy=true
+      - sampling.p_nucleus=1.0
+      - sampling.ban_mask_pad_logits=false
+    arms: [masked]
+    line: [ar2block]
+    conflicts: []
+    requires: []
+    notes: >
+      Confidence-threshold unmask + greedy (eval_script thr=1 for GSM8K).
+      Hub does not ban MASK/PAD logits — ban_mask_pad_logits=false.
+      Pair with hierarchical_kv / dual_cache / hubmatch decode profile.
 
   sub_block_8:
     source: Fast-dLLM v2 decode (small_block_size=8)

@@ -76,6 +76,8 @@ def _config(mode: str):
           single_stream_decode=False,
           sub_block_size=None,
           align_shift_logits=None,
+          ar_block_bridge=None,
+          ban_mask_pad_logits=True,
           pad_after_eos=True,
           stop_on_eos=True,
           greedy=False,
@@ -262,3 +264,134 @@ def test_ignore_bos_frozen_in_block0():
       model, xt.clone(), x0.clone(), 0, bs, num_steps=2, eps=1e-3)
   assert int(out[0, 0].item()) == 0
   assert (out[:, 1:bs] == 7).all()
+
+
+def test_ar_block_bridge_auto_on_for_masked_shift():
+  cfg = _config('masked')
+  sampler = BlockSampler(cfg)
+  model = _MockBlockTrainer(mode='masked')
+  model.shift_loss_targets = True
+  assert sampler._ar_block_bridge_enabled(model) is True
+  model.shift_loss_targets = False
+  assert sampler._ar_block_bridge_enabled(model) is False
+  cfg.sampling.ar_block_bridge = False
+  sampler = BlockSampler(cfg)
+  model.shift_loss_targets = True
+  assert sampler._ar_block_bridge_enabled(model) is False
+
+
+def test_ar_block_bridge_writes_next_mask_position():
+  """Hub ~81-85: after a block, argmax at last committed pos seeds next."""
+  model = _MockBlockTrainer(mode='masked', n=16, vocab=32)
+  model.shift_loss_targets = True
+  cfg = _config('masked')
+  cfg.sampling.ar_block_bridge = True
+  sampler = BlockSampler(cfg)
+  end = 8
+  xt = torch.randint(1, model.vocab_size - 1, (1, 16))
+  xt[:, end:] = model.mask_id
+  x0 = xt.clone()
+
+  def fake_logits(xt_in, x0_in, active_len=None, **kwargs):
+    del x0_in, kwargs
+    a = int(active_len) if active_len is not None else xt_in.shape[1]
+    out = torch.zeros(xt_in.shape[0], a, model.vocab_size)
+    # Unshifted: position end-1 predicts token id 11.
+    out[:, end - 1, 11] = 10.0
+    return out
+
+  model.backbone_logits = fake_logits
+  xt2, x02 = sampler._ar_block_bridge(model, xt.clone(), x0.clone(), end)
+  assert int(xt2[0, end].item()) == 11
+  assert int(x02[0, end].item()) == 11
+  assert torch.equal(xt2[:, :end], xt[:, :end])
+
+
+def test_init_block_preserves_ar_bridge_seed():
+  model = _MockBlockTrainer(mode='masked')
+  sampler = BlockSampler(_config('masked'))
+  n, bs = 16, 8
+  xt = torch.full((1, n), model.mask_id, dtype=torch.long)
+  x0 = xt.clone()
+  # Simulate Hub AR seed at next-block start.
+  xt[:, bs] = 7
+  x0[:, bs] = 7
+  xt2, x02 = sampler._init_block(model, xt, x0, bs, 2 * bs, inject_bos=False)
+  assert int(xt2[0, bs].item()) == 7
+  assert int(x02[0, bs].item()) == 7
+  assert (xt2[:, bs + 1:2 * bs] == model.mask_id).all()
+
+
+def test_dual_cache_refresh_on_mask_or_active_len():
+  """Hub ~102: refresh when first small-block token is MASK / active_len mismatch."""
+  model = _MockBlockTrainer(mode='masked')
+  cfg = _config('masked')
+  cfg.sampling.hierarchical_kv = True
+  cfg.sampling.use_block_cache = True
+  cfg.sampling.single_stream_decode = True
+  sampler = BlockSampler(cfg)
+  cache = SimpleNamespace(active_len=16)
+  sampler._dual_cache = cache
+  xt = torch.full((1, 16), 5, dtype=torch.long)
+  # First token unmasked + matching active_len → keep.
+  sampler._maybe_refresh_dual_cache(
+      model, xt, window_start=8, active_end=16)
+  assert sampler._dual_cache is cache
+  # First token MASK → refresh.
+  xt[:, 8] = model.mask_id
+  sampler._maybe_refresh_dual_cache(
+      model, xt, window_start=8, active_end=16)
+  assert sampler._dual_cache is None
+  sampler._dual_cache = cache
+  # active_len mismatch → refresh.
+  xt[:, 8] = 5
+  sampler._maybe_refresh_dual_cache(
+      model, xt, window_start=8, active_end=8)
+  assert sampler._dual_cache is None
+
+
+def test_denoise_block_does_not_unconditionally_clear_dual_cache():
+  """DualCache survives across ``_denoise_block`` when refresh does not fire."""
+  model = _MockBlockTrainer(mode='masked')
+  cfg = _config('masked')
+  cfg.sampling.hierarchical_kv = True
+  cfg.sampling.use_block_cache = True
+  cfg.sampling.single_stream_decode = True
+  sampler = BlockSampler(cfg)
+  sentinel = SimpleNamespace(active_len=16)
+  sampler._dual_cache = sentinel
+  n, bs = 16, 8
+  start, end = bs, 2 * bs
+  # Window start already unmasked so Hub refresh condition is false.
+  xt = torch.randint(1, model.vocab_size - 1, (1, n))
+  xt[:, end:] = model.mask_id
+  x0 = xt.clone()
+
+  def scribble(_model, xt_in, _x0, _t, _dt, **kwargs):
+    del _model, _x0, _t, _dt, kwargs
+    return xt_in
+
+  sampler._masked_step = scribble
+  sampler._denoise_block(
+      model, xt, x0, start, end, num_steps=1, eps=1e-3, inject_bos=False)
+  assert sampler._dual_cache is sentinel
+
+
+def test_eos_stop_ready_requires_no_mask_before_eos():
+  xt = torch.tensor([[1, 2, 3, 9, 5, 6]])  # eos=9
+  assert BlockSampler._eos_stop_ready(
+      xt, gen_start=1, end=6, eos_id=9, mask_id=0) is True
+  xt2 = torch.tensor([[1, 2, 0, 9, 5, 6]])  # MASK before EOS
+  assert BlockSampler._eos_stop_ready(
+      xt2, gen_start=1, end=6, eos_id=9, mask_id=0) is False
+
+
+def test_ban_mask_pad_logits_can_be_disabled():
+  model = _MockBlockTrainer(mode='masked')
+  cfg = _config('masked')
+  cfg.sampling.ban_mask_pad_logits = False
+  sampler = BlockSampler(cfg)
+  logits = torch.zeros(1, 4, model.vocab_size)
+  logits[..., model.mask_id] = 5.0
+  out = sampler._prepare_masked_logits(model, logits.clone(), shift_mode='full')
+  assert float(out[..., model.mask_id].max()) == 5.0

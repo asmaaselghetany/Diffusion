@@ -169,6 +169,12 @@ def _group_block_aligned_sft(
   ``labels`` uses ``-100`` for prompt and padding positions. Padding with the
   diffusion mask token before concatenation guarantees that no diffusion block
   contains tokens from two different conversations.
+
+  Packing audit vs Hub Fast-dLLM (public v2 stack): Hub train packing is
+  **not disclosed** (LMFlow Dataset wrapper; no block-aligned pad published).
+  Our invariant for conversion: pad-to-``diffusion_block_size`` with MASK,
+  pack into ``sequence_length`` chunks, drop rows with no supervised labels.
+  See ``tools/packing_audit_fastdllm.py``.
   """
   if sequence_length % diffusion_block_size != 0:
     raise ValueError(

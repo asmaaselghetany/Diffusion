@@ -11,6 +11,10 @@ cd "${REPO_ROOT}"
 # Prefer Jupiter Stages/CUDA stack; fall back to a bare CUDA module if present.
 # shellcheck disable=SC1091
 source "${REPO_ROOT}/scripts/jupiter_paths.sh"
+# Pin TMPDIR to *this* Slurm job before module load (mktemp). Inherited
+# TMPDIR from a parent train job points at a missing /tmp/block_qwen_<old>.
+export TMPDIR="/tmp/block_qwen_${SLURM_JOB_ID:-local}"
+mkdir -p "${TMPDIR}"
 activate_jupiter_modules
 if ! command -v nvcc >/dev/null 2>&1 && [[ -z "${CUDA_HOME:-}${CUDA_ROOT:-}" ]]; then
   module load CUDA 2>/dev/null || true
@@ -48,9 +52,6 @@ export WANDB_INIT_TIMEOUT="${WANDB_INIT_TIMEOUT:-120}"
 export WANDB_HTTP_TIMEOUT="${WANDB_HTTP_TIMEOUT:-60}"
 # Prefer scratch cache from env.sh; do not clobber a caller-set path.
 export DISCRETE_DIFFUSION_SCRATCH_DIR="${DISCRETE_DIFFUSION_SCRATCH_DIR:-${SCRATCH:-${ASMAA_WORKSPACE}}/.cache/discrete_diffusion}"
-# Local per-job temp avoids pymp-* contention on shared project FS (Lustre/NFS).
-export TMPDIR="/tmp/block_qwen_${SLURM_JOB_ID:-local}"
-mkdir -p "${TMPDIR}"
 
 # Checkpoint safety: refuse to start if the project FS cannot absorb a ~23G write.
 # shellcheck disable=SC1091

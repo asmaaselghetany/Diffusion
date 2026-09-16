@@ -1,7 +1,7 @@
 """Shared decode profiles + free-sample modes for block_qwen eval.
 
 Single source of truth for:
-  - ``DECODE_PROFILES`` (baseline / hierarchical / dual_cache)
+  - ``DECODE_PROFILES`` (baseline / hierarchical / hubmatch / dual_cache)
   - sample_mode inference (native_free vs conversion_free)
   - samples.meta.json schema / reuse gate
 """
@@ -13,6 +13,11 @@ from pathlib import Path
 from typing import Any
 
 from omegaconf import OmegaConf
+
+from discrete_diffusion.data.conversion_baseline import (
+    apply_conversion_chat_template,
+    conversion_prefix_text as _conversion_prefix_text,
+)
 
 
 # Shared ancestral core vs paper overlays. Keep lm-eval / throughput / free-gen
@@ -38,11 +43,28 @@ DECODE_PROFILES: dict[str, list[str]] = {
         'sampling.greedy=false',
         'sampling.p_nucleus=1.0',
     ],
+    # Hub eval.py with use_block_cache=False: single-stream + small blocks +
+    # truncated attention-block forwards (no DualCache replace path).
+    'hubmatch': [
+        'sampling.use_arpc=false',
+        'sampling.hierarchical_kv=true',
+        'sampling.use_block_cache=false',
+        'sampling.single_stream_decode=true',
+        'sampling.sub_block_size=8',
+        'sampling.greedy=true',
+        'sampling.p_nucleus=1.0',
+        'sampling.ban_mask_pad_logits=false',
+    ],
     'dual_cache': [
         'sampling.use_arpc=false',
         'sampling.hierarchical_kv=true',
         'sampling.use_block_cache=true',
         'sampling.single_stream_decode=true',
+        # Hub eval.py small_block_size=8; paper §4 default sub-block.
+        'sampling.sub_block_size=8',
+        'sampling.greedy=true',
+        'sampling.p_nucleus=1.0',
+        'sampling.ban_mask_pad_logits=false',
     ],
 }
 
@@ -67,11 +89,24 @@ LM_EVAL_DECODE_PROFILES: dict[str, dict[str, Any]] = {
         'sub_block_size': None,
         'greedy': False,
     },
+    'hubmatch': {
+        'use_arpc': False,
+        'hierarchical_kv': True,
+        'use_block_cache': False,
+        'single_stream_decode': True,
+        'sub_block_size': 8,
+        'greedy': True,
+        # Match DECODE_PROFILES / Hub batch_sample (do not ban MASK/PAD).
+        'ban_mask_pad_logits': False,
+    },
     'dual_cache': {
         'use_arpc': False,
         'hierarchical_kv': True,
         'use_block_cache': True,
         'single_stream_decode': True,
+        'sub_block_size': 8,
+        'greedy': True,
+        'ban_mask_pad_logits': False,
     },
 }
 
@@ -103,20 +138,14 @@ def infer_sample_mode(model_config) -> str:
 
 
 def conversion_prefix_text(user_prompt: str | None = None) -> str:
-  if user_prompt:
-    return ''  # caller should use apply_chat_template
-  return (
-      '<|im_start|>system\n'
-      'You are Qwen, created by Alibaba Cloud. You are a helpful assistant.'
-      '<|im_end|>\n'
-      '<|im_start|>assistant\n'
-  )
+  return _conversion_prefix_text(user_prompt)
 
 
 def conversion_prefix_ids(tokenizer, user_prompt: str | None, device):
   import torch
   if user_prompt:
-    text = tokenizer.apply_chat_template(
+    text = apply_conversion_chat_template(
+        tokenizer,
         [{'role': 'user', 'content': str(user_prompt)}],
         add_generation_prompt=True,
         tokenize=False,
