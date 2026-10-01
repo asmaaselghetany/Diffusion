@@ -21,27 +21,6 @@ from pathlib import Path
 import torch
 
 
-def _load(checkpoint: str, device: str):
-  from discrete_diffusion.algorithms.block_trainer import BlockTrainer
-  from discrete_diffusion.data import get_tokenizer
-  from discrete_diffusion.train import register_config_resolvers
-  from omegaconf import DictConfig, OmegaConf
-
-  # HYDRA-CKPT-MUL: resolve ${mul:…}/${div_up:…} before any cfg access.
-  register_config_resolvers()
-  ckpt = torch.load(checkpoint, map_location=device, weights_only=False)
-  config = ckpt['hyper_parameters']['config']
-  if not isinstance(config, DictConfig):
-    config = OmegaConf.create(config)
-  OmegaConf.resolve(config)
-  tokenizer = get_tokenizer(config)
-  model = BlockTrainer.load_from_checkpoint(
-      checkpoint, config=config, tokenizer=tokenizer, map_location=device)
-  model.eval()
-  model.to(device)
-  return model, tokenizer, config
-
-
 @torch.no_grad()
 def exact_after_corrupt_and_argmax(
     model, x0: torch.Tensor, t_val: float, *, block_size: int,
@@ -79,7 +58,17 @@ def main() -> int:
   if str(repo / 'src') not in sys.path:
     sys.path.insert(0, str(repo / 'src'))
 
-  model, tokenizer, config = _load(args.checkpoint, args.device)
+  from discrete_diffusion.evaluations.checkpoint_utils import (
+      load_block_trainer_checkpoint,
+  )
+  from discrete_diffusion.train import register_config_resolvers
+  from omegaconf import OmegaConf
+
+  register_config_resolvers()
+  device = torch.device(args.device)
+  model, config, tokenizer = load_block_trainer_checkpoint(
+      args.checkpoint, device)
+  OmegaConf.resolve(config)
   seq = int(args.seq_len or config.model.length)
   bs = int(getattr(config, 'block_size', 32))
   # Synthetic clean sequences from vocab (not BOS-sensitive for this smoke).

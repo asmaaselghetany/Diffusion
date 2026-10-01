@@ -65,7 +65,8 @@ if [[ ! -f "${EXPORT_DIR}/model.safetensors" || "${FORCE_EXPORT:-0}" == "1" ]]; 
   PYTHONPATH=src "${REPO_ROOT}/.venv/bin/python" \
     tools/export_block_ckpt_to_fastdllm_hf.py \
     --ckpt "${CKPT}" \
-    --out "${EXPORT_DIR}"
+    --out "${EXPORT_DIR}" \
+    --overwrite
 else
   echo "Reusing existing export: ${EXPORT_DIR}"
 fi

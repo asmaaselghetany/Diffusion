@@ -91,6 +91,7 @@ def test_truncated_active_end_rounds_when_hierarchical():
           arpc_use_prefix_fill=None,
           hierarchical_kv=True, use_block_cache=False,
           single_stream_decode=False,
+          allow_full_seq_decode=True,
           sub_block_size=8,
           align_shift_logits=True,
           pad_after_eos=True,

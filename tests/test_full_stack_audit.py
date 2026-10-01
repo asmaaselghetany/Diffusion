@@ -1,4 +1,9 @@
-"""Pytest entrypoint for static full-stack audit checks."""
+"""Pytest entrypoint for *static wiring* audit checks (not behavioral).
+
+These tests only verify that ``tools/audit_full_stack.py``'s presence/grep
+layers still pass. They do **not** prove training/eval correctness — use
+``python tools/audit_full_stack.py --run-tests`` for that.
+"""
 
 import importlib.util
 import sys
@@ -20,7 +25,8 @@ def _load_audit():
 _audit = _load_audit()
 
 
-def test_full_stack_static_layers_pass():
+def test_static_wiring_layers_pass():
+  """Presence/wiring grep layers only — not a behavioral full-stack gate."""
   results = _audit.run_static()
   failures = [
       (lr.layer, chk.name, chk.detail)
@@ -28,8 +34,16 @@ def test_full_stack_static_layers_pass():
       for chk in lr.checks
       if not chk.ok
   ]
-  assert not failures, 'full-stack audit failures:\n' + '\n'.join(
+  assert not failures, 'static wiring audit failures:\n' + '\n'.join(
       f'  {layer}/{name}: {detail}' for layer, name, detail in failures)
+
+
+def test_static_mode_prints_behavior_disclaimer(capsys):
+  rc = _audit.run_audit(run_tests=False)
+  captured = capsys.readouterr().out
+  assert rc == 0
+  assert 'source presence/wiring only' in captured
+  assert 'wiring checks' in captured
 
 
 def test_all_audit_layers_registered():

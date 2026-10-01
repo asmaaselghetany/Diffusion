@@ -1,0 +1,3 @@
+self-check PASS: oracle corrupt+clean acc/AUROC≈1; random ≈1/V / AUROC≈0.5; masked clean=N/A; collision drop OK
+  oracle={'n_corrupted': 16, 'n_clean_in_block': 16, 'corrupt_ce': 0.0, 'corrupt_acc': 1.0, 'clean_ce': 0.0, 'clean_acc': 1.0, 'clean_copy_xt_acc': 1.0, 'clean_mean_p_x0': 1.0, 'clean_mean_p_xt': 1.0, 'clean_median_rank_x0': 1.0, 'clean_mean_rank_x0': 1.0, 'n_clean_content': 16, 'detect_auroc': 1.0}
+  random_mean_auc=0.477 corrupt_acc=0.0406 clean_acc=0.0531

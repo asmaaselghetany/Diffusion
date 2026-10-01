@@ -119,8 +119,6 @@ def resolve(
   if 'complementary' in selected_set and 'shift' not in selected_set:
     warnings.append(
         'complementary without shift — Fast-dLLM recipe usually pairs both')
-  if 'arpc' in selected_set and arm != 'uniform':
-    raise ValueError('arpc is uniform-only')
   if 'hybrid_p10' in selected_set:
     warnings.append(
         'hybrid_p10 pins default p_uniform=0.1; real effect is --arm hybrid')
@@ -161,7 +159,8 @@ _BARE_ALGO_HOOKS = frozenset({
     'joint_ar_alpha', 'hybrid_p_uniform', 'hybrid_decode',
     'block_size_mixture', 'causal_clean_stream', 'stratified_gamma',
     'block_weights', 'block_size_per_gpu', 'pure_noise_block_sizes',
-    'loss_type_special_cases',
+    'loss_type_special_cases', 'single_stream_train', 'hub_struct_attn_only',
+    'uniform_simplex_mode',
 })
 _BARE_SAMPLING_HOOKS = frozenset({
     'hierarchical_kv', 'use_block_cache', 'single_stream_decode',

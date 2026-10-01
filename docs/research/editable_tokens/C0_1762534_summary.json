@@ -1,0 +1,43 @@
+{
+  "model": "C0",
+  "job": "1762534",
+  "source": "samples",
+  "valid_for_go_threshold": true,
+  "n_dataset": 541,
+  "n_matched": 541,
+  "n_missing_prompts": 0,
+  "prompt_level_strict_acc": {
+    "mean": 0.2033271719038817,
+    "ci95": [
+      0.17005545286506468,
+      0.2365988909426987
+    ],
+    "n": 541
+  },
+  "prompt_level_loose_acc": {
+    "mean": 0.25693160813308685,
+    "ci95": [
+      0.2199630314232902,
+      0.2957486136783734
+    ],
+    "n": 541
+  },
+  "n_failures_strict": 431,
+  "failure_family_counts": {
+    "punctuation": 39,
+    "combination": 56,
+    "change_case": 69,
+    "detectable_format": 60,
+    "length_constraints": 61,
+    "language": 17,
+    "startend": 55,
+    "keywords": 56,
+    "detectable_content": 18
+  },
+  "pilot_n": 50,
+  "artifacts": {
+    "scored": "docs/research/editable_tokens/C0_1762534_scored.jsonl",
+    "failures": "docs/research/editable_tokens/C0_1762534_failures.jsonl",
+    "pilot_sheet": "docs/research/editable_tokens/C0_1762534_pilot_label_sheet.csv"
+  }
+}

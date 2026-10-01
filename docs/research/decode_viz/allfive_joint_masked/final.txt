@@ -1,0 +1,9 @@
+<|im_start|>system
+You are a helpful assistant.<|im_end|>
+<|im_start|>user
+Natalia sold clips to 48 of her friends in April, and then she sold half as many clips in May. How many clips did Natalia sell altogether in April and May?<|im_end|>
+<|im_start|>assistant
+<think>
+Okay, let's see. I need to find out how many clips Natalia sold in April and May. The problem says she sold 48 clips in April and half as many in May. Hmm, let's break it down.
+
+First, in April, she sold 48 clips. Then in May, she sold half of that. So, half of 48 would be 24. That's straightforward. So the total clips sold would be 48 plus 2

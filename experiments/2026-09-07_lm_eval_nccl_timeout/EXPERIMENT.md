@@ -1155,3 +1155,396 @@ hubmatch thr=1, `TASKS=mmlu,humaneval,humaneval_plus,mbpp,mbpp_plus` (gsm8k/ifev
 | **1767240** | C2 `1763301` | `…/1763301/lm_eval_m2048_hubmatch_t1_mmlu_code` |
 
 After: assemble vs Hub 1.5B (MMLU~55, HumanEval~44/40, MBPP~50/41, IFEval~47).
+
+### Updates — Hub mix Pareto + merge + axis expansion (2026-09-16)
+
+**Status before today:** C2 recipe works; Hub gaps remain on MMLU/IFEval. Row-mix search mapped a **chat↔math Pareto front** (not a single winning mix). Fast-dLLM publishes LLaMA-Nemotron post-training **subset** without ratios (~3.15B tokens @ 1.5B from step math).
+
+| Ref | Mix | MMLU | GSM8K | IFEval |
+|-----|-----|------|-------|--------|
+| Hub 1.5B | (undisclosed subset) | 53.5 | 62.8 | 44.4 |
+| Chat-only C2 `1773298` | chat,safety,science | **40.3** | 43.4 | 23.8 |
+| Math1M/code500k C2 `1763301` | +math/code caps | 30.6 | **66.8** | 22.4 |
+| Mix sweeps | various | ~29–32 | ~57–62 | ~21–24 |
+
+**Decision:** Stop further row-mix grids. Treat Axis-1 as “recipe works; quality mix-limited under unpublished ratio.” Expand transformation space (NLD / uniform / hybrid / native) while waiting on queue.
+
+#### Checkpoint merges (chat × math)
+
+Linear merge `1773298` × `1763301` at α∈{0.3,0.5,0.7} →
+`Diffusion/outputs/block_qwen/merge_C2_chat1773298_math1763301_a{30,50,70}/`.
+
+| Job | α | Notes |
+|-----|---|-------|
+| 1826351–53 | 0.3/0.5/0.7 | **CANCELLED by 0** (~2 min) — node prologue/health (`jpbo-030-47` drained) |
+| **1836666–68** | 0.3/0.5/0.7 | Resubmitted hubmatch `mmlu,gsm8k,ifeval` 8×4 — **PENDING** |
+
+#### Explorative trains queued 2026-09-16 (chat/safety/science unless noted)
+
+| Job | Cell | Nodes | Scale |
+|-----|------|-------|-------|
+| **1836723** | C5_causal_clean (masked, NLD joint) | 8 | paper |
+| **1836725** | C2+C5 (fdllm + joint AR) | 8 | paper |
+| **1836729** | B1 uniform **C0-style** (`neutral`, no BlockGen levers) | 8 | paper |
+| **1836776** | C5 joint on **uniform** | 8 | paper |
+| **1836795** | N0 native uniform | 8 | paper |
+| **1836796** | Native masked floor (`neutral` `line=block`) | 8 | paper |
+| **1836800** | Continue-FT chat`1773298`→math1M/code500k, max_steps=7500 | 8 | paper |
+| **1836811** | B4_hybrid_p10 | 8 | paper |
+| **1836802** | C5 uniform | 1 | micro |
+| **1836803** | N0 uniform | 1 | micro |
+| **1836812** | B4 hybrid | 1 | micro |
+
+**Ops:** Fixed stale `ar2block_hybrid.sbatch` (old uni-d2 path / no `--account=scifi`) so B4 submits on booster.
+
+**Git:** Local commit `22dc66b` (Hub eval + C5/merge tooling) — **push blocked** (no GitHub credentials on login node). Branch `ar-to-diffusion-qwen` ahead 1.
+
+**Not updated elsewhere:** `PAPER_EXPERIMENTS.md` / `LEVERS.md` still describe cells; this log is the live job ledger.
+
+
+### Updates — uniform/hybrid MMLU eval fix (2026-09-17)
+
+**Root cause:** auto-eval after train forced `FORCE_STACK=fastdllm_lm_eval` +
+`paper_acc` (likelihood `mmlu`) onto uniform/hybrid ckpts. Masked first-token
+CE loglikelihood is invalid for Unif(V)/hybrid (`require_masked_likelihood`).
+
+**Literature:** BlockGen reports generative GSM8K + ELBO/GenPPL (no MMLU LL).
+LLaDA-Instruct uses conditional generation for MCQ. Duo uses a USDM likelihood
+bound — not our masked heuristic.
+
+**Fix:** (1) launch honors arm — masked keeps hubmatch `paper_acc`; uniform/hybrid
+route `blockgen_arpc`. (2) hybrid classified like uniform. (3) new suite
+`paper_gen` = `mmlu_generative,gsm8k,ifeval`. (4) `blockgen_arpc` submits
+offline + ARPC + generative lm-eval.
+
+**Relaunch:** offline/ARPC/gen for `1836729`, `1836811`, `1836795`, `1836776`
+→ jobs `1848191`–`1848202`.
+
+### Updates — overnight wave + uniform C0/C2 + BlockGen transfer (2026-09-17 ~08:05)
+
+#### Merge evals (chat×math linear; hubmatch) — DONE
+
+| α | Job | MMLU | GSM8K | IFEval |
+|---|-----|------|-------|--------|
+| 0.3 | `1836666` | 38.5 | **64.5** | 22.9 |
+| 0.5 | `1836667` | 39.3 | 59.9 | 21.1 |
+| 0.7 | `1836668` | **41.4** | 55.0 | **24.6** |
+
+Still on chat↔math Pareto; IFEval ~21–25 (Hub ~44). No three-way Hub close.
+
+#### Explorative trains — DONE + scored (hubmatch where available)
+
+| Job | Cell | Mix (as run) | MMLU | GSM | IFEval | Notes |
+|-----|------|--------------|------|-----|--------|-------|
+| `1836723` | C5_causal_clean masked | chat/safety/science | 42.0 | 38.5 | 25.0 | best IF among ours |
+| `1836725` | C2+C5 masked | (fdllm+joint) | 29.8 | 44.0 | 21.1 | |
+| `1836800` | continue-FT chat→math | math1M/code500k | 38.1 | 59.8 | 23.3 | did not beat merge α=0.3 GSM |
+| `1836796` | native masked floor | | 23.0 | 0.5 | 8.1 | scratch floor |
+| `1836729` | B1 uniform neutral | **chat-only** (mismatched vs C0) | — | — | — | gen eval pending |
+| `1836776` | joint_ar+causal_clean uniform | chat-only | — | — | — | gen eval pending |
+| `1836795` | N0 native uniform | | — | — | — | gen eval pending |
+| `1836811` | B4 hybrid p10 | | — | — | — | gen eval pending; no ARPC |
+
+First auto lm-eval on uniform/hybrid (`1841567/83/205/2682`) **FAILED** on likelihood MMLU — see prior fix note.
+
+#### paper_gen relaunch (2026-09-17)
+
+| Job | Role | State (~08:05) |
+|-----|------|----------------|
+| `1848191/94/97/200` | offline eval | **COMPLETED** |
+| `1848192/95/98/201` | ARPC | **FAILED** — Hydra struct: ckpt cfg missing `sampling.use_arpc`; need `+sampling.…` |
+| `1848193/96/99/202` | `paper_gen` lm-eval | **RUNNING** (~1.6h, on `mmlu_generative`) |
+
+**ARPC fix:** `scripts/slurm/arpc_decode_eval.sbatch` now uses `+sampling.use_arpc=true` (etc.). Resubmitted uniform-only ARPC: `1849336`–`1849338` (skipped hybrid).
+
+#### Best mix decision + uniform C0 / recipe+ / BlockGen transfer
+
+**Mix for matched uniform spine:** same as masked C0/C2-math —  
+`NEMOTRON_SFT_SPLITS=chat,safety,science,math,code` (math1M / code500k defaults).
+
+**Constraint:** Fast-dLLM C2 train levers are **masked-only** (`BlockTrainer`). Uniform “C2” ≠ fdllm hooks.
+
+| Preset | Meaning | Job | State |
+|--------|---------|-----|-------|
+| **U0** | uniform ≈ C0 (hooks off, math mix) | `1848814` | **FAILED** CUDA node death exit 9 (~6m) |
+| **U0** retry | same | **`1849335`** | **RUNNING** |
+| **U2** | uniform recipe+ = `joint_ar`+`causal_clean` (NLD-style; **not** BlockGen) | **`1848844`** | **RUNNING** (~42m) |
+| **xfer_blockgen_uniform_32** | AR→uniform + official BlockGen hook stack (1+32 5/95, u-strat, pure_noise@1, CE@1). Train hydra baked **`arpc_corruption=divergence`** (pre-fix registry). Decode must force **`ar_metric`/`nll`** (`eval_arpc_armetric`). **Transfer**, not native BlockGen. Gap: no `x0_causal`. | **`1849287`** | **DONE** |
+| duplicates `1848871/73` | U0/U2 double-submit | CANCELLED | |
+
+#### Absorb ARPC (masked BlockGen equivalent) — enabled 2026-09-17
+
+BlockGen ARPC on absorb is now first-class (was uniform-only refuse):
+
+- Sampler: masked guided steps remask lowest-LL tokens with `mask_id`
+- Pins match TinyGSM scripts: `arpc_mode=blockgen`, `arpc_corruption_mode=ar_metric`, `arpc_ar_metric=nll`
+- Lever `arpc_blockgen` / presets `B3_arpc`, `xfer_arpc`, **`xfer_bg_mix_32_arpc`** allow `arms: [masked, uniform]`
+- Decode: `scripts/slurm/arpc_decode_eval.sbatch` (forces `unmask_threshold=null`)
+- Prerequisite: size-1 in train mix (`xfer_bg_mix_32` jobs **1855537** / **1855541** qualify once done)
+
+#### C0/U0 skeleton + BlockGen mixture (fair cross-arm)
+
+Same train levers on **both** arms (no ARPC — masked-compatible). Math mix. Not renaming C0/U0.
+
+| Preset | Arm | Meaning | Job | State |
+|--------|-----|---------|-----|-------|
+| **xfer_bg_mix_32** | masked | C0 skeleton + 1+32 @5/95 + u-strat + pure_noise@1 + CE@1 | **`1855537`** | **PENDING** |
+| **xfer_bg_mix_32** | uniform | U0 skeleton + same mix (pair of above; no ARPC pin) | **`1855541`** | **PENDING** |
+| **xfer_bg_mix_32_arpc** | masked/uniform | same mix + absorb/uniform ARPC decode pins | — | use after mix train, or launch fresh |
+
+Overrides: `block_weights=[0.05,…,0.95]`, `u-stratified`, `pure_noise_block_sizes=[1]`, `loss_type_special_cases=[1,ce]`; `BLOCK=32`, paper 6k/256. Tag=`xfer_bg_mix_32`.
+
+Registry adds: `U0`, `U2`, `xfer_bg_mix_32`, `xfer_bg_mix_32_arpc`, `xfer_blockgen_uniform` (1+16, need `BLOCK=16`), `xfer_blockgen_uniform_32`.
+
+Audited upstream: `third_party/blockgen` ([jdeschena/blockgen](https://github.com/jdeschena/blockgen)); OWT script `scripts/train/owt/blockgen_uniform_1_16.sh`.
+
+**Thesis naming:** Conv-Base/Conv-Full for masked; U0/U2/xfer for uniform. Old chat-only uniform B1 is appendix-only (mix mismatch).
+
+**Still open:** C3 AR SFT; Tab 2 lever ablation; Hub final ratios; paper_gen SUMMARYs; U0/U2/xfer + xfer_bg_mix scores; absorb ARPC eval on 1855537.
+
+### Fix — fake free-gen collapse + ARPC spam (2026-09-17 ~13:55)
+
+**Not model collapse.** `conversion_free` prefixes contain `<|im_end|>` after the
+system turn. `_truncate_im_end` and gen-PPL `first_chunk_only` treated that as
+generation EOS → `samples.txt` looked empty and metrics showed eos_rate=1.0 /
+PPL≈402 with honesty_warning.
+
+**Code:** prefix-aware truncate (`generate_samples.py`) + prefix_len-aware EOS
+trim/stats (`generative_ppl.py`). ARPC submit gated on `EVAL_HAS_ARPC_SIZE1`
+(`submit_family_eval` / `_infer_block_qwen_eval_profile.bash`); trainer size-1
+check is warn-only on decode. Tests in `test_decode_profiles.py` (9 passed).
+
+**Recomputed** U0 `1849335` / xfer `1849287` offline metrics:
+| cell | gen-PPL (fixed) | eos_rate | mean toks to EOS |
+|------|-----------------|----------|------------------|
+| U0 | ~60.8 | 0.17 | ~1766 |
+| xfer | ~55.2 | 0.09 | ~1882 |
+
+ARPC on U0/U2/chat-only uniforms **correctly skipped** (no size-1). Keep ARPC
+for `xfer_*` / `xfer_bg_mix_*` only. Re-decode U2 `1848844` after its offline
+eval finishes (same fix).
+
+### Hygiene — unigram entropy beside GenPPL (2026-09-17)
+
+Unifusion-style: `generative_ppl` now writes sample-mean Shannon unigram H
+(nats, eval tokenizer, prefix stripped) + flags `low_ppl_low_unigram_entropy`
+when PPL&lt;80 and H&lt;4.5. Tests in `test_decode_profiles.py`. Merged into
+existing U0/xfer `gen_ppl_metrics.json` (no model reload):
+
+| cell | gen-PPL | H_mean | H_med | honesty | cite? |
+|------|---------|--------|-------|---------|-------|
+| U0 | 60.8 | **6.04** | 6.62 | none | hygiene only |
+| xfer | 55.2 | **6.25** | 6.60 | none | hygiene only |
+| U2 | 86.8 | **6.26** | 6.64 | none | hygiene only |
+
+**Collapse gate cleared ≠ fluency.** Decodes are word-salad / soup under
+`conversion_free`; `full_length_rate`≈0.83–0.91. Cite as
+`(PPL, H)` hygiene only — never as “fluent.” Ranking
+`xfer < U0 < U2` is confounded (xfer has BlockGen train geometry).
+
+### Submitted — thesis-critical C3 + Tab 2 (2026-09-17 ~13:58)
+
+Fixed stale `ar_sft.sbatch` (was `/fast` + 2-GPU standard) → Jupiter booster
+8×4, math mix. `submit_paper_cell.sh` now pins math1M/code500k for C3 + lever cells.
+
+| Cell | Job | Mix | Notes |
+|------|-----|-----|-------|
+| **C3** AR SFT | **`1856100`** | chat+safety+science+math1M+code500k | RQ2 / Tab 1 |
+| **C2_shift** | **`1856101`** | same | Tab 2 |
+| **C2_comp** | **`1856103`** | same | Tab 2 (warn: comp alone) |
+| **C2_fdllm** | **`1856105`** | same | Tab 2 strict shift+comp |
+
+U2 offline `1854401` still running; watcher re-decodes + gen-PPL when done
+(`slurm_logs/u2_redecode_watch.log`).
+
+### Fix + resubmit — C3 `1856100` FAILED (2026-09-17)
+
+**Cause:** `ar_sft.sbatch` used plain `srun` without restoring
+`CUDA_VISIBLE_DEVICES=0,1,2,3`. Slurm prolog sets per-task CVD=`[0]` → Lightning
+`trainer.devices=4` → `MisconfigurationException: requested [0,1,2,3] but only [0]`.
+Exit ~2.5 min. Block jobs already use `_block_qwen_ddp.bash` (CVD + `srun_retry`).
+
+**Fix:** `ar_sft.sbatch` now sources shared DDP helper (`run_block_qwen_srun_train`).
+
+**Resubmit:** C3 **`1857271`** (fresh `ar_sft_${jid}`, same 8×4 + math mix).
+
+### Go — U0_shift + U2 hygiene (2026-09-17 ~15:40)
+
+| Item | Result |
+|------|--------|
+| **U0_shift** | Submitted **`1857278`** (`shift_loss_targets`, math mix, paper 8×4) |
+| **U2** `1848844` | Watcher redecode died (`f-string` SyntaxError). Offline metrics already OK (eos_rate=0.125, PPL≈86.8). Rewrote `samples.txt` prefix-aware + merged unigram H (**6.26**, no honesty flag). |
+| C3 | still PENDING **`1857271`** |
+| Tab 2 | `1856101/03/05` RUNNING |
+
+### Unifusion novelty gaps closed (isolated; 2026-09-17 ~16:05)
+
+**Safety:** defaults remain off (`intra_block_attn_anneal_steps=0`,
+`kernel_anneal_steps=0`, `shift_on_hybrid=false`, `track_revisions=false`).
+Canonical C0/C2/U0 recipes and run dirs **untouched**. New cells use fresh
+`ar2block_*_<jid>` + `WANDB_RESUME=never`.
+
+| # | Gap | Implementation | Job |
+|---|-----|----------------|-----|
+| 1 | Intra-block causal→bi anneal | `block_mask.intra_block_open` + presets `U0_anneal` / `C0_anneal` | **`1857471`** / **`1857473`** |
+| 2+3 | Shared x0 / two-stage | `submit_u0_from_c0.sh` → fresh uniform + C0 resume | **`1857519`** |
+| 4 | Revision-rate probe | `sampling.track_revisions` + `revision_probe.sbatch` | **`1857478`** |
+| 5 | Hybrid × x0 | `B4_shift_explorative` (`shift_on_hybrid`) | **`1857476`** |
+| 6 | Joint curriculum | `B4_joint_curriculum` (anneal + kernel_p ramp) | **`1857475`** |
+
+**Rule:** GenPPL never alone → `(PPL, H_mean[, H_med])` via `tools/gen_ppl_hygiene.py`
++ `scripts/run_gen_ppl_hygiene.sh` / `submit_gen_ppl_hygiene.sh` / cell **C4**.
+
+| Piece | Status |
+|-------|--------|
+| Pair sidecars + collapse panels | Done offline for U0/xfer/U2 |
+| Dual GenPPL + NFE {8,16,32,64} + panel | **C0** `1857349`, **U0** `1857352` (+multiseed), **C2math** `1857356` |
+| Optional WinoGrande slice | **C0** `1857350`, **U0** `1857353` (C3 when `1857271` done) |
+| Docs | `PAPER_EXPERIMENTS.md` Fig 4 / reporting rule; `cells.yaml` C4 notes |
+
+### Plan add — gated AR→masked→uniform (`U0_from_C0`) (2026-09-17)
+
+Unifusion: direct AR→uniform ≈ two-stage on GenPPL. We still **plan to try**
+block-Instruct continue-FT from C0/`1762534` → uniform **only if** direct U0
+`1849335` paper_gen is weak vs C0 (see `PAPER_EXPERIMENTS_POPULATED.md` §5
+Axis C follow-up). Priority behind C3 + Tab 2. Optional `U0_from_C2` only if
+warm-start helps.
+
+### Plan + code — Unifusion-style shift on uniform (`U0_shift`) (2026-09-17)
+
+**Same idea as Unifusion \(x_0\) shift** (logits at i → clean i+1); our hook is
+`shift_loss_targets` (Fast-dLLM). Was masked-only; now
+`LOSS_SPECIAL_CASE_POLICY=masked_and_uniform`. Hybrid still refuses.
+
+| Cell | Job / status |
+|------|----------------|
+| C0 vs **C0_shift**/C2_shift | C2_shift train **`1856101`** |
+| U0 vs **U0_shift** | Planned; `./scripts/submit_paper_cell.sh U0_shift` |
+
+See populated §5 Axis D follow-up.
+
+### Ops — C3 id + duplicate U0_from_C0 (2026-09-17 ~16:42)
+
+- C3 `1857271` CANCELLED → replacement **`1857323`** (PENDING; same CVD-fixed `ar_sft.sbatch`).
+- Duplicate U0_from_C0: cancelled **`1857518`** (Diffusion path resume); keep **`1857519`** (Diffusion-new C0 `last.ckpt`, max_steps=7500).
+
+### Fix — GenPPL / ARPC deep-audit (2026-09-17 ~17:15)
+
+**What was wrong**
+1. Status line “fluency OK” overclaimed collapse-gate pass as linguistic fluency.
+2. xfer ARPC GenPPL≈402 (`eval_arpc`, n=8) = **prefix-EOS bug** (first EOS at
+   chat `<|im_end|>`); `samples.txt` truncated; tensor still had long gens.
+3. That ARPC job (`1853871`) used **`corruption=divergence`**; TinyGSM pin is
+   **`ar_metric`/`nll`**. Train `1849287` hydra also baked divergence (registry
+   still had that default at launch; working tree now `ar_metric`).
+4. U2 `block_elbo_sweep` **size-1 PPL≈459** vs U0/xfer ≈3.5 — do not cite size-1
+   until joint_ar/causal_clean ELBO path audited (4/16/32 look normal).
+
+**Fixes shipped**
+- Default `sampling.arpc_corruption_mode=ar_metric` (`configs/sampling/block.yaml`,
+  `BlockSampler`, registry `arpc_blockgen`, `submit_family_eval` exports).
+- GenPPL: `citeable=false` on too-few-tokens / short-span honesty; `fluency_note`
+  on high `full_length_rate`; hygiene `pair_from_metrics` refuses unciteable.
+- Legacy ARPC → `eval_arpc_legacy_divergence_prefixbug/`; `samples.txt` rewritten
+  prefix-aware; metrics stubbed unciteable.
+- Fresh ARPC decode **`1858745`** → `eval_arpc_armetric/` (n=64, ar_metric/nll).
+  Result: **(82.7, H̄=6.35)** citeable as hygiene; **worse** than ancestral baseline
+  55.2 — do not claim ARPC helps GenPPL on this convert xfer ckpt. Still soup
+  (`full_length_rate`≈0.98).
+
+**Cite rule:** baseline `eval/` (PPL,H) hygiene only; **never** cite ARPC≈402;
+use `eval_arpc_armetric` (82.7) if comparing ARPC at all.
+
+**Still true (not fixed by the above code):**
+1. Free-gen under `conversion_free` is still **soup**.
+2. **xfer ≠ U0 recipe** — do not rank/interpret as matched uniform.
+
+### Fix — U2 size-1 ELBO meter (2026-09-18)
+
+**Root cause:** `block_elbo_sweep` / `BlockTrainer.nll(train_mode=False)` scored
+size-1 with continuous-time **ELBO** over \(t\sim U(0,1)\). BlockGen eval
+(`third_party/blockgen/algo.py`) uses **CE + pure noise (t=1)** at size-1.
+Joint-AR/causal_clean models (U2) are over-confident at low-t under size-1
+attention → ELBO terms explode (PPL≈459). Size 4/16/32 ELBO was always fine.
+
+**Audit:** U2 vs U0 fixed-t probe — size-1 t=0.1 NLL 8.5 vs 1.6; size-32 t=0.1
+both healthy. Zeroing `joint_ar_alpha` at eval did not change diffusion NLL
+(path was already diffusion-only).
+
+**Fix:** eval `block_size==1` → CE + `t=1` (training unchanged). Sweep annotates
+`meter=ce_pure_noise`. Unit test `test_size1_eval_uses_ce_not_elbo`.
+
+**Re-sweep (30 val batches, BlockGen size-1 meter):**
+
+| cell | size-1 (CE+t=1) | size-4 ELBO | size-32 ELBO |
+|------|-----------------|-------------|--------------|
+| U2 `1848844` | **9.89** (was 459) | 4.13 | 5.73 |
+| U0 `1849335` | **3.76** | 4.37 | 5.34 |
+
+Cite size-1 rows again under the CE meter; keep free-gen soup / xfer≠U0 as STILL-TRUE.
+
+### Deep-dive — STILL-TRUE soup + xfer≠U0 (2026-09-18)
+
+Full writeup: `docs/research/DESIGN_LOCKS.md` § Deep-dive — STILL-TRUE.
+
+**Soup:** U0/xfer/U2/C0 open free-gen all `soup_not_fluent` (FLR 0.83–0.91, H̄ healthy).
+Primary cause = open-header OOD meter; ARPC/NFE/prefix fixes failed as fluency.
+**Action:** demote open free-gen; lead with conditional Instruct.
+
+**xfer≠U0:** `1849287` = 1+32@5/95 + u-strat + pure_noise + CE@1 + ARPC bake;
+U0 levers empty. GenPPL 55&lt;61 confounded; mix_u without ARPC is **66&gt;61**.
+**Action:** xfer only in RQ-B2/X tables; never claim K / matched U0 floor.
+
+### Fix — paper_gen 12h TIMEOUT on mmlu_generative (2026-09-18)
+
+**Cause:** `MAX_NEW=2048` paid in full by BlockSampler; task `until` stops only
+truncate **after** decode. MMLU-gen never finished in 12h.
+
+**Fix:** `cap_max_new_for_task` ceilings — mmlu_generative→64, gsm8k→512,
+ifeval→1024 (`block_qwen_eval_utils.py` + `generate_until`).
+
+**Ops:** cancelled hung `1862499/3036/3135`. Resubmitted paper_gen →
+`lm_eval_paper_gen_cap/`:
+| cell | job |
+|------|-----|
+| U0 `1849335` | **1870627** |
+| xfer `1849287` | **1870628** |
+| U2 `1848844` | **1870629** |
+| xfer_mix_u `1855541` | **1870630** |
+| U0_shift `1857278` | **1870631** |
+| U0_anneal `1857471` | **1870632** |
+| U0_from_C0 `1857519` | **1870633** |
+| B4_joint `1857475` | **1870634** |
+
+### Hub Fast-dLLM × C2 mix correctness check (2026-09-22)
+
+External judge for masked Fast-dLLM pipeline: Hub LMFlow train on our C2
+Nemotron mix (math≤1M, code≤500k, chat/safety/science) from Qwen→Fast_dLLM
+init, then Hub `eval.py` / lm-eval.
+
+| Piece | Path / job |
+|-------|------------|
+| Init | `/e/scratch/scifi/elsayed3/hub_fastdllm_c2/init_qwen15b` (Qwen weights → Hub arch) |
+| Data | `…/data/c2_mix` — 2,280,138 conversations (~12G JSON) |
+| Train | **`1951718`** `hub-fdllm-c2-tr` (8×4, 6k steps, GBS 256, L=2048) |
+| Eval (afterok) | **`1951719`** `hub-fdllm-c2-ev` → Hub lm-eval mmlu/gsm8k/ifeval thr=1 |
+| Scripts | `scripts/submit_hub_fastdllm_c2.sh`, `scripts/slurm/hub_fastdllm_c2_train.sbatch` |
+
+Compare Hub-trained-on-C2 GSM vs our C2 `1763301` (~67) vs public Hub 1.5B (~62–63).
+
+### U0 hierarchical GSM canary `1950105` — COMPLETED (2026-09-22)
+
+Locked protocol: `DECODE_PROFILE=hierarchical`, `FORCE_GREEDY=0`, ckpt `1849335`.
+
+| Metric | Score |
+|--------|-------|
+| GSM flexible-extract | **6.37%** (±0.67) |
+| GSM strict-match | **0.0%** |
+
+**Verdict:** hierarchical alone does **not** lift U0 off ~6% chance-range. Do **not** requeue full U-family on hierarchy hope. Residual is train/recipe (or deeper decode), not the old baseline+greedy protocol bug.
+Out: `…/ar2block_uniform_1849335/lm_eval_hier_gsm_canary_20260922/`
+**Deep audit:** `docs/research/DEEP_AUDIT_U0_CANARY_2026-09-22.md` — hierarchical engaged;
+residual = fluent wrong CoT / ancestral uniform science (not protocol). Next: C0 ancestral
+fairness control; optional ARPC/low-T / single_stream smoke; retrain under V_eff lock.
+
+

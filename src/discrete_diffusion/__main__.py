@@ -47,7 +47,10 @@ def _print_config(config: omegaconf.DictConfig, resolve: bool = True, save_cfg: 
 
 @hydra.main(version_base=None, config_path=CONFIG_PATH, config_name='config')
 def main(config):
-  L.seed_everything(config.seed)
+  # workers=True seeds DataLoader workers via PL_GLOBAL_SEED (needed with
+  # worker_init_fn in get_dataloaders). Without it, multi-worker shuffle is
+  # non-deterministic across ranks/runs.
+  L.seed_everything(config.seed, workers=True)
   _print_config(config)
 
   logger = utils.get_logger(__name__)

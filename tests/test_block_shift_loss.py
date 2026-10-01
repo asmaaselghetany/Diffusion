@@ -44,6 +44,7 @@ def _bare_masked_trainer(*, shift: bool) -> SimpleNamespace:
       loss_weighting='elbo',
       _plain_ce_mask_buf=None,
       _plain_ce_token_count=None,
+      tokenizer=None,
   )
 
   def _corrupt(x0, t, *, block_size, corruption_mask=None, **_kwargs):
@@ -70,6 +71,20 @@ def _bare_masked_trainer(*, shift: bool) -> SimpleNamespace:
   m._record_plain_ce_mask = lambda mp: BlockTrainer._record_plain_ce_mask(m, mp)
   m._loss = lambda *a, **k: BlockTrainer._loss(m, *a, **k)
   return m
+
+
+def test_uniform_loss_shift_shortens_to_t_minus_1():
+  """Unifusion port: uniform + shift also drops last logit / first label."""
+  m = _bare_masked_trainer(shift=True)
+  m.forward_process_name = 'uniform'
+  b, t, v = 2, 8, 32
+  logits = torch.randn(b, t, v)
+  xt = torch.randint(1, v, (b, t))
+  x0 = torch.randint(1, v, (b, t))
+  alpha = torch.full((b, t), 0.5)
+  dalpha = torch.full((b, t), -0.5)
+  loss = BlockTrainer._uniform_loss(m, logits, xt, x0, alpha, dalpha)
+  assert loss.shape == (b, t - 1)
 
 
 def test_masked_loss_shift_shortens_to_t_minus_1():

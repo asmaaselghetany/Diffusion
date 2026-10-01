@@ -37,10 +37,21 @@ class BlockHybridForwardProcess(ForwardProcess):
           f'hybrid p_uniform must be in [0, 1], got {self.p_uniform}')
 
   def _uniform_excluding_mask(self, shape, device, dtype) -> torch.Tensor:
-    """Sample Unif({0..V-1} \\ {mask_id})."""
-    u = torch.randint(
-        0, self.vocab_size - 1, shape, device=device, dtype=dtype)
-    return torch.where(u >= self.mask_id, u + 1, u)
+    """Sample Unif({0..V-1} \\ reserved specials)."""
+    from .utils import (
+        resolve_uniform_exclude_ids,
+        sample_uniform_excluding_mask,
+    )
+    exclude = resolve_uniform_exclude_ids(
+        self.tokenizer, mask_id=self.mask_id, vocab_size=self.vocab_size)
+    return sample_uniform_excluding_mask(
+        shape,
+        vocab_size=self.vocab_size,
+        mask_id=self.mask_id,
+        device=device,
+        dtype=dtype,
+        exclude_ids=exclude,
+    )
 
   @torch.no_grad()
   def forward(

@@ -7,18 +7,58 @@ AR→block conversion. Geometry on conversion uses `xfer_*` presets and must not
 be tagged BlockGen. Legacy `submit_blockgen_lever_micro.sh` is **retired** (it
 hardcoded `ar2block_*.sbatch`).
 
-## What BlockGen actually does (uniform)
+## What BlockGen does (absorb + uniform)
 
-| Piece | BlockGen | Our native wiring |
-|-------|----------|-------------------|
+| Piece | BlockGen | Our wiring |
+|-------|----------|------------|
 | Init | Scratch Block-DiT | `line=block` (`load_pretrained=false`) |
-| Corruption | Uniform-state (Duo-style) via `BlockGenUniform` | `algo=block_uniform` |
+| Corruption | Absorb **or** uniform within block | `algo=block_masked` / `block_uniform` |
 | Default `loss_type` | **`elbo`** | `loss_type: elbo` — already on |
 | Special cases | CE at block size 1 | lever `ce_at_1` |
 | Block sizes | `block_weights` over powers of 2 | `bg_weights_*` + optional list mixture |
 | Stratified size draw | `u-stratified` | lever `u_stratified` |
 | Pure noise @1 | yes | lever `pure_noise_1` |
-| Decode | Ancestral + **ARPC** (needs size 1 in mix) | `arpc_blockgen` |
+| Decode | Ancestral + **ARPC** (needs size 1 in mix) | `arpc_blockgen` on **masked or uniform** |
+| Generate packing | `[clean_prefix \| noisy_block]` | Conversion floor: `block_gen_logits` under `hierarchical` (both arms) |
+
+**ARPC absorb:** propose clean block → score with \(L'=1\) AR NLL → remask
+lowest-LL tokens with `[MASK]`. Pins: `arpc_mode=blockgen`,
+`arpc_corruption_mode=ar_metric`, `arpc_ar_metric=nll` (matches
+`third_party/blockgen/scripts/sample/*/blockgen_absorb_ar_then_arpc*.sh`).
+Uniform uses the same scorer; re-noise is Unif(V) instead of MASK.
+
+**Conversion decode bake-off (not native BlockGen claim):**
+
+| Cell | Profile | Meaning |
+|------|---------|---------|
+| B1 | `hierarchical` | BlockGen packing + conf remask thr=0.9 (contract floor) |
+| B2 | `hierarchical_arpc` | Same packing + ARPC at T=1 (decode probe OK without size-1 train) |
+| Quiet lever | `hierarchical_quiet` | ss + T≈0.1 + ARPC (TinyGSM-ish; not B2) |
+
+Conversion transfer train geometry: `xfer_bg_mix_32` (Fast-dLLM soft defaults)
+/ `xfer_bg_mix_32_blockgen` (hard pure-noise + `x0_causal`) /
+`xfer_bg_mix_32_arpc` / `xfer_bg_mix_32_arpc_blockgen` /
+`xfer_bg_mix_32_blockgen_ss` (+ `_ss_shift`) / `xfer_bg_mix_32_blockgen_unifv`
+(`uniform_simplex_mode=blockgen`).
+Map: `FAIR_AR2BLOCK_MAP.md` · `BASELINE.md` · `AR2BLOCK_GSM_TABLE.md`.
+
+### Side-by-side train options (bake later)
+
+| Knob | Fast-dLLM default | BlockGen opt-in lever |
+|------|-------------------|----------------------|
+| Size-1 noise | `pure_noise_1` → `t=1` Bernoulli (`pure_noise_mode=soft`) | + `pure_noise_hard` → hard MASK/Unif fill |
+| Clean-stream attn | block-causal x0→x0 | `x0_causal` → token-causal |
+| Train packing | dual concat(xt,x0) | `single_stream_train` + `single_stream_decode` |
+| Simplex | `Unif(V\E)` conversion | `unif_v_blockgen` → literal `Unif(V)` |
+
+Queued `xfer_bg_mix_32` stays soft. To compare:
+```bash
+./scripts/submit_lever.sh --preset xfer_bg_mix_32 --arm uniform --paper
+./scripts/submit_lever.sh --preset xfer_bg_mix_32_blockgen --arm uniform --paper
+./scripts/submit_lever.sh --preset xfer_bg_mix_32_blockgen_ss --arm uniform --paper
+./scripts/submit_lever.sh --preset xfer_bg_mix_32_blockgen_ss_shift --arm uniform --paper
+./scripts/submit_lever.sh --preset xfer_bg_mix_32_blockgen_unifv --arm uniform --paper
+```
 
 ### Name collision (do not conflate)
 

@@ -82,6 +82,14 @@ flash-attn = [
 liger = [
     "liger-kernel>=0.4.0",
 ]
+# Cluster extras also listed in requirements.txt (keep in sync).
+lm-eval = [
+    "lm-eval @ git+https://github.com/EleutherAI/lm-evaluation-harness",
+]
+mamba = [
+    "causal-conv1d==1.4.0",
+    "mamba-ssm==1.2.0.post1",
+]
 
 [project.scripts]
 uni-d2 = "discrete_diffusion.__main__:main"

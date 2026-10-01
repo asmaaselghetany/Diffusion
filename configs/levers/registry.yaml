@@ -20,7 +20,72 @@ presets:
   # --- Conversion family (AR→block) ---
   C0:
     levers: []
+    arms: [masked, uniform]
+    line: [ar2block]
+  # Uniform-arm conversion floor matched to masked C0 (same data/budget).
+  # Fast-dLLM C2 train hooks are masked-only (BlockTrainer lock) — do not
+  # request C2_fdllm_full on uniform.
+  U0:
+    levers: []
+    arms: [uniform]
+    line: [ar2block]
+  # U0 + Hub-decode train packing (xt-only under eval_block_diff_mask).
+  # Isolates dual-stream concat(xt,x0) train vs single-stream decode mismatch.
+  # Fresh run from AR init — do not retarget dual-stream resume mid-flight.
+  U0_ss_pack:
+    levers: [single_stream_train, single_stream_decode]
+    arms: [uniform]
+    line: [ar2block]
+  # Unifusion-faithful conversion probe: shift-as-x0 + Hub-decode train packing.
+  # Isolates oracle-N2C gap (#1) and missing shift (#3) together.
+  U0_ss_shift:
+    levers: [single_stream_train, single_stream_decode, shift]
+    arms: [uniform]
+    line: [ar2block]
+  # C0 + shift only (= Tab-2 C2_shift). Alias for Unifusion/Fast-dLLM x0 compare.
+  C0_shift:
+    levers: [shift]
     arms: [masked]
+    line: [ar2block]
+  # U0 + Unifusion-style shifted AR logits as x0 (uniform arm).
+  U0_shift:
+    levers: [shift]
+    arms: [uniform]
+    line: [ar2block]
+  # Paper C3: AR→full-seq diffusion (Unifusion floor). MUST launch with
+  # BLOCK=2048 (= model.length); submit_lever / submit_paper_cell pin that.
+  # HISTORICAL FAIL (2104831): shift-only — missing causal→bi anneal + ss packing.
+  # See docs/research/C3_UNIFUSION_GAP_2026-09-30.md.
+  C3_fullseq:
+    levers: [shift]
+    arms: [uniform]
+    line: [ar2block]
+  # C3 retry (Unifusion §3.2): shift + causal→bi anneal + single-stream xt packing.
+  # Still missing paper time-conditioning (Qwen-block has no AdaLN) — residual.
+  C3_fullseq_v2:
+    levers: [shift, intra_block_anneal, single_stream_train, single_stream_decode]
+    arms: [uniform]
+    line: [ar2block]
+  # --- Unifusion novelty probes (isolated; do NOT alias into C0/C2/U0) ---
+  C0_anneal:
+    levers: [intra_block_anneal]
+    arms: [masked]
+    line: [ar2block]
+  U0_anneal:
+    levers: [intra_block_anneal]
+    arms: [uniform]
+    line: [ar2block]
+  U0_anneal_shift:
+    levers: [intra_block_anneal, shift]
+    arms: [uniform]
+    line: [ar2block]
+  B4_joint_curriculum:
+    levers: [hybrid_p50, intra_block_anneal, kernel_anneal]
+    arms: [hybrid]
+    line: [ar2block]
+  B4_shift_explorative:
+    levers: [hybrid_p10, shift, shift_on_hybrid]
+    arms: [hybrid]
     line: [ar2block]
   C2_shift:
     levers: [shift]
@@ -38,6 +103,12 @@ presets:
     levers: [shift, complementary, mask_schedule_fdllm, loss_plain_ce, hub_train_parity]
     arms: [masked]
     line: [ar2block]
+  # Uniform-arm recipe positive control (joint AR). Not Fast-dLLM C2 — those
+  # levers refuse uniform. Use with the same Nemotron mix as masked C0/C2-math.
+  U2:
+    levers: [joint_ar, causal_clean]
+    arms: [uniform]
+    line: [ar2block]
   # Fast-dLLM v2 one-to-one on our stack: full train recipe + decode caches.
   # Pair with scripts/submit_fastdllm.sh (locks line=ar2block, Nemotron, paper scale).
   fastdllm_v2:
@@ -46,11 +117,11 @@ presets:
     line: [ar2block]
   C5_joint_ar:
     levers: [joint_ar]
-    arms: [masked]
+    arms: [masked, uniform]
     line: [ar2block]
   C5_causal_clean:
     levers: [joint_ar, causal_clean]
-    arms: [masked]
+    arms: [masked, uniform]
     line: [ar2block]
   B4_hybrid_p10:
     levers: [hybrid_p10]
@@ -77,11 +148,11 @@ presets:
     line: [block]
   B3_arpc:
     levers: [mixture_1_32, arpc_blockgen]
-    arms: [uniform]
+    arms: [masked, uniform]
     line: [block]
   B3_arpc_simplified:
     levers: [mixture_1_32, arpc]
-    arms: [uniform]
+    arms: [masked, uniform]
     line: [block]
   B3_weights_32:
     levers: [bg_weights_1_32]
@@ -107,7 +178,7 @@ presets:
     line: [ar2block]
   xfer_arpc:
     levers: [mixture_1_32, arpc_blockgen]
-    arms: [uniform]
+    arms: [masked, uniform]
     line: [ar2block]
   xfer_weights_32:
     levers: [bg_weights_1_32]
@@ -116,6 +187,61 @@ presets:
   xfer_u_stratified:
     levers: [bg_weights_1_16, u_stratified]
     arms: [masked, uniform]
+    line: [ar2block]
+  # C0/U0 skeleton + BlockGen train mixture only (1+32 @ 5/95).
+  # Same levers on masked and uniform — fair cross-arm geometry ablation.
+  # No ARPC pin here; use xfer_bg_mix_32_arpc (or decode-only ARPC) after train.
+  # Soft pure-noise (t=1 Bernoulli) + Fast-dLLM block-causal x0 — default.
+  # Not a native BlockGen claim (line=ar2block, AR-init).
+  xfer_bg_mix_32:
+    levers: [bg_weights_1_32, u_stratified, pure_noise_1, ce_at_1]
+    arms: [masked, uniform]
+    line: [ar2block]
+  # Same mix + BlockGen hard pure-noise fill + token-causal clean stream.
+  # Side-by-side with xfer_bg_mix_32 to bake which train parity wins.
+  xfer_bg_mix_32_blockgen:
+    levers: [bg_weights_1_32, u_stratified, pure_noise_1, pure_noise_hard, ce_at_1, x0_causal]
+    arms: [masked, uniform]
+    line: [ar2block]
+  # Same train mixture + BlockGen absorb/uniform ARPC decode pins (ar_metric/nll).
+  # Matches third_party/blockgen scripts blockgen_{absorb,uniform}_ar_then_arpc*.sh.
+  xfer_bg_mix_32_arpc:
+    levers: [bg_weights_1_32, u_stratified, pure_noise_1, ce_at_1, arpc_blockgen]
+    arms: [masked, uniform]
+    line: [ar2block]
+  # ARPC + hard BlockGen train parity (hard fill + x0_causal).
+  xfer_bg_mix_32_arpc_blockgen:
+    levers: [bg_weights_1_32, u_stratified, pure_noise_1, pure_noise_hard, ce_at_1, x0_causal, arpc_blockgen]
+    arms: [masked, uniform]
+    line: [ar2block]
+  # Close ORACLE-N2C: hard BlockGen mix + Hub/BlockGen single-stream packing.
+  xfer_bg_mix_32_blockgen_ss:
+    levers: [bg_weights_1_32, u_stratified, pure_noise_1, pure_noise_hard, ce_at_1, x0_causal, single_stream_train, single_stream_decode]
+    arms: [uniform]
+    line: [ar2block]
+  # N2C close + Unifusion shift-as-x0 (best combined attack cell).
+  xfer_bg_mix_32_blockgen_ss_shift:
+    levers: [bg_weights_1_32, u_stratified, pure_noise_1, pure_noise_hard, ce_at_1, x0_causal, single_stream_train, single_stream_decode, shift]
+    arms: [uniform]
+    line: [ar2block]
+  # Literal Unif(V) simplex ablation on hard BlockGen mix (still keeps MASK id).
+  xfer_bg_mix_32_blockgen_unifv:
+    levers: [bg_weights_1_32, u_stratified, pure_noise_1, pure_noise_hard, ce_at_1, x0_causal, unif_v_blockgen]
+    arms: [uniform]
+    line: [ar2block]
+  # Full official uniform BlockGen train+ARPC hook stack on AR-init (transfer).
+  # Mirrors third_party/blockgen/scripts/train/owt/blockgen_uniform_1_16.sh
+  # + arpc_blockgen decode pins. MUST launch with BLOCK=16 (submit_lever default
+  # is 32 — mismatch breaks decode). Tag as transfer, never native BlockGen.
+  xfer_blockgen_uniform:
+    levers: [bg_weights_1_16, u_stratified, pure_noise_1, ce_at_1, arpc_blockgen]
+    arms: [uniform]
+    line: [ar2block]
+  # TinyGSM-style 1+32 (0.05/0.95) — matches our conversion block_size=32 spine.
+  # Launch with BLOCK=32 (default). Still transfer, not a BlockGen recreate.
+  xfer_blockgen_uniform_32:
+    levers: [bg_weights_1_32, u_stratified, pure_noise_1, ce_at_1, arpc_blockgen]
+    arms: [uniform]
     line: [ar2block]
 
   # Decode (eval on either family's ckpt).
@@ -153,15 +279,59 @@ presets:
 levers:
   # --- Fast-dLLM (conversion + masked only) ---
   shift:
-    source: Fast-dLLM v2
+    source: Fast-dLLM v2 / Unifusion x0 alignment
     family: conversion
     overrides:
       - algo.shift_loss_targets=true
-    arms: [masked]
+    arms: [masked, uniform, hybrid]
     line: [ar2block]
     conflicts: []
     requires: []
-    notes: "Shifted CE at mask sites; sampler auto-aligns via shift_loss_targets."
+    notes: >
+      Shifted CE: logits at i score clean token i+1 (AR next-token as x0).
+      Masked = Fast-dLLM; uniform = Unifusion-style port (BlockTrainer
+      LOSS_SPECIAL_CASE_POLICY masked_and_uniform). Hybrid needs shift_on_hybrid.
+      Sampler align_shift_logits follows algo.shift_loss_targets.
+
+  shift_on_hybrid:
+    source: Unifusion x0 interface explorative (hybrid)
+    family: conversion
+    overrides:
+      - algo.shift_on_hybrid=true
+    arms: [hybrid]
+    line: [ar2block]
+    conflicts: []
+    requires: [shift]
+    notes: >
+      EXPLORATIVE ONLY. Opt-in unlock for shift on hybrid. Default B4 refuses
+      shift. Do not use on main B4_hybrid_p10 claim rows.
+
+  intra_block_anneal:
+    source: Unifusion causal→bi anneal (block-local port)
+    family: conversion
+    overrides:
+      - algo.intra_block_attn_anneal_steps=2000
+    arms: [masked, uniform, hybrid]
+    line: [ar2block]
+    conflicts: []
+    requires: []
+    notes: >
+      Anneal intra-block attention from causal (open=0) to full bi (open=1)
+      over 2000 steps. Across-block mask unchanged. Default 0 = legacy full bi.
+      Isolated presets C0_anneal / U0_anneal only — never fold into C0/C2/U0.
+
+  kernel_anneal:
+    source: Unifusion kernel curriculum (mask→uniform via hybrid p)
+    family: conversion
+    overrides:
+      - algo.kernel_anneal_steps=2000
+    arms: [hybrid]
+    line: [ar2block]
+    conflicts: []
+    requires: []
+    notes: >
+      Ramp hybrid_p_uniform from 0 → configured p over 2000 steps. Hybrid arm
+      only. Pair with B4_joint_curriculum. Does not rewrite C0/U0 dirs.
 
   complementary:
     source: Fast-dLLM v2
@@ -328,7 +498,29 @@ levers:
     conflicts: []
     requires: [mixture_1_32, bg_weights_1_16, bg_weights_1_32]
     require_mode: any
-    notes: "Force t=1 when training at block size 1."
+    notes: "Force t=1 when training at block size 1 (soft Bernoulli by default)."
+
+  pure_noise_hard:
+    source: BlockGen q_xt(use_pure_noise=True)
+    family: native
+    overrides:
+      - algo.pure_noise_mode=hard
+    arms: [masked, uniform]
+    line: [block, ar2block]
+    conflicts: []
+    requires: [pure_noise_1]
+    notes: "Hard MASK/Unif fill on supervised sites (vs soft t=1 Bernoulli)."
+
+  x0_causal:
+    source: BlockGen model.x0_causal
+    family: native
+    overrides:
+      - algo.x0_causal=true
+    arms: [masked, uniform]
+    line: [block, ar2block]
+    conflicts: []
+    requires: []
+    notes: "Token-causal clean stream (vs Fast-dLLM block-causal x0→x0)."
 
   ce_at_1:
     source: BlockGen loss_type_special_cases
@@ -348,7 +540,7 @@ levers:
     overrides:
       - sampling.use_arpc=true
       - sampling.arpc_mode=simplified
-    arms: [uniform]
+    arms: [masked, uniform]
     line: [block, ar2block]
     conflicts: [arpc_blockgen]
     requires: [mixture_1_32, bg_weights_1_16, bg_weights_1_32]
@@ -356,21 +548,24 @@ levers:
     notes: "Prefix fill + confidence resample (legacy simplified path)."
 
   arpc_blockgen:
-    source: BlockGen ARPC (full modes)
+    source: BlockGen ARPC (absorb + uniform)
     family: native
     overrides:
       - sampling.use_arpc=true
       - sampling.arpc_mode=blockgen
-      - sampling.arpc_corruption_mode=divergence
+      - sampling.arpc_corruption_mode=ar_metric
+      - sampling.arpc_ar_metric=nll
       - sampling.arpc_use_prefix_fill=false
-    arms: [uniform]
+    arms: [masked, uniform]
     line: [block, ar2block]
     conflicts: [arpc]
     requires: [mixture_1_32, bg_weights_1_16, bg_weights_1_32]
     require_mode: any
     notes: >
-      In-loop predictor–corrector with divergence/diffusion/ar/random
-      corruption modes (BlockGen). AR verify via causal logits.
+      In-loop predictor–corrector matching BlockGen TinyGSM scripts
+      (corruption=ar_metric, ar_metric=nll). Absorb remasks with MASK;
+      uniform redraws Unif(V). Requires size-1 mass in train mixture.
+      Override sampling.arpc_corruption_mode=divergence for the older pin.
 
   hierarchical_kv:
     source: Fast-dLLM hierarchical decode
@@ -411,6 +606,35 @@ levers:
     notes: >
       Decode with Hub single-stream block-causal mask (not dual-stream train
       concat). Exactness cells should enable this with hierarchical_kv/dual_cache.
+
+  single_stream_train:
+    source: Hub/BlockGen decode packing matched at train (eval_block_diff_mask)
+    family: conversion
+    overrides:
+      - algo.single_stream_train=true
+    arms: [uniform]
+    line: [ar2block, block]
+    conflicts: []
+    requires: []
+    notes: >
+      Train forward xt only under eval_block_diff_mask (no concat(xt,x0)).
+      Pair with single_stream_decode. Incompatible with joint_ar unless
+      causal_clean_stream=true. Prefer fresh U0_ss_pack — do not flip mid-resume.
+
+  unif_v_blockgen:
+    source: BlockGen/Duo literal Unif(V) simplex (ablation on conversion vocab)
+    family: conversion
+    overrides:
+      - algo.uniform_simplex_mode=blockgen
+    arms: [uniform]
+    line: [ar2block, block]
+    conflicts: []
+    requires: []
+    notes: >
+      Empty exclude set for FP/ELBO/prior/ARPC redraw → Unif(V) including MASK
+      as an ordinary id. Instruct-safe conversion default remains
+      uniform_simplex_mode=conversion (Unif(V\E) + EOS redraw carve).
+      Not a silent U0 default — ablation only.
 
   # --- NLD / C5 (conversion) ---
   joint_ar:

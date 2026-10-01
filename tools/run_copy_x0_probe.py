@@ -30,24 +30,16 @@ from discrete_diffusion.models.block_mask import build_block_diff_bool_mask
 
 
 def _load(checkpoint: str, device: str):
-  from discrete_diffusion.algorithms.block_trainer import BlockTrainer
-  from discrete_diffusion.data import get_tokenizer
+  from discrete_diffusion.evaluations.checkpoint_utils import (
+      load_block_trainer_checkpoint,
+  )
   from discrete_diffusion.train import register_config_resolvers
-  from omegaconf import DictConfig, OmegaConf
+  from omegaconf import OmegaConf
 
-  # HYDRA-CKPT-MUL: ckpt configs still carry ${mul:…}/${div_up:…}; resolve
-  # before get_dataloaders / model construction.
   register_config_resolvers()
-  ckpt = torch.load(checkpoint, map_location=device, weights_only=False)
-  config = ckpt['hyper_parameters']['config']
-  if not isinstance(config, DictConfig):
-    config = OmegaConf.create(config)
+  model, config, tokenizer = load_block_trainer_checkpoint(
+      checkpoint, torch.device(device))
   OmegaConf.resolve(config)
-  tokenizer = get_tokenizer(config)
-  model = BlockTrainer.load_from_checkpoint(
-      checkpoint, config=config, tokenizer=tokenizer, map_location=device)
-  model.eval()
-  model.to(device)
   return model, tokenizer, config
 
 

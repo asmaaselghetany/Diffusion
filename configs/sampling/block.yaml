@@ -3,6 +3,9 @@
 #   Fast-dLLM exactness → unmask_threshold + greedy + DualCache/single_stream
 #   BlockGen exactness  → use_arpc + arpc_mode=blockgen
 # Default below = DECODE_PROFILE=baseline (no confidence, no ARPC, no DualCache).
+#
+# ``predictor`` is a leftover UNI-D² field (AbsorbingSampler / non-block algos).
+# Block path ignores it — Hydra ``sampler._target_`` selects BlockSampler.
 predictor: ddpm_cache
 steps: 32
 inject_bos: True
@@ -17,7 +20,9 @@ use_arpc: False
 arpc_mode: simplified
 arpc_prefix_frac: 0.25
 arpc_resample_tau: 0.5
-arpc_corruption_mode: divergence   # random|divergence|diffusion_metric|ar_metric
+# BlockGen TinyGSM default = ar_metric/nll (not divergence). Old pin:
+#   sampling.arpc_corruption_mode=divergence
+arpc_corruption_mode: ar_metric    # random|divergence|diffusion_metric|ar_metric
 arpc_divergence_measure: kld       # kld|reverse_kld|tvd
 arpc_diffusion_metric: confidence  # entropy|confidence|margin
 arpc_ar_metric: nll                # nll|gap_to_top1|entropy
@@ -25,6 +30,18 @@ arpc_warmup_steps: 0
 arpc_guide_every: 1
 # Softmax temperature for ARPC proposal / resample (1.0 = unchanged).
 arpc_temperature: 1.0
+# Temperature on p(x0) before ancestral / uniform categorical draws
+# (1.0 = unchanged; <1 sharpens — BlockGen TinyGSM often ~0.1).
+x0_temperature: 1.0
+# Uniform DualCache-*commit* analog (DECODE_PROFILE=uniform_dual).
+# Hub-clean: sticky + thr + force-max; revise off. Ignored on masked.
+uniform_confidence_sticky: false
+uniform_commit_revise: false
+# Ablation: randomize UCC force-max site order (bake D5). Default off.
+uniform_commit_random: false
+# UCC force-max site order: confidence | random | ltr
+uniform_commit_order: confidence
+sticky_min_conf: 0.0
 # null → true for simplified, false for blockgen (set explicitly to override)
 arpc_use_prefix_fill: null
 # null = follow algo.shift_loss_targets; true/false forces A/B.
@@ -36,11 +53,17 @@ sub_block_size: null
 greedy: False
 # Fast-dLLM confidence commit (null = ancestral random denoise step).
 unmask_threshold: null
-# Progressive truncated decode (prefix+active only) + causal KV for ARPC.
-hierarchical_kv: False
+# Progressive truncated decode (prefix+active only).
+# BlockGen skeleton floor = truncated packing + mid-α ancestral
+# (``block_gen_logits`` = ``[clean_prefix | noisy_block]``).
+# Full-seq dual is ablation-only via allow_full_seq_decode.
+hierarchical_kv: True
+# BlockGen uniform posterior: fast (default) | naive (materialize q_xs).
+posterior_sampler: fast
 # Fast-dLLM DualCache replace_position splice (requires hierarchical_kv).
 use_block_cache: False
-# Hub generate: single-stream block-causal (not dual-stream train concat).
+# False = truncated dual (train graph; BlockGen skeleton floor).
+# True = Hub single-stream (hubmatch / DualCache levers).
 single_stream_decode: False
 # Hub AR block-bridge after each fully unmasked attention block
 # (generation_functions.py ~81-85). null = auto ON for masked+shift, OFF else.
@@ -53,6 +76,13 @@ ban_mask_pad_logits: True
 pad_after_eos: True
 # Stop scheduling later blocks once all rows emitted EOS.
 stop_on_eos: True
+# Ablation only: allow full-seq dual open-loop (refuses hierarchical_ss
+# coerce). Default false — DESIGN_LOCKS SKELETON-OPENLOOP. Env override:
+# ALLOW_FULL_SEQ_DECODE=1.
+allow_full_seq_decode: False
+# Editable-token probe (uniform): count token flips across reverse steps.
+# Default off — enable only for Unifusion novelty eval (do not pollute baseline).
+track_revisions: False
 # Family-aware free sample mode for train SampleSaver / base.generate_samples.
 # auto → conversion_free (Nemotron/ar2block) vs native_free (OWT/block).
 sample_mode: auto

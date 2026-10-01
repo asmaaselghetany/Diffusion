@@ -11,5 +11,5 @@ def test_trim_token_rows_keeps_eos_for_first_chunk():
   out = _trim_token_rows_at_eos(rows, eos)
   assert out.shape[0] == 2
   assert out[0, 2] == eos
-  assert out[0, 3] == 0
+  assert out[0, 3] == eos  # pad with eos, not token 0 ('!' on Qwen)
   assert out[1, 3] == eos

@@ -16,9 +16,9 @@ set -euo pipefail
 ARM="${1:?Usage: _block_qwen_launch.bash <masked|uniform|hybrid>}"
 
 case "${ARM}" in
-  masked)  ALGO=block_masked ;;
-  uniform) ALGO=block_uniform ;;
-  hybrid)  ALGO=block_hybrid ;;
+  masked)  ALGO=block_masked; SAMPLING=block ;;
+  uniform) ALGO=block_uniform; SAMPLING=block_uniform ;;
+  hybrid)  ALGO=block_hybrid; SAMPLING=block ;;
   *)
     echo "Unknown arm: ${ARM} (expected masked, uniform, or hybrid)" >&2
     exit 1
@@ -78,6 +78,9 @@ append_block_qwen_trainer_overrides
 if [[ "${LINE}" == "block" || "${LINE}" == "blockgen" ]]; then
   _append_override "model.load_pretrained" "false"
 fi
+# Force arm sampling group (soft append loses to HYDRA_OVERRIDES=sampling=block
+# on uniform → silent full-seq baseline geometry).
+_force_override "sampling" "${SAMPLING}"
 
 RUN_BASENAME="$(basename "${RUN_ROOT}")"
 # Canonical 6000-step paper arms → stable ids in project block_qwen.
@@ -162,19 +165,49 @@ fi
 if [[ -n "${CKPT}" && "${STEP}" =~ ^[0-9]+$ && "${STEP}" -ge "${MAX_STEPS}" ]]; then
   if [[ "${RUN_FULL_EVAL:-true}" == "true" ]]; then
     echo "=== Training finished at step ${STEP} (>= max_steps=${MAX_STEPS}); submitting eval for ${CKPT} ==="
-    # Critical: unset TMPDIR/TEMP/TMP so the child does not inherit
-    # /tmp/block_qwen_<this_train_jid> (missing on the eval node → mktemp FAIL).
-    # Family router: masked → 8×4 hubmatch lm-eval; uniform → offline/ARPC.
+    # Critical: strip TMP* AND every eval knob that may have leaked into the
+    # train allocation via sbatch --export=ALL (parity / bake / UCC shells).
+    # VAR="${VAR:-default}" would KEEP a polluted parent value and can
+    # auto-eval into the wrong OUT_DIR / profile / suite (clobber + waste).
     # shellcheck disable=SC1091
+    _AUTO_EVAL_UNSET=(
+      -u TMPDIR -u TEMP -u TMP
+      -u FORCE_STACK -u FORCE_DECODE_PROFILE -u FORCE_UNMASK_THRESHOLD
+      -u FORCE_GREEDY_PIN -u FORCE_GREEDY -u FORCE_ARPC
+      -u OUT_DIR -u SUITE -u TASKS -u JOB_NAME
+      -u DECODE_PROFILE -u UNMASK_THRESHOLD -u ALLOW_FULL_SEQ_DECODE
+      -u EVAL_DECODE_PROFILE -u ARPC_OUT -u HYGIENE_OUT -u CKPT
+    )
+    # Family router (do NOT force fastdllm hubmatch onto uniform/hybrid — that
+    # path runs likelihood MMLU and raises NotImplementedError):
+    #   masked  → hubmatch paper_acc (conversion accuracy default)
+    #   uniform/hybrid → blockgen_arpc (offline+ARPC+generative paper_gen)
     if [[ -x "${REPO_ROOT}/scripts/submit_family_eval.sh" ]]; then
-      env -u TMPDIR -u TEMP -u TMP \
-        NUM_NODES="${AUTO_EVAL_NUM_NODES:-${NUM_NODES:-8}}" \
-        FORCE_STACK="${FORCE_STACK:-fastdllm_lm_eval}" \
-        FORCE_DECODE_PROFILE="${FORCE_DECODE_PROFILE:-hubmatch}" \
-        FORCE_UNMASK_THRESHOLD="${FORCE_UNMASK_THRESHOLD:-1}" \
-        FORCE_GREEDY_PIN="${FORCE_GREEDY_PIN:-1}" \
-        bash "${REPO_ROOT}/scripts/submit_family_eval.sh" "${CKPT}" \
-        || echo "WARNING: failed to submit family eval for ${CKPT}" >&2
+      case "${ARM}" in
+        masked)
+          env "${_AUTO_EVAL_UNSET[@]}" \
+            NUM_NODES="${AUTO_EVAL_NUM_NODES:-${NUM_NODES:-8}}" \
+            FORCE_STACK=fastdllm_lm_eval \
+            FORCE_DECODE_PROFILE=hubmatch \
+            FORCE_UNMASK_THRESHOLD=1 \
+            FORCE_GREEDY_PIN=1 \
+            bash "${REPO_ROOT}/scripts/submit_family_eval.sh" "${CKPT}" \
+            || echo "WARNING: failed to submit family eval for ${CKPT}" >&2
+          ;;
+        uniform|hybrid)
+          # Clean env + infer; never inherit masked/UCC FORCE_* from train shell.
+          env "${_AUTO_EVAL_UNSET[@]}" \
+            NUM_NODES="${AUTO_EVAL_NUM_NODES:-${NUM_NODES:-8}}" \
+            bash "${REPO_ROOT}/scripts/submit_family_eval.sh" "${CKPT}" \
+            || echo "WARNING: failed to submit family eval for ${CKPT}" >&2
+          ;;
+        *)
+          env "${_AUTO_EVAL_UNSET[@]}" \
+            NUM_NODES="${AUTO_EVAL_NUM_NODES:-${NUM_NODES:-8}}" \
+            bash "${REPO_ROOT}/scripts/submit_family_eval.sh" "${CKPT}" \
+            || echo "WARNING: failed to submit family eval for ${CKPT}" >&2
+          ;;
+      esac
     else
       env -u TMPDIR -u TEMP -u TMP \
         sbatch scripts/slurm/eval_checkpoint.sbatch "${CKPT}" \

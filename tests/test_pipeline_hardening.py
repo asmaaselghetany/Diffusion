@@ -109,15 +109,31 @@ def test_export_ema_shape_assert_and_noise_refuse(monkeypatch):
 
 
 def test_seq_extend_restores_num_tokens_and_backbone_n_tokens():
-  """Smoke the lockstep restore contract used by block_qwen_lm_eval."""
+  """Exercise the real ``temporary_model_seq_len`` try/finally contract."""
+  from discrete_diffusion.evaluations.block_qwen_eval_utils import (
+      temporary_model_seq_len,
+  )
+
   backbone = SimpleNamespace(n_tokens=2048)
   model = SimpleNamespace(num_tokens=2048, backbone=backbone)
-  prev_num, prev_n = model.num_tokens, backbone.n_tokens
-  seq_len = 4096
-  model.num_tokens = seq_len
-  backbone.n_tokens = seq_len
-  # simulate finally
-  model.num_tokens = prev_num
-  backbone.n_tokens = prev_n
+  holder = SimpleNamespace(seq_len=2048)
+
+  with temporary_model_seq_len(model, 4096, seq_len_holder=holder) as ctx:
+    assert ctx.extended
+    assert model.num_tokens == 4096
+    assert backbone.n_tokens == 4096
+    assert holder.seq_len == 4096
   assert model.num_tokens == 2048
   assert backbone.n_tokens == 2048
+  assert holder.seq_len == 2048
+
+  # Restore must run even when the body raises.
+  try:
+    with temporary_model_seq_len(model, 8192, seq_len_holder=holder):
+      assert model.num_tokens == 8192
+      raise RuntimeError('boom')
+  except RuntimeError:
+    pass
+  assert model.num_tokens == 2048
+  assert backbone.n_tokens == 2048
+  assert holder.seq_len == 2048

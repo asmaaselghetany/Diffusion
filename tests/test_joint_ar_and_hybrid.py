@@ -59,7 +59,11 @@ def _bare_joint(*, alpha: float, causal: bool = False) -> SimpleNamespace:
       mask_schedule='alpha',
       joint_ar_alpha=alpha,
       causal_clean_stream=causal,
+      loss_weighting='elbo',
+      hub_struct_attn_only=False,
       _pending_clean_logits=None,
+      _plain_ce_mask_buf=None,
+      _plain_ce_token_count=None,
       _last_ar_nll=None,
       _last_diff_nll=None,
   )
@@ -232,6 +236,7 @@ def test_hybrid_shift_refused():
           'loss_type': 'elbo',
           'ignore_bos': True,
           'shift_loss_targets': True,
+          'shift_on_hybrid': False,
           'complementary_masks': False,
           'mask_schedule': 'alpha',
           'block_size_mixture': [],
@@ -243,6 +248,9 @@ def test_hybrid_shift_refused():
           'hybrid_p_uniform': 0.1,
           'joint_ar_alpha': 0.0,
           'causal_clean_stream': False,
+          'hybrid_decode': 'masked',
+          'intra_block_attn_anneal_steps': 0,
+          'kernel_anneal_steps': 0,
       },
       'model': {'length': 16},
       'block_size': 4,
@@ -251,8 +259,82 @@ def test_hybrid_shift_refused():
       'seed': 0,
   })
   with patch.object(base_mod.TrainerBase, '__init__', _fake_trainer_base_init):
-    with pytest.raises(ValueError, match='shift_loss_targets.*masked-only'):
+    with pytest.raises(ValueError, match='shift_on_hybrid'):
       BlockTrainer(cfg, _Tok())
+
+
+def test_hybrid_shift_on_hybrid_forward_finite():
+  """B4_shift_explorative: shared T−1 grid; finite hybrid loss (P0 regression)."""
+  from types import SimpleNamespace
+  m = SimpleNamespace(
+      mask_id=7,
+      neg_infinity=-1e6,
+      vocab_size=32,
+      forward_process_name='hybrid',
+      shift_loss_targets=True,
+      loss_weighting='elbo',
+      tokenizer=None,
+  )
+  m._record_plain_ce_mask = lambda *_a, **_k: None
+  m._masked_loss = lambda *a, **k: BlockTrainer._masked_loss(m, *a, **k)
+  b, t, v = 2, 8, 32
+  torch.manual_seed(1)
+  logits = torch.randn(b, t, v)
+  x0 = torch.randint(0, v, (b, t))
+  x0 = torch.where(x0 == 7, x0 + 1, x0)
+  xt = x0.clone()
+  xt[:, 2] = 7
+  xt[:, 4] = (x0[:, 4] + 3) % v
+  xt[:, 4] = torch.where(xt[:, 4] == 7, xt[:, 4] + 1, xt[:, 4])
+  alpha = torch.full((b, t), 0.5)
+  dalpha = torch.full((b, t), -0.5)
+  loss = BlockTrainer._hybrid_loss(m, logits, xt, x0, alpha, dalpha)
+  assert loss.shape == (b, t - 1)
+  assert torch.isfinite(loss).all()
+  # Shifted grid: planted mask/unif at cols 2/4 still land on the T−1 loss.
+  assert (loss[:, 1].abs() > 0).all()  # was xt[:, 2] mask
+  assert (loss[:, 3].abs() > 0).all()  # was xt[:, 4] unif
+
+
+def test_uniform_allows_shift_unifusion_port():
+  """Unifusion-style: shift_loss_targets OK on uniform (hybrid still refused)."""
+  import omegaconf
+  import discrete_diffusion.algorithms.base as base_mod
+
+  cfg = omegaconf.OmegaConf.create({
+      'algo': {
+          'forward_process_name': 'uniform',
+          'parameterization': 'subs',
+          'time_conditioning': False,
+          'T': 0,
+          'loss_type': 'elbo',
+          'ignore_bos': True,
+          'shift_loss_targets': True,
+          'complementary_masks': False,
+          'mask_schedule': 'alpha',
+          'block_size_mixture': [],
+          'block_weights': None,
+          'block_size_per_gpu': None,
+          'stratified_gamma': None,
+          'pure_noise_block_sizes': [],
+          'loss_type_special_cases': [],
+          'hybrid_p_uniform': 0.1,
+          'joint_ar_alpha': 0.0,
+          'causal_clean_stream': False,
+          'loss_weighting': 'elbo',
+          'hub_struct_attn_only': False,
+          'hybrid_decode': 'masked',
+      },
+      'model': {'length': 16},
+      'block_size': 4,
+      'sampling': {'predictor': 'ddpm', 'use_arpc': False},
+      'training': {'antithetic_sampling': False},
+      'seed': 0,
+  })
+  with patch.object(base_mod.TrainerBase, '__init__', _fake_trainer_base_init):
+    m = BlockTrainer(cfg, _Tok())
+  assert m.shift_loss_targets is True
+  assert m.forward_process_name == 'uniform'
 
 
 def test_hybrid_loss_uses_v_minus_1_and_routes_sites():
@@ -264,6 +346,7 @@ def test_hybrid_loss_uses_v_minus_1_and_routes_sites():
       vocab_size=32,
       forward_process_name='hybrid',
       shift_loss_targets=False,
+      tokenizer=None,
   )
   m._masked_loss = lambda *a, **k: BlockTrainer._masked_loss(m, *a, **k)
   m._uniform_loss = lambda *a, **k: BlockTrainer._uniform_loss(m, *a, **k)
@@ -287,3 +370,85 @@ def test_hybrid_loss_uses_v_minus_1_and_routes_sites():
   assert (loss[clean].abs() < 1e-5).all()
   assert (loss[:, 2].abs() > 0).all()
   assert (loss[:, 4].abs() > 0).all()
+
+
+def test_single_stream_train_refuses_joint_ar_without_causal_clean():
+  import omegaconf
+  import discrete_diffusion.algorithms.base as base_mod
+
+  cfg = omegaconf.OmegaConf.create({
+      'algo': {
+          'forward_process_name': 'uniform',
+          'parameterization': 'mean',
+          'time_conditioning': False,
+          'T': 0,
+          'loss_type': 'elbo',
+          'ignore_bos': True,
+          'shift_loss_targets': False,
+          'complementary_masks': False,
+          'mask_schedule': 'alpha',
+          'block_size_mixture': [],
+          'block_weights': None,
+          'block_size_per_gpu': None,
+          'stratified_gamma': None,
+          'pure_noise_block_sizes': [],
+          'loss_type_special_cases': [],
+          'hybrid_p_uniform': 0.1,
+          'joint_ar_alpha': 0.3,
+          'causal_clean_stream': False,
+          'single_stream_train': True,
+          'loss_weighting': 'elbo',
+          'hub_struct_attn_only': False,
+          'hybrid_decode': 'masked',
+      },
+      'model': {'length': 16},
+      'block_size': 4,
+      'sampling': {'predictor': 'ddpm', 'use_arpc': False},
+      'training': {'antithetic_sampling': False},
+      'seed': 0,
+  })
+  with patch.object(base_mod.TrainerBase, '__init__', _fake_trainer_base_init):
+    with pytest.raises(ValueError, match='single_stream_train'):
+      BlockTrainer(cfg, _Tok())
+
+
+def test_backbone_logits_single_stream_calls_block_train_logits():
+  """Packing switch: no concat; uses backbone.block_train_logits."""
+  calls = {}
+
+  class _BB:
+    def block_train_logits(self, xt, *, active_len=None, block_size=None,
+                           attention_mask=None):
+      calls['xt'] = xt
+      calls['active_len'] = active_len
+      calls['block_size'] = block_size
+      return torch.zeros(xt.shape[0], active_len, 8)
+
+    def __call__(self, *a, **k):
+      raise AssertionError('dual-stream backbone must not be called')
+
+  m = SimpleNamespace(
+      single_stream_train=True,
+      backbone=_BB(),
+  )
+  xt = torch.randint(0, 8, (2, 6))
+  x0 = torch.randint(0, 8, (2, 6))
+  out = BlockTrainer._backbone_logits(m, xt, x0, block_size=4)
+  assert out.shape == (2, 6, 8)
+  assert calls['active_len'] == 6
+  assert calls['block_size'] == 4
+  assert torch.equal(calls['xt'], xt)
+
+
+def test_backbone_logits_dual_stream_concats():
+  class _BB:
+    def __call__(self, x_in, sigma=None, block_size=None, return_both=False,
+                 active_len=None, attention_mask=None):
+      assert x_in.shape[-1] == 12  # concat L+L
+      return torch.zeros(x_in.shape[0], 6, 8)
+
+  m = SimpleNamespace(single_stream_train=False, backbone=_BB())
+  xt = torch.randint(0, 8, (2, 6))
+  x0 = torch.randint(0, 8, (2, 6))
+  out = BlockTrainer._backbone_logits(m, xt, x0, block_size=4)
+  assert out.shape == (2, 6, 8)

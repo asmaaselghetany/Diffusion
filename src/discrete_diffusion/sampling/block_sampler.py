@@ -42,6 +42,8 @@ class BlockSampler(Sampler):
   - ``single_stream_decode``: Hub single-stream block-causal (+ DualCache)
   - ``sub_block_size``: Fast-dLLM small-block windows inside each attention block.
   - ``ar_block_bridge``: Hub post-block AR append (auto ON for masked+shift).
+  - ``use_arpc`` + ``arpc_mode=blockgen``: BlockGen ARPC on masked (remask) or
+    uniform (redraw). Requires size-1 in the train mixture / block_weights.
   """
 
   def __init__(self, config, forward_process=None) -> None:
@@ -59,7 +61,7 @@ class BlockSampler(Sampler):
     self.arpc_prefix_frac = float(getattr(sampling, 'arpc_prefix_frac', 0.25))
     self.arpc_resample_tau = float(getattr(sampling, 'arpc_resample_tau', 0.5))
     self.arpc_corruption_mode = str(
-        getattr(sampling, 'arpc_corruption_mode', 'divergence') or 'divergence')
+        getattr(sampling, 'arpc_corruption_mode', 'ar_metric') or 'ar_metric')
     self.arpc_divergence_measure = str(
         getattr(sampling, 'arpc_divergence_measure', 'kld') or 'kld')
     self.arpc_diffusion_metric = str(
@@ -70,6 +72,8 @@ class BlockSampler(Sampler):
     self.arpc_guide_every = int(getattr(sampling, 'arpc_guide_every', 1) or 1)
     self.arpc_temperature = float(
         getattr(sampling, 'arpc_temperature', 1.0) or 1.0)
+    self.x0_temperature = float(
+        getattr(sampling, 'x0_temperature', 1.0) or 1.0)
     raw_prefix = getattr(sampling, 'arpc_use_prefix_fill', None)
     if raw_prefix is None or raw_prefix == 'null':
       self.arpc_use_prefix_fill = self.arpc_mode == 'simplified'
@@ -84,10 +88,65 @@ class BlockSampler(Sampler):
     self.use_block_cache = bool(getattr(sampling, 'use_block_cache', False))
     self.single_stream_decode = bool(
         getattr(sampling, 'single_stream_decode', False))
+    # Ablation escape: keep legacy full-seq dual open-loop (C0 ancestral 2.27%
+    # path). Default False — auto-force hierarchical_ss packing instead.
+    self.allow_full_seq_decode = bool(
+        getattr(sampling, 'allow_full_seq_decode', False)
+        if sampling else False)
+    # Uniform Confidence Commit (UCC): Hub DualCache *commit* analog on
+    # USDM (Unif undecided, not MASK). Not DualCache K/V. Optional revise
+    # is off by default (Hub has none). See DESIGN_LOCKS U0-UNIFORM-COMMIT.
+    self.uniform_confidence_sticky = bool(
+        getattr(sampling, 'uniform_confidence_sticky', False)
+        if sampling else False)
+    # UCC: refuse force-max unless peak conf ≥ this (0 = always force-max,
+    # matching Hub generate force-max).
+    raw_min = (
+        getattr(sampling, 'sticky_min_conf', 0.0) if sampling else 0.0)
+    self.sticky_min_conf = float(raw_min if raw_min not in (None, 'null') else 0.0)
+    # Optional BlockGen-style corrector (NOT Hub DualCache). Default off.
+    self.uniform_commit_revise = bool(
+        getattr(sampling, 'uniform_commit_revise', False)
+        if sampling else False)
+    raw_rev = (
+        getattr(sampling, 'uniform_commit_revise_tau', 0.25)
+        if sampling else 0.25)
+    self.uniform_commit_revise_tau = float(
+        raw_rev if raw_rev not in (None, 'null') else 0.25)
+    # Ablation: pick force-max / thr sites uniformly at random among candidates
+    # instead of by confidence rank. Token value on commit stays argmax(p_x0).
+    # For thr=1 UCC (``uniform_dual``), thr almost never fires → random force-max
+    # is the honest "order doesn't matter" control (bake D5).
+    self.uniform_commit_random = bool(
+        getattr(sampling, 'uniform_commit_random', False)
+        if sampling else False)
+    # Commit site order for UCC force-max: confidence | random | ltr.
+    # ``uniform_commit_random=true`` forces ``random`` (bake D5).
+    raw_order = (
+        getattr(sampling, 'uniform_commit_order', None) if sampling else None)
+    if self.uniform_commit_random:
+      self.uniform_commit_order = 'random'
+    elif raw_order in (None, 'null', ''):
+      self.uniform_commit_order = 'confidence'
+    else:
+      self.uniform_commit_order = str(raw_order).strip().lower()
+      if self.uniform_commit_order not in ('confidence', 'random', 'ltr'):
+        raise ValueError(
+            'sampling.uniform_commit_order must be '
+            f'confidence|random|ltr, got {self.uniform_commit_order!r}')
+    # Per-generate NFE / commit accounting (reset in generate()).
+    self._nfe_stats: dict[str, int] = {}
+    self.last_nfe_stats: dict[str, int] | None = None
+    self._reset_nfe_stats()
+    self._block_sticky_frozen: torch.Tensor | None = None
     # DualCache lifetime matches Hub ``block_past_key_values``: keep across
     # sub-windows inside one attention block; invalidate on new attention
     # block or Hub refresh (first small-block token still MASK).
     self._dual_cache = None
+    # Optional per-reverse-step callback for decode videos / traces.
+    # Signature: hook(event: dict) -> None  (see ``_emit_step_hook``).
+    self.step_hook = None
+    self._decode_trace_step = 0
     self.p_nucleus = float(getattr(sampling, 'p_nucleus', 1.0) if sampling else 1.0)
     raw_thr = getattr(sampling, 'unmask_threshold', None) if sampling else None
     self.unmask_threshold = (
@@ -109,26 +168,69 @@ class BlockSampler(Sampler):
     # Stop scheduling later blocks once every row has emitted EOS in the
     # generated span (audit fix: was filling full 2048 after early collapse).
     self.stop_on_eos = bool(getattr(sampling, 'stop_on_eos', True))
+    # Unifusion editability probe: count token changes under uniform reverse.
+    # Default off — enable via sampling.track_revisions=true (isolated eval).
+    self.track_revisions = bool(
+        getattr(sampling, 'track_revisions', False) if sampling else False)
+    self._revision_stats: dict[str, float] | None = None
+    # BlockGen default posterior sampler is ``fast`` (no full V×L materialize).
+    # ``naive`` materializes q_xs (our previous path / Duo-style).
+    raw_ps = str(
+        getattr(sampling, 'posterior_sampler', 'fast') or 'fast').strip().lower()
+    if raw_ps not in ('fast', 'naive'):
+      raise ValueError(
+          f'sampling.posterior_sampler={raw_ps!r} not in (fast|naive)')
+    self.posterior_sampler = raw_ps
     self._arpc_warned = False
     self._validate_sampling_flags()
+
+  def reset_revision_stats(self) -> None:
+    self._revision_stats = {
+        'token_changes': 0.0,
+        'token_slots': 0.0,
+        'steps_tracked': 0.0,
+    }
+
+  def pop_revision_stats(self) -> dict[str, float] | None:
+    """Return revision rates (or None if tracking disabled / empty)."""
+    if not self.track_revisions or not self._revision_stats:
+      return None
+    s = self._revision_stats
+    slots = float(s.get('token_slots') or 0.0)
+    out = {
+        'revision_token_changes': float(s.get('token_changes') or 0.0),
+        'revision_token_slots': slots,
+        'revision_rate': (
+            float(s['token_changes']) / slots if slots > 0 else 0.0),
+        'revision_steps_tracked': float(s.get('steps_tracked') or 0.0),
+        'note': (
+            'Fraction of (batch,pos) updates that changed the token under '
+            'uniform reverse (editable-token probe). Masked commits are N/A.'),
+    }
+    return out
 
   def _use_block_scope(self) -> bool:
     """Hub densifies only the current attention block (not future MASKs).
 
     True for hierarchical / DualCache / single-stream / confidence decode.
-    Plain ancestral baseline keeps full-seq forwards (legacy C0 path).
+    Open-loop ancestral auto-forces ``hierarchical_kv`` (truncation); only
+    ``allow_full_seq_decode`` keeps legacy full-seq dual.
     """
     return bool(
         self.hierarchical_kv
         or self.use_block_cache
         or self.single_stream_decode
-        or self.unmask_threshold is not None)
+        or self.unmask_threshold is not None
+        or self.uniform_confidence_sticky)
 
   def _validate_sampling_flags(self) -> None:
-    if self.use_arpc and self.forward_process_name != 'uniform':
+    # BlockGen ARPC is corruption-agnostic (absorb remask | uniform redraw).
+    # See third_party/blockgen scripts blockgen_{absorb,uniform}_ar_then_arpc*.sh.
+    if self.use_arpc and self.forward_process_name not in (
+        'uniform', 'masked', 'hybrid'):
       raise ValueError(
-          'sampling.use_arpc=true requires algo.forward_process_name=uniform '
-          f'(got {self.forward_process_name!r}; ARPC is uniform-only)')
+          'sampling.use_arpc=true requires forward_process_name in '
+          f'{{uniform, masked, hybrid}}; got {self.forward_process_name!r}')
     if self.arpc_mode not in _ARPC_MODES:
       raise ValueError(
           f'sampling.arpc_mode={self.arpc_mode!r} not in {_ARPC_MODES}')
@@ -154,6 +256,9 @@ class BlockSampler(Sampler):
     if self.arpc_temperature <= 0:
       raise ValueError(
           f'sampling.arpc_temperature must be > 0, got {self.arpc_temperature}')
+    if self.x0_temperature <= 0:
+      raise ValueError(
+          f'sampling.x0_temperature must be > 0, got {self.x0_temperature}')
     if self.use_block_cache and not self.hierarchical_kv:
       raise ValueError(
           'sampling.use_block_cache=true requires sampling.hierarchical_kv=true')
@@ -168,6 +273,32 @@ class BlockSampler(Sampler):
           'algo.hybrid_decode must be \"masked\" for B4v1 '
           '(DESIGN_LOCKS B4v1); got '
           f'{getattr(self.config.algo, "hybrid_decode", None)!r}')
+    # Refuse full-seq dual open-loop (attend future MASK/Unif) — C0 ancestral
+    # GSM 2.27% on that path. Truncation (hierarchical_kv) is skeleton fairness.
+    # Do NOT force Hub single_stream: dual-trained BlockGen-spine models decode
+    # with truncated dual (``hierarchical``); Fast-dLLM remask uses ss via
+    # hubmatch/dual_cache profiles, not this open-loop auto-force.
+    _open_loop = (
+        not self.allow_full_seq_decode
+        and not self.use_block_cache
+        and self.unmask_threshold is None
+        and not self.uniform_confidence_sticky)
+    if (self.forward_process_name in ('masked', 'uniform', 'hybrid')
+        and _open_loop
+        and not self.hierarchical_kv):
+      logger.warning(
+          '%s open-loop decode without hierarchical_kv (full-seq dual). '
+          'C0 ancestral was 2.27%% GSM on that path. Auto-enabling '
+          'hierarchical_kv. Pass it explicitly to silence.',
+          self.forward_process_name)
+      self.hierarchical_kv = True
+    if self.uniform_confidence_sticky and self.forward_process_name == 'masked':
+      raise ValueError(
+          'sampling.uniform_confidence_sticky is for uniform/hybrid only '
+          '(masked uses DualCache + unmask_threshold)')
+    # UCC works under dual OR single-stream packing. Do NOT force ss=true —
+    # that made the remask twin unfair vs masked B1 (ss=false, sub_block=null).
+    # Opt into Hub ss packing via profile ``uniform_commit_ss`` if needed.
 
   def _maybe_warn_arpc_mixture(self, model) -> None:
     """Codex-fixes: BlockGen ARPC needs size-1 in the train mixture."""
@@ -246,25 +377,46 @@ class BlockSampler(Sampler):
     Hub densifies the full current attention block then slices the denoise
     window. Sub-window ``end`` must therefore be rounded up to the block
     boundary when truncated / DualCache / confidence forwards are active.
+
+    Uniform exception: never extend past ``end``. Masked can attend future
+    MASK in the same attention block; Unif future sites are random noise and
+    pollute single-stream / sticky sub-block decode (``sub_block_size=8``).
     """
     if not self._use_block_scope():
+      return end
+    if not self.is_masked:
       return end
     bs = getattr(model, 'block_size', None)
     if bs is None:
       return end
     return self._attention_block_end(end, int(bs), seq_len)
 
+  def _reset_nfe_stats(self) -> None:
+    self._nfe_stats = {
+        'n_forwards': 0,
+        'n_thr_commits': 0,
+        'n_force_max_commits': 0,
+        'n_commits': 0,
+    }
+    self.last_nfe_stats = None
+
+  def _bump_nfe(self, key: str, n: int = 1) -> None:
+    if not self._nfe_stats:
+      self._reset_nfe_stats()
+    self._nfe_stats[key] = int(self._nfe_stats.get(key, 0)) + int(n)
+
   def _logits(
       self, model, xt: torch.Tensor, x0: torch.Tensor,
       *, active_end: int | None = None,
       window: tuple[int, int] | None = None,
   ) -> tuple[torch.Tensor, ShiftMode]:
-    """Decode logits; Hub single-stream or dual-stream train graph.
+    """Decode logits; BlockGen generate packing, Hub ss, or dual train graph.
 
     Returns ``(logits, shift_mode)``. ``shift_mode='window'`` only on the
     DualCache *replace* path (zeros outside the denoise window); prefill /
     dense / hierarchical full forwards use ``'full'``.
     """
+    self._bump_nfe('n_forwards', 1)
     bs = getattr(model, 'block_size', None)
     use_dc = (
         self.use_block_cache and self.hierarchical_kv
@@ -310,6 +462,37 @@ class BlockSampler(Sampler):
       return model.backbone.block_diff_replace(
           xt, x0, active_len=active_end, window=(w0, w1),
           cache=self._dual_cache, block_size=bs), 'window'
+
+    # BlockGen generate packing (baseline / hierarchical open-loop):
+    # forward(x0=clean_prefix, xt=noisy_window) — not equal-length dual.
+    # Scientific match to third_party/blockgen samplers._run_block_model.
+    gen_fn = getattr(model.backbone, 'block_gen_logits', None)
+    if (gen_fn is not None and window is not None
+        and self.hierarchical_kv and not self.use_block_cache):
+      w0, w1 = window
+      # Prefer clean committed tokens from x0 for the prefix; fall back to xt.
+      prefix = x0[:, :w0] if w0 > 0 else xt[:, :0]
+      xt_b = xt[:, w0:w1]
+      # Match BlockGen: packing must use the trained x0_causal flag.
+      # Hard bake trains token-causal clean stream; default False here
+      # silently decoded block-causal and nullified that lever.
+      x0_causal = bool(getattr(model.backbone, 'x0_causal', False))
+      if not x0_causal:
+        x0_causal = bool(getattr(model, 'x0_causal', False))
+      if not x0_causal:
+        algo = getattr(getattr(model, 'config', None), 'algo', None)
+        x0_causal = bool(getattr(algo, 'x0_causal', False))
+      block_logits = gen_fn(
+          prefix, xt_b, block_size=bs, x0_causal=x0_causal)
+      # Scatter into full-seq buffer so step_fn window indexing is unchanged.
+      bsz, seq_len = xt.shape
+      v = block_logits.shape[-1]
+      full = torch.zeros(
+          bsz, seq_len, v, device=block_logits.device, dtype=block_logits.dtype)
+      full[:, w0:w1] = block_logits
+      # Outside window is zero-padded (like DualCache replace) — window shift.
+      return full, 'window'
+
     if a is not None:
       return model.backbone_logits(xt, x0, active_len=a), 'full'
     return model.backbone_logits(xt, x0), 'full'
@@ -323,7 +506,10 @@ class BlockSampler(Sampler):
     """Whether to run Hub's post-block AR append (masked Fast-dLLM path)."""
     if self._ar_block_bridge_override is not None:
       return bool(self._ar_block_bridge_override)
-    # Auto: Hub parity for masked + shift; never on uniform/ARPC by default.
+    # Auto: Hub parity for masked + shift; never on uniform / ARPC by default
+    # (BlockGen absorb ARPC remasks inside the block; bridge is a different recipe).
+    if self.use_arpc:
+      return False
     return self.is_masked and self._shift_align_enabled(model)
 
   def _maybe_refresh_dual_cache(
@@ -348,10 +534,25 @@ class BlockSampler(Sampler):
         and int(cache_len) != int(active_end)):
       self._dual_cache = None
       return
+    # Uniform redraws change tokens without a MASK signal — Hub's "still MASK
+    # at window start" refresh never fires, leaving stale K/V for rewritten
+    # sites. Always invalidate on bare uniform/hybrid.
+    if not self.is_masked:
+      self._dual_cache = None
+      return
     mask_id = getattr(model, 'mask_id', None)
-    if (self.is_masked and mask_id is not None
+    if (mask_id is not None
         and (xt[:, window_start] == mask_id).any()):
       self._dual_cache = None
+
+  def _apply_x0_temperature(self, probs: torch.Tensor) -> torch.Tensor:
+    """Sharpen / flatten categorical ``p(x0)`` before ancestral draws."""
+    temp = float(self.x0_temperature)
+    if abs(temp - 1.0) < 1e-8:
+      return probs
+    # p' ∝ p^(1/T); T<1 → sharper (quieter ancestral).
+    sharpened = probs.clamp(min=1e-12).pow(1.0 / temp)
+    return sharpened / sharpened.sum(dim=-1, keepdim=True).clamp(min=1e-12)
 
   @staticmethod
   def _apply_top_p(probs: torch.Tensor, top_p: float) -> torch.Tensor:
@@ -384,13 +585,18 @@ class BlockSampler(Sampler):
     )
     if not self.ban_mask_pad_logits:
       return logits
+    logits = logits.clone()
+    neg = float(getattr(model, 'neg_infinity', -1e6))
+    # Ban reserved specials that must not appear as content predictions.
+    # EOS/im_end stays allowed so the model can stop.
+    for mid in self._uniform_exclude_ids(model):
+      if 0 <= int(mid) < logits.size(-1):
+        logits[..., int(mid)] = neg
+    # Masked / hubmatch may leave exclude empty of pad; still ban pad+mask.
     if getattr(model, 'mask_id', None) is not None:
-      logits = logits.clone()
-      neg = float(getattr(model, 'neg_infinity', -1e6))
       logits[..., model.mask_id] = neg
     pad_id = getattr(getattr(model, 'tokenizer', None), 'pad_token_id', None)
     if pad_id is not None:
-      logits = logits.clone()
       logits[..., int(pad_id)] = float('-inf')
     return logits
 
@@ -434,6 +640,7 @@ class BlockSampler(Sampler):
           device=logits.device, dtype=logits.dtype)
       logits = torch.cat([logits, pad], dim=1)
     p_x0 = F.log_softmax(logits, dim=-1).exp()
+    p_x0 = self._apply_x0_temperature(p_x0)
     p_x0 = self._apply_top_p(p_x0, self.p_nucleus)
     if getattr(self, '_greedy_decode', False):
       sampled = p_x0.argmax(dim=-1)
@@ -470,6 +677,120 @@ class BlockSampler(Sampler):
     out = torch.where(should_update, sampled, xt)
     return torch.where(xt != model.mask_id, xt, out)
 
+  def _uniform_simplex_mode(self, model) -> str:
+    from ..forward_process.utils import normalize_uniform_simplex_mode
+    cfg = getattr(model, 'config', None)
+    algo = getattr(cfg, 'algo', None) if cfg is not None else None
+    raw = getattr(algo, 'uniform_simplex_mode', None)
+    if raw is None:
+      raw = getattr(model, 'uniform_simplex_mode', 'conversion')
+    return normalize_uniform_simplex_mode(raw)
+
+  def _uniform_exclude_ids(self, model) -> tuple[int, ...]:
+    from ..forward_process.utils import resolve_uniform_exclude_ids
+    tok = getattr(model, 'tokenizer', None)
+    mode = self._uniform_simplex_mode(model)
+    if tok is None:
+      if mode == 'blockgen':
+        return ()
+      mid = getattr(model, 'mask_id', None)
+      return (int(mid),) if mid is not None else ()
+    return resolve_uniform_exclude_ids(
+        tok,
+        mask_id=getattr(model, 'mask_id', None),
+        vocab_size=int(model.vocab_size),
+        mode=mode,
+    )
+
+  def _uniform_noise(
+      self,
+      model,
+      shape: tuple[int, ...] | torch.Size,
+      *,
+      device: torch.device,
+      dtype: torch.dtype,
+  ) -> torch.Tensor:
+    """Unif over content tokens (exclude MASK/PAD/…); blockgen → full V."""
+    from ..forward_process.utils import (
+        resolve_uniform_noise_redraw_exclude_ids,
+        sample_uniform_excluding_mask,
+    )
+    tok = getattr(model, 'tokenizer', None)
+    mid = getattr(model, 'mask_id', None)
+    mode = self._uniform_simplex_mode(model)
+    if tok is None:
+      exclude = () if mode == 'blockgen' else (
+          (int(mid),) if mid is not None else ())
+    else:
+      exclude = resolve_uniform_noise_redraw_exclude_ids(
+          tok, mask_id=mid, vocab_size=int(model.vocab_size), mode=mode)
+    draw_mid = None if mode == 'blockgen' else mid
+    return sample_uniform_excluding_mask(
+        shape,
+        vocab_size=int(model.vocab_size),
+        mask_id=draw_mid,
+        device=device,
+        dtype=dtype,
+        exclude_ids=exclude,
+    )
+
+  def _uniform_v_eff(self, model) -> int:
+    """Simplex size for DUO coefficients."""
+    from ..forward_process.utils import uniform_simplex_size
+    exclude = self._uniform_exclude_ids(model)
+    return uniform_simplex_size(
+        int(model.vocab_size),
+        None,
+        exclude_ids=exclude,
+    )
+
+  def _uniform_limiting(self, model, *, device, dtype) -> torch.Tensor:
+    """``1/V_eff`` on content ids; 0 on reserved specials."""
+    v = int(model.vocab_size)
+    v_eff = self._uniform_v_eff(model)
+    exclude = self._uniform_exclude_ids(model)
+    u = torch.full((1, 1, v), 1.0 / max(v_eff, 1), device=device, dtype=dtype)
+    for mid in exclude:
+      if 0 <= int(mid) < v:
+        u[..., int(mid)] = 0.0
+    return u
+
+  def _sample_uniform_posterior_fast(
+      self,
+      p_x0: torch.Tensor,
+      xt: torch.Tensor,
+      alpha_s: torch.Tensor,
+      alpha_t: torch.Tensor,
+      *,
+      v_eff: int,
+      noise_removal_step: bool,
+      model,
+  ) -> torch.Tensor:
+    """BlockGen ``sample_uniform_posterior`` (no full V×L materialize).
+
+    ``alpha_s`` / ``alpha_t`` are ``[B, L, 1]``; ``p_x0`` is ``[B, L, V]``.
+    Uniform redraws use ``Unif(V\\{MASK})``.
+    """
+    # Squeeze channel dim for gather arithmetic.
+    a_t = alpha_t.squeeze(-1)
+    a_s = alpha_s.squeeze(-1)
+    p_xt = torch.gather(p_x0, -1, xt.unsqueeze(-1)).squeeze(-1)
+    denom = (a_t * v_eff * p_xt + (1.0 - a_t)).clamp(min=1e-12)
+    sampled_x0 = sample_categorical(p_x0)
+    thr = torch.rand_like(p_xt)
+    if noise_removal_step:
+      keep_xt = (a_t * v_eff * p_xt / denom).clamp(0.0, 1.0)
+      return torch.where(thr < keep_xt, xt, sampled_x0)
+    alpha_ts = a_t / a_s.clamp(min=1e-8)
+    sample_unif = ((1.0 - alpha_ts) * (1.0 - a_s) / denom).clamp(0.0, 1.0)
+    keep_xt = (
+        (a_t * v_eff * p_xt + alpha_ts - a_t) / denom).clamp(0.0, 1.0)
+    unif = self._uniform_noise(
+        model, xt.shape, device=xt.device, dtype=xt.dtype)
+    keep_or_x0 = torch.where(
+        (sample_unif + keep_xt).clamp(max=1.0) > thr, xt, sampled_x0)
+    return torch.where(sample_unif > thr, unif, keep_or_x0)
+
   def _uniform_step(
       self,
       model,
@@ -482,16 +803,23 @@ class BlockSampler(Sampler):
       window: tuple[int, int] | None = None,
   ) -> torch.Tensor:
     b, seq_len = xt.shape
-    v = model.vocab_size
+    v = int(model.vocab_size)
+    v_eff = self._uniform_v_eff(model)
     alpha_t = self._expand_alpha(model, t_scalar, seq_len).unsqueeze(-1)
-    if dt is None:
+    noise_removal = dt is None
+    if noise_removal:
       alpha_s = torch.ones_like(alpha_t)
     else:
       t_prev = (t_scalar - dt).clamp(min=0.0)
       alpha_s = self._expand_alpha(model, t_prev, seq_len).unsqueeze(-1)
 
-    logits, _shift_mode = self._logits(
+    raw, shift_mode = self._logits(
         model, xt, x0, active_end=active_end, window=window)
+    # Same prep as masked: shift-align when train used shift_loss_targets, and
+    # ban MASK/PAD. Previously skipped here → U0+shift decode was unaligned
+    # and MASK mass could enter ancestral draws.
+    logits = self._prepare_masked_logits(
+        model, raw, window=window, shift_mode=shift_mode)
     if logits.size(1) < seq_len:
       pad = torch.zeros(
           b, seq_len - logits.size(1), logits.size(-1),
@@ -500,23 +828,170 @@ class BlockSampler(Sampler):
     p_x0 = F.log_softmax(logits, dim=-1).exp()
     if getattr(self.config.sampling, 'use_float64', False):
       p_x0 = p_x0.to(torch.float64)
+      alpha_t = alpha_t.to(torch.float64)
+      alpha_s = alpha_s.to(torch.float64)
+    p_x0 = self._apply_x0_temperature(p_x0)
 
+    # Hub DualCache conf remask analog: propose = argmax(p_x0) (T=0),
+    # commit ≥thr + force-max, else keep Unif. Skip Duo posterior — it
+    # would scribble samples onto undecided sites (Hub leaves MASK).
+    if self.uniform_confidence_sticky:
+      if self.p_nucleus < 1.0:
+        p_x0 = self._apply_top_p(p_x0, self.p_nucleus)
+      return self._apply_uniform_sticky(xt, p_x0, xt, window=window)
+
+    if self.posterior_sampler == 'fast' and not getattr(
+        self, '_greedy_decode', False):
+      if self.p_nucleus < 1.0:
+        p_x0 = self._apply_top_p(p_x0, self.p_nucleus)
+      return self._sample_uniform_posterior_fast(
+          p_x0, xt, alpha_s, alpha_t,
+          v_eff=v_eff, noise_removal_step=noise_removal, model=model)
+
+    # Naive path (materialize q_xs) — Duo / previous BlockSampler.
     alpha_ts = alpha_t / alpha_s.clamp(min=1e-8)
     xt_one_hot = F.one_hot(xt, v).to(p_x0.dtype)
-    uniform = torch.full((1, 1, v), 1.0 / v, device=xt.device, dtype=p_x0.dtype)
-
+    uniform = self._uniform_limiting(model, device=xt.device, dtype=p_x0.dtype)
     numerator = (
-        (alpha_t * v * p_x0 * xt_one_hot)
+        (alpha_t * v_eff * p_x0 * xt_one_hot)
         + ((alpha_ts - alpha_t) * xt_one_hot)
         + ((alpha_s - alpha_t) * p_x0)
         + ((1 - alpha_ts) * (1 - alpha_s) * uniform)
     )
-    denom = (alpha_t * v * torch.gather(p_x0, -1, xt.unsqueeze(-1))) + (1 - alpha_t)
+    denom = (
+        alpha_t * v_eff * torch.gather(p_x0, -1, xt.unsqueeze(-1))
+    ) + (1 - alpha_t)
     q_xs = numerator / denom.clamp(min=1e-12)
     q_xs = self._apply_top_p(q_xs, self.p_nucleus)
     if getattr(self, '_greedy_decode', False):
       return q_xs.argmax(dim=-1)
     return sample_categorical(q_xs)
+
+  def _apply_uniform_sticky(
+      self,
+      xs: torch.Tensor,
+      p_x0: torch.Tensor,
+      xt: torch.Tensor,
+      *,
+      window: tuple[int, int] | None,
+  ) -> torch.Tensor:
+    """Hub DualCache conf remask analog on USDM (Unif undecided).
+
+    Mirrors ``_masked_step`` confidence path at T=0: propose argmax,
+    conf = peak ``p_x0``, commit ≥thr + force-max ≥1/row. Non-commits
+    keep ``xt`` (Unif), matching Hub leaving MASK. ``xs`` is ignored
+    (kept for call-site compat). Not DualCache K/V.
+    """
+    if not self.uniform_confidence_sticky:
+      return xs
+    b, seq_len = xt.shape
+    frozen = self._block_sticky_frozen
+    if frozen is None or frozen.shape != xt.shape:
+      frozen = torch.zeros_like(xt, dtype=torch.bool)
+      self._block_sticky_frozen = frozen
+
+    active = torch.ones(b, seq_len, dtype=torch.bool, device=xt.device)
+    if window is not None:
+      w0, w1 = window
+      active = torch.zeros_like(active)
+      active[:, w0:w1] = True
+
+    # Hub: start from current state (MASK/Unif); only write on commit.
+    out = xt.clone()
+
+    conf = p_x0.max(dim=-1).values
+    hard = p_x0.argmax(dim=-1)
+    cand = active & ~frozen
+    thr_stick = torch.zeros_like(cand)
+    # Ranking scores for force-max site: confidence, random, or L→R.
+    order = str(getattr(self, 'uniform_commit_order', 'confidence'))
+    if order == 'random' or self.uniform_commit_random:
+      rank = torch.rand_like(conf)
+    elif order == 'ltr':
+      # Prefer leftmost candidate: low index = high rank.
+      pos = torch.arange(seq_len, device=xt.device, dtype=conf.dtype)
+      rank = -pos.unsqueeze(0).expand_as(conf)
+    else:
+      rank = conf
+    if self.unmask_threshold is not None:
+      # thr still uses true confidence (thr=1 stays nearly inert on D2).
+      thr_stick = cand & (conf >= float(self.unmask_threshold))
+    new_stick = thr_stick.clone()
+    # Force-max among candidates, gated by sticky_min_conf (UCC).
+    rank_c = rank.masked_fill(~cand, float('-inf'))
+    max_idx = rank_c.argmax(dim=-1)
+    rows = torch.arange(b, device=xt.device)
+    still = cand.any(dim=-1)
+    force_stick = torch.zeros_like(cand)
+    if still.any():
+      peak = conf[rows[still], max_idx[still]]
+      allow = peak >= float(self.sticky_min_conf)
+      if allow.any():
+        sel_rows = rows[still][allow]
+        sel_idx = max_idx[still][allow]
+        force_stick[sel_rows, sel_idx] = True
+    # Force-max only counts sites not already thr-committed this step.
+    force_only = force_stick & cand & ~thr_stick
+    new_stick = (thr_stick | force_stick) & cand
+    n_thr = int(thr_stick.sum().item())
+    n_force = int(force_only.sum().item())
+    if n_thr:
+      self._bump_nfe('n_thr_commits', n_thr)
+    if n_force:
+      self._bump_nfe('n_force_max_commits', n_force)
+    self._bump_nfe('n_commits', n_thr + n_force)
+
+    out = torch.where(new_stick, hard, out)
+    self._block_sticky_frozen = frozen | new_stick
+    return out
+
+  def _uniform_commit_revise_low_conf(
+      self,
+      model,
+      xt: torch.Tensor,
+      x0: torch.Tensor,
+      start: int,
+      end: int,
+      *,
+      active_end: int,
+  ) -> int:
+    """BlockGen-inspired corrector: re-Unif frozen sites the model regrets.
+
+    Uses token confidence ``p_x0[xt]`` (diffusion confidence). Low-conf
+    commits are unfrozen and redrawn from Unif — then UCC re-commits.
+    Returns number of sites revised.
+    """
+    if not self.uniform_commit_revise or self._block_sticky_frozen is None:
+      return 0
+    frozen = self._block_sticky_frozen
+    if not bool(frozen[:, start:end].any()):
+      return 0
+    raw, shift_mode = self._logits(
+        model, xt, x0, active_end=active_end, window=(start, end))
+    logits = self._prepare_masked_logits(
+        model, raw, window=(start, end), shift_mode=shift_mode)
+    if logits.size(1) < xt.shape[1]:
+      pad = torch.zeros(
+          xt.shape[0], xt.shape[1] - logits.size(1), logits.size(-1),
+          device=logits.device, dtype=logits.dtype)
+      logits = torch.cat([logits, pad], dim=1)
+    p_x0 = F.log_softmax(logits, dim=-1).exp()
+    p_x0 = self._apply_x0_temperature(p_x0)
+    tok_conf = p_x0.gather(-1, xt.unsqueeze(-1)).squeeze(-1)
+    low = frozen[:, start:end] & (
+        tok_conf[:, start:end] < float(self.uniform_commit_revise_tau))
+    n = int(low.sum().item())
+    if n == 0:
+      return 0
+    unif = self._uniform_noise(
+        model, xt.shape, device=xt.device, dtype=xt.dtype)
+    block = xt[:, start:end].clone()
+    block = torch.where(low, unif[:, start:end], block)
+    xt[:, start:end] = block
+    x0[:, start:end] = block
+    frozen[:, start:end] = frozen[:, start:end] & ~low
+    self._block_sticky_frozen = frozen
+    return n
 
   def _arpc_prefix_fill(
       self,
@@ -602,7 +1077,11 @@ class BlockSampler(Sampler):
       *,
       block_prefix_len: int,
   ) -> None:
-    """BlockGen predictor–corrector: clean proposal → score → re-noise top-k."""
+    """BlockGen predictor–corrector: clean proposal → score → re-noise top-k.
+
+    Absorb (masked): re-noise = write ``mask_id``. Uniform: re-noise = Unif(V).
+    Paper TinyGSM pin uses ``ar_metric`` + ``nll`` (AR LL of the proposal).
+    """
     block_len = end - start
     alpha_t = self._expand_alpha(model, t_scalar, xt.shape[1])
     t_prev = (t_scalar - dt).clamp(min=0.0)
@@ -611,13 +1090,31 @@ class BlockSampler(Sampler):
     active_end = self._truncated_active_end(model, end, xt.shape[1])
     raw, shift_mode = self._logits(
         model, xt, x0, active_end=active_end, window=(start, end))
+    # BlockGen scales logits by a single TEMP; we expose ARPC + x0 knobs.
+    # Apply ARPC temperature on logits, then x0 temperature on p(x0).
     logits = self._scale_logits(raw)
+    logits = self._prepare_masked_logits(
+        model, logits, window=(start, end), shift_mode=shift_mode)
+    p_x0 = F.log_softmax(logits[:, start:end], dim=-1).exp()
+    p_x0 = self._apply_x0_temperature(p_x0)
+    log_p = p_x0.clamp(min=1e-12).log()
+    # Predictor: BlockGen samples the *posterior* at alpha_s=1
+    # (noise_removal_step=True), not raw categorical p(x0). That keeps
+    # high-conf xt with keep_xt_prob instead of always redrawing.
+    ones = torch.ones_like(alpha_t[:, start:end])
+    a_t = alpha_t[:, start:end].unsqueeze(-1)
+    a_s = ones.unsqueeze(-1)
     if self.is_masked:
-      logits = self._prepare_masked_logits(
-          model, logits, window=(start, end), shift_mode=shift_mode)
-    log_p = F.log_softmax(logits[:, start:end], dim=-1)
-    # Predictor: sample clean proposal for the active block.
-    proposal = sample_categorical(log_p.exp())
+      # Absorbing: noise_removal ⇒ denoise every still-masked site.
+      sampled_x0 = sample_categorical(p_x0)
+      is_masked = xt[:, start:end] == model.mask_id
+      proposal = torch.where(is_masked, sampled_x0, xt[:, start:end])
+    else:
+      proposal = self._sample_uniform_posterior_fast(
+          p_x0, xt[:, start:end], a_s, a_t,
+          v_eff=self._uniform_v_eff(model),
+          noise_removal_step=True,
+          model=model)
     if block_prefix_len > 0:
       proposal = proposal.clone()
       proposal[:, :block_prefix_len] = xt[:, start:start + block_prefix_len]
@@ -646,8 +1143,8 @@ class BlockSampler(Sampler):
           (xt.shape[0], idxs.shape[1]), model.mask_id,
           device=xt.device, dtype=xt.dtype)
     else:
-      noisy = torch.randint(
-          0, model.vocab_size, (xt.shape[0], idxs.shape[1]),
+      noisy = self._uniform_noise(
+          model, (xt.shape[0], idxs.shape[1]),
           device=xt.device, dtype=xt.dtype)
     block = xt[:, start:end].clone()
     block.scatter_(1, idxs, noisy)
@@ -714,8 +1211,8 @@ class BlockSampler(Sampler):
       seeded = x0[:, start:end].clone()
       xt[:, start:end] = model.mask_id
     else:
-      xt[:, start:end] = torch.randint(
-          0, model.vocab_size, (xt.shape[0], end - start),
+      xt[:, start:end] = self._uniform_noise(
+          model, (xt.shape[0], end - start),
           device=xt.device, dtype=xt.dtype)
     # When inject_bos=False (lm-eval continuation), do not force BOS at pos 0.
     if self._ignore_bos(model) and start == 0 and inject_bos:
@@ -730,7 +1227,7 @@ class BlockSampler(Sampler):
       if keep.any():
         xt[:, start:end] = torch.where(keep, seeded, xt[:, start:end])
     x0[:, start:end] = xt[:, start:end]
-    if (self.use_arpc and not self.is_masked and self.arpc_use_prefix_fill):
+    if self.use_arpc and self.arpc_use_prefix_fill:
       xt, x0 = self._arpc_prefix_fill(model, xt, x0, start, end)
     return xt, x0
 
@@ -779,6 +1276,76 @@ class BlockSampler(Sampler):
       x0[is_mask, end] = next_tok[is_mask]
     return xt, x0
 
+  def _emit_step_hook(
+      self,
+      model,
+      xt: torch.Tensor,
+      *,
+      start: int,
+      end: int,
+      active_end: int,
+      before_window: torch.Tensor | None,
+      t_scalar: torch.Tensor | None,
+      step_dt: float | None,
+      local_step: int,
+      phase: str,
+  ) -> None:
+    """Fire ``step_hook`` with a CPU-friendly decode event (batch 0)."""
+    hook = self.step_hook
+    if hook is None:
+      return
+    row = xt[0].detach()
+    mask_id = getattr(model, 'mask_id', None)
+    window = row[start:end]
+    before = None if before_window is None else before_window[0].detach()
+    if mask_id is not None and self.is_masked:
+      still_masked = (window == mask_id).nonzero(as_tuple=False).view(-1)
+      still_masked = (still_masked + start).tolist()
+      if before is not None:
+        newly = ((before == mask_id) & (window != mask_id)).nonzero(
+            as_tuple=False).view(-1)
+        newly = (newly + start).tolist()
+      else:
+        newly = []
+      changed = newly
+    else:
+      still_masked = []
+      if before is not None:
+        changed = (before != window).nonzero(as_tuple=False).view(-1)
+        changed = (changed + start).tolist()
+        newly = changed
+      else:
+        newly = []
+        changed = []
+    committed = list(range(0, start))
+    if mask_id is not None and self.is_masked:
+      in_win = (window != mask_id).nonzero(as_tuple=False).view(-1)
+      committed.extend((in_win + start).tolist())
+    else:
+      committed.extend(range(start, end))
+    t_val = None
+    if t_scalar is not None and t_scalar.numel() > 0:
+      t_val = float(t_scalar[0].detach().cpu())
+    event = {
+        'global_step': int(self._decode_trace_step),
+        'local_step': int(local_step),
+        'phase': phase,
+        'window_start': int(start),
+        'window_end': int(end),
+        'active_end': int(active_end),
+        't': t_val,
+        'dt': None if step_dt is None else float(step_dt),
+        'mode': str(self.mode),
+        'token_ids': row.detach().cpu().tolist(),
+        'still_masked_positions': still_masked,
+        'newly_committed_positions': newly,
+        'changed_positions': changed,
+        'committed_positions': committed,
+        'active_positions': newly if newly else list(range(start, end)),
+    }
+    self._decode_trace_step += 1
+    hook(event)
+
   def _denoise_block(
       self,
       model,
@@ -818,11 +1385,20 @@ class BlockSampler(Sampler):
     active_end = self._truncated_active_end(model, end, xt.shape[1])
     self._maybe_refresh_dual_cache(
         model, xt, window_start=start, active_end=active_end)
+    # Reset sticky freeze for this sub-window (prefix stays frozen via
+    # ``_restore``; only active sites accumulate commits).
+    if self.uniform_confidence_sticky and not self.is_masked:
+      self._block_sticky_frozen = torch.zeros(
+          xt.shape, dtype=torch.bool, device=xt.device)
+      if start > 0:
+        self._block_sticky_frozen[:, :start] = True
+    else:
+      self._block_sticky_frozen = None
 
     # Tokens already filled by ARPC prefix fill stay protected across reverse
     # steps (and in blockgen guided corruption).
     block_prefix_len = 0
-    if (self.use_arpc and not self.is_masked and self.arpc_use_prefix_fill):
+    if self.use_arpc and self.arpc_use_prefix_fill:
       block_prefix_len = max(1, int((end - start) * self.arpc_prefix_frac))
       # BOS at pos 0 is already frozen separately when ignore_bos.
       if start == 0 and self._ignore_bos(model):
@@ -844,18 +1420,43 @@ class BlockSampler(Sampler):
         xt[:, start:start + block_prefix_len] = ar_prefix
         x0[:, start:start + block_prefix_len] = ar_prefix
 
-    def _apply(t_scalar: torch.Tensor, step_dt: float | None) -> None:
+    def _apply(
+        t_scalar: torch.Tensor,
+        step_dt: float | None,
+        *,
+        local_step: int = 0,
+        phase: str = 'ancestral',
+    ) -> None:
       _restore()
       x0[:, start:end] = xt[:, start:end]
+      before = None
+      if self.track_revisions and not self.is_masked:
+        before = xt[:, start:end].clone()
+      before_hook = (
+          xt[:, start:end].clone() if self.step_hook is not None else None)
       xt_new = step_fn(
           model, xt, x0, t_scalar, step_dt,
           active_end=active_end, window=window)
+      if before is not None and self._revision_stats is not None:
+        chunk = xt_new[:, start:end]
+        changed = (chunk != before).sum().item()
+        self._revision_stats['token_changes'] += float(changed)
+        self._revision_stats['token_slots'] += float(chunk.numel())
+        self._revision_stats['steps_tracked'] += 1.0
       xt[:, start:end] = xt_new[:, start:end]
       _restore()
       x0[:, start:end] = xt[:, start:end]
+      self._emit_step_hook(
+          model, xt,
+          start=start, end=end, active_end=active_end,
+          before_window=before_hook, t_scalar=t_scalar, step_dt=step_dt,
+          local_step=local_step, phase=phase)
 
-    use_blockgen = (
-        self.use_arpc and not self.is_masked and self.arpc_mode == 'blockgen')
+    use_blockgen = self.use_arpc and self.arpc_mode == 'blockgen'
+    if use_blockgen and self.is_masked and self.unmask_threshold is not None:
+      raise ValueError(
+          'masked BlockGen ARPC requires sampling.unmask_threshold=null '
+          '(confidence unmask loop bypasses the ARPC predictor–corrector)')
 
     # Fast-dLLM confidence decode: iterate until the block has no masks
     # (Hub generate while-loop), not a fixed α-schedule of length ``steps``.
@@ -864,11 +1465,11 @@ class BlockSampler(Sampler):
       t_full = torch.ones(xt.shape[0], device=xt.device)
       max_iters = max(int((xt[:, start:end] == model.mask_id).sum().item()), 1)
       max_iters = max(max_iters, end - start)
-      for _ in range(max_iters):
+      for conf_i in range(max_iters):
         if not (xt[:, start:end] == model.mask_id).any():
           break
         before = int((xt[:, start:end] == model.mask_id).sum().item())
-        _apply(t_full, None)
+        _apply(t_full, None, local_step=conf_i, phase='confidence')
         after = int((xt[:, start:end] == model.mask_id).sum().item())
         if after >= before:
           raise RuntimeError(
@@ -883,26 +1484,112 @@ class BlockSampler(Sampler):
       x0[:, start:end] = xt[:, start:end]
       return xt, x0
 
+    # UCC: Hub DualCache conf-until loop (Unif undecided). Optional revise
+    # is off by default. DualCache K/V remains MASK-only.
+    if (self.uniform_confidence_sticky and not self.is_masked
+        and self.unmask_threshold is not None):
+      t_full = torch.ones(xt.shape[0], device=xt.device)
+      # Batch-aware budget (mirrors masked confidence path). Old bound
+      # ``end-start`` under-counted when B>1 or sticky_min_conf blocked
+      # force-max on weak rows while other rows still "progressed".
+      def _ucc_unfrozen_count() -> int:
+        frozen = self._block_sticky_frozen
+        if frozen is None:
+          return max((end - start) * xt.shape[0], 1)
+        return int((~frozen[:, start:end]).sum().item())
+
+      def _ucc_until_frozen(phase_prefix: str, budget: int) -> None:
+        budget = max(int(budget), _ucc_unfrozen_count(), end - start, 1)
+
+        def _flush_force_max(local_step: int, tag: str) -> None:
+          """Drop sticky_min_conf so force-max can always commit ≥1/row."""
+          old_min = self.sticky_min_conf
+          self.sticky_min_conf = 0.0
+          try:
+            _apply(
+                t_full, None, local_step=local_step,
+                phase=f'{phase_prefix}_{tag}')
+          finally:
+            self.sticky_min_conf = old_min
+
+        for conf_i in range(budget):
+          frozen = self._block_sticky_frozen
+          if frozen is not None and bool(frozen[:, start:end].all()):
+            return
+          before = _ucc_unfrozen_count()
+          _apply(
+              t_full, None, local_step=conf_i,
+              phase=f'{phase_prefix}_{conf_i}')
+          after = _ucc_unfrozen_count()
+          if after >= before:
+            # Stall: usually sticky_min_conf gated force-max on diffuse p_x0.
+            # Flush once and continue (do NOT return — flush is one commit
+            # per row; a B×W window may need many flushes).
+            if self.sticky_min_conf > 0:
+              _flush_force_max(conf_i, 'flush')
+              continue
+            raise RuntimeError(
+                'uniform confidence commit failed to make progress '
+                f'(unfrozen {before} → {after} in [{start},{end}))')
+        frozen = self._block_sticky_frozen
+        if frozen is not None and bool(frozen[:, start:end].all()):
+          return
+        # Final guarantee: sticky_min_conf=0 until every site freezes.
+        remaining = _ucc_unfrozen_count()
+        for conf_i in range(max(remaining + 2, 1)):
+          if bool(self._block_sticky_frozen[:, start:end].all()):
+            return
+          _flush_force_max(conf_i, 'final_flush')
+        if not bool(self._block_sticky_frozen[:, start:end].all()):
+          raise RuntimeError(
+              'uniform confidence commit exhausted its bound '
+              f'in [{start},{end})')
+
+      _ucc_until_frozen('ucc', _ucc_unfrozen_count())
+      if self.uniform_commit_revise:
+        n_rev = self._uniform_commit_revise_low_conf(
+            model, xt, x0, start, end, active_end=active_end)
+        if n_rev > 0:
+          _restore()
+          x0[:, start:end] = xt[:, start:end]
+          # Re-commit revised sites (budget = revised count + slack).
+          _ucc_until_frozen('ucc_revise', max(n_rev + 2, 4))
+      _restore()
+      x0[:, start:end] = xt[:, start:end]
+      return xt, x0
+
     for i in range(num_steps):
       t = timesteps[i].expand(xt.shape[0])
+      is_last = (i == num_steps - 1)
+      # BlockGen: last of N uses α_s=1 at α_t=timesteps[N-1] (still mid-noise
+      # for N=32). We previously ran N ancestral steps then a near-noop final
+      # at α_t≈eps — never matching BlockGen's noise-removal commit.
       is_guided = (
           use_blockgen
+          and not is_last
           and i >= self.arpc_warmup_steps
-          and (i - self.arpc_warmup_steps) % self.arpc_guide_every == 0
-          and i < num_steps - 1)
+          and (i - self.arpc_warmup_steps) % self.arpc_guide_every == 0)
       if is_guided:
         _restore()
         x0[:, start:end] = xt[:, start:end]
+        before_hook = (
+            xt[:, start:end].clone() if self.step_hook is not None else None)
         self._arpc_guided_step(
             model, xt, x0, start, end, t, dt,
             block_prefix_len=block_prefix_len)
         _restore()
         x0[:, start:end] = xt[:, start:end]
+        self._emit_step_hook(
+            model, xt,
+            start=start, end=end, active_end=active_end,
+            before_window=before_hook, t_scalar=t, step_dt=dt,
+            local_step=i, phase='arpc_guided')
       else:
-        _apply(t, dt)
+        _apply(
+            t, None if is_last else dt,
+            local_step=i,
+            phase='final' if is_last else 'ancestral')
 
-    t_final = timesteps[-1].expand(xt.shape[0])
-    _apply(t_final, None)
     return xt, x0
 
   @torch.no_grad()
@@ -936,7 +1623,51 @@ class BlockSampler(Sampler):
     if greedy is None:
       greedy = bool(getattr(self.config.sampling, 'greedy', False))
     self._greedy_decode = bool(greedy)
+    # Uniform reverse: argmax(q_xs) preferentially keeps xt (prior noise) when
+    # p_x0 is diffuse — locks multilingual soup into later blocks. UCC sticky
+    # never samples q_xs (Hub argmax on p_x0); allow greedy there. Else
+    # auto-disable (matches baseline / ancestral profiles).
+    if (self._greedy_decode and not self.is_masked
+        and not self.uniform_confidence_sticky):
+      logger.warning(
+          'sampling.greedy=true is invalid for uniform reverse '
+          f'(forward_process_name={self.forward_process_name!r}): '
+          'argmax(q_xs) locks prior noise. Forcing greedy=false '
+          '(ancestral). Pass greedy=false explicitly to silence.')
+      self._greedy_decode = False
+    # Honest branch: thr without sticky is conf-remask on MASK only.
+    # On uniform it is a dead pin (falls through to fixed-N ancestral).
+    # Remask twin for Unif is uniform_commit / uniform_dual (UCC).
+    if (not self.is_masked
+        and self.unmask_threshold is not None
+        and not self.uniform_confidence_sticky):
+      logger.warning(
+          'uniform decode: unmask_threshold=%s with '
+          'uniform_confidence_sticky=false → ancestral (thr ignored). '
+          'Masked thr runs confidence-until; Unif remask twin is '
+          'uniform_commit/UCC. Prefer hierarchical_ancestral or '
+          'uniform_commit for honest PROTOCOL.',
+          self.unmask_threshold)
+    # Re-assert truncation even if a profile pinned hierarchical_kv false
+    # after __init__ (legacy baseline footgun). Escape: allow_full_seq_decode.
+    _open_loop = (
+        not self.allow_full_seq_decode
+        and not self.use_block_cache
+        and self.unmask_threshold is None
+        and not self.uniform_confidence_sticky)
+    if (self.forward_process_name in ('masked', 'uniform', 'hybrid')
+        and _open_loop
+        and not self.hierarchical_kv):
+      logger.warning(
+          '%s generate(): forcing hierarchical_kv '
+          '(refuse full-seq dual open-loop packing).',
+          self.forward_process_name)
+      self.hierarchical_kv = True
     self._maybe_warn_arpc_mixture(model)
+    if self.track_revisions:
+      self.reset_revision_stats()
+    self._decode_trace_step = 0
+    self._reset_nfe_stats()
 
     n = model.num_tokens
     bs = model.block_size
@@ -1005,8 +1736,7 @@ class BlockSampler(Sampler):
         xt, x0 = self._denoise_block(
             model, xt, x0, w_start, w_end, num_steps, eps,
             inject_bos=inject_bos)
-        if (self.use_arpc and not self.is_masked
-            and self.arpc_mode == 'simplified'):
+        if self.use_arpc and self.arpc_mode == 'simplified':
           xt = self._arpc_correct_block(model, xt, x0, w_start, w_end)
           x0[:, w_start:w_end] = xt[:, w_start:w_end]
         # Hub mid-block early stop after a small-block commit (~722-725).
@@ -1059,6 +1789,7 @@ class BlockSampler(Sampler):
           eos_id=getattr(tok, 'eos_token_id', None),
           pad_id=getattr(tok, 'pad_token_id', None),
       )
+    self.last_nfe_stats = dict(self._nfe_stats)
     return xt
 
 

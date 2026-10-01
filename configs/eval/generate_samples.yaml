@@ -3,6 +3,7 @@ samples_path: samples.pt
 num_samples: 16
 batch_size: 16
 num_steps: null          # null → config sampling.steps (default 32)
+seed: null               # null → do not reseed; int → torch/cuda manual seed
 device: cuda
 torch_compile: false
 save_text: true
@@ -17,9 +18,12 @@ save_text: true
 sample_mode: auto
 
 # Decode profile applied as sampling.* overrides before build:
-#   baseline  — shared ancestral core (clears thr/ARPC/DualCache) — default for free-gen
-#   keep      — inherit ckpt sampling pins (exactness / ARPC regen)
-#   dual_cache / hierarchical — see decode_throughput profiles
+#   baseline / hierarchical_ss — safe ancestral open-loop (truncated +
+#     single-stream; no DualCache / ARPC / thr). ``baseline`` coerces to
+#     hierarchical_ss for paper-meter logs.
+#   keep — inherit ckpt sampling pins (exactness / ARPC regen)
+#   dual_cache / hubmatch / uniform_commit — see decode_profiles
+#   full_seq_dual — legacy collapsed packing (needs ALLOW_FULL_SEQ_DECODE=1)
 decode_profile: baseline
 
 # Optional extra generation controls

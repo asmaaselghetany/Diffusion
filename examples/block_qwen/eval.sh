@@ -3,7 +3,7 @@
 #
 # Defaults (adopted policy):
 #   sample_mode=auto          — conversion_free (ar2block/Nemotron) vs native_free (OWT/block)
-#   decode_profile=baseline   — ancestral BlockSampler; clears thr/ARPC/DualCache
+#   decode_profile=baseline   — coerces → hierarchical (thr=0.9 greedy remask floor)
 #   max_new_tokens=512        — do not fill full 2048 by default
 #
 # Refuse reuse of samples.pt unless samples.meta.json matches mode+profile+ckpt.
@@ -80,6 +80,10 @@ python -u -m discrete_diffusion.evaluations.generative_ppl \
   "metrics_path=${METRICS_JSON}" \
   pretrained_model=gpt2-large \
   retokenize=true \
-  first_chunk_only=true
+  first_chunk_only="${FIRST_CHUNK_ONLY:-true}"
 
-echo "Done. See ${EVAL_DIR} (samples.pt, samples.txt, samples.meta.json, gen_ppl_metrics.json)"
+# Unifusion hygiene: GenPPL must travel with unigram entropy.
+python tools/gen_ppl_hygiene.py pair "${METRICS_JSON}" \
+  || echo "WARNING: gen_ppl_pair sidecar failed (missing entropy?)" >&2
+
+echo "Done. See ${EVAL_DIR} (samples.pt, samples.txt, samples.meta.json, gen_ppl_metrics.json, gen_ppl_pair.json)"

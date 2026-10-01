@@ -31,21 +31,21 @@ def test_loss_special_case_policy_complete():
   assert REQUIRED_POLICY_KEYS <= set(LOSS_SPECIAL_CASE_POLICY)
   allowed = {
       'masked_only', 'shared', 'masked_only_when_shift', 'applies',
-      'hybrid_only',
+      'hybrid_only', 'masked_and_uniform', 'when_shift',
   }
   for k, v in LOSS_SPECIAL_CASE_POLICY.items():
     assert v in allowed, f'{k}={v} not in {allowed}'
 
 
 def test_uniform_loss_does_not_implement_masked_only_hooks():
-  """Source audit: _uniform_loss must not silently grow shift/SUBS paths."""
+  """Source audit: uniform must not grow SUBS / complementary; MASK ban OK."""
   src = inspect.getsource(BlockTrainer._uniform_loss)
-  # Documented non-applications may mention these names in the docstring;
-  # executable body must not call shift / subs helpers.
   body = src.split('"""', 2)[-1] if '"""' in src else src
-  assert 'shift_loss_targets' not in body
   assert 'subs_log_probs' not in body
-  assert 'mask_id' not in body  # uniform scores all sites via DUO
+  # Unifusion port: shift + MASK-ban / V_eff are intentional on uniform.
+  assert 'shift_loss_targets' in body
+  assert 'mask_id' in body
+  assert 'uniform_simplex_size' in body
 
 
 def test_masked_loss_owns_shift_and_subs():
@@ -135,13 +135,13 @@ def _uniform_cfg(**algo_overrides):
   return cfg
 
 
-def test_uniform_shift_refuses_at_trainer_init():
-  """Hard ValueError — not silent ignore (shift-loss surprise class)."""
+def test_uniform_shift_allowed_unifusion_port():
+  """Unifusion port: shift_loss_targets is allowed on uniform (not refused)."""
   from unittest.mock import patch
   import discrete_diffusion.algorithms.base as base_mod
   with patch.object(base_mod.TrainerBase, '__init__', _fake_trainer_base_init):
-    with pytest.raises(ValueError, match='shift_loss_targets.*masked-only'):
-      BlockTrainer(_uniform_cfg(shift_loss_targets=True), _TinyTok())
+    # Must construct without ValueError (complementary still refused).
+    BlockTrainer(_uniform_cfg(shift_loss_targets=True), _TinyTok())
 
 
 def test_uniform_complementary_refuses_at_trainer_init():
@@ -171,6 +171,7 @@ def test_t_bucketed_nll_shift_trim_aligns():
       vocab_size=32,
       block_size=4,
       loss_type='elbo',
+      loss_weighting='elbo',
       loss_per_block_size={},
       device=torch.device('cpu'),
       noise=type('N', (), {
@@ -180,7 +181,7 @@ def test_t_bucketed_nll_shift_trim_aligns():
       })(),
   )
   trainer._process_model_input = lambda x0, vt: (x0, vt)
-  trainer._corrupt = lambda x0, t, block_size: x0.clone()
+  trainer._corrupt = lambda x0, t, block_size, **kwargs: x0.clone()
   trainer._backbone_logits = lambda xt, x0, block_size=None, **kwargs: torch.randn(
       *xt.shape, trainer.vocab_size)
   trainer._masked_loss = lambda *a, **k: BlockTrainer._masked_loss(trainer, *a, **k)

@@ -93,7 +93,17 @@ def _count_new_tokens(
 
 
 def _profile_overrides(cfg: DictConfig) -> list[str]:
+  from discrete_diffusion.evaluations.decode_profiles import (
+      coerce_profile_for_forward,
+      infer_forward_from_checkpoint_path,
+  )
   profile = str(cfg.get('decode_profile', 'baseline') or 'baseline').strip()
+  ckpt = cfg.get('checkpoint_path')
+  fp = None
+  if ckpt:
+    fp = infer_forward_from_checkpoint_path(
+        hydra.utils.to_absolute_path(str(ckpt)))
+  profile = coerce_profile_for_forward(profile, fp)
   if profile not in _DECODE_PROFILES:
     raise ValueError(
         f'decode_profile={profile!r} not in {sorted(_DECODE_PROFILES)}')

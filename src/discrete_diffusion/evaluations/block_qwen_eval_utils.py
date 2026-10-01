@@ -16,6 +16,35 @@ _HUMANEVAL_COMPLETION_STOPS = frozenset({
     '\nprint',
 })
 
+# BlockSampler pays for ``max_new`` *before* post-hoc ``until`` truncation.
+# Hub's max_new=2048 is fine on fused AR kernels + 32k context; on our 2k
+# conversion BlockSampler it makes ``mmlu_generative`` miss a 12h walltime.
+# Caps are ceilings; smoke ``MAX_NEW_TOKENS=32`` still wins via ``min``.
+_TASK_MAX_NEW_CAPS: dict[str, int] = {
+    'mmlu_generative': 64,
+    'mmlu': 64,
+    'gpqa': 64,
+    # Match Hub eval.py / PROTOCOL max_new=2048 for GSM (was 512 — under-cap
+    # vs paper; mid-seq collapse still happens well before 512 chars of junk).
+    'gsm8k': 2048,
+    'minerva_math': 2048,
+    'ifeval': 1024,
+    'humaneval': 512,
+    'mbpp': 512,
+}
+
+
+def cap_max_new_for_task(task_name: str | None, requested: int) -> int:
+  """Ceiling ``max_new`` by task so paper_gen finishes under Slurm walltime."""
+  req = int(requested)
+  if req < 1:
+    raise ValueError(f'generation token limit must be positive, got {req}')
+  t = str(task_name or '').lower()
+  for prefix, cap in _TASK_MAX_NEW_CAPS.items():
+    if t == prefix or t.startswith(prefix + '_') or t.startswith(prefix):
+      return min(req, int(cap))
+  return req
+
 
 def generation_request_args(request, default_max_tokens: int):
   """Resolve lm-eval ``generate_until`` kwargs without losing task stops."""
@@ -153,5 +182,48 @@ def require_masked_likelihood(forward_process_name: str) -> None:
   if forward_process_name != 'masked':
     raise NotImplementedError(
         'block_qwen likelihood scoring is a masked-corruption heuristic and '
-        'is invalid for the uniform arm; use generative tasks or a '
-        'principled conditional uniform bound')
+        f'is invalid for the {forward_process_name} arm; use generative '
+        'tasks (SUITE=paper_gen / mmlu_generative) or a principled '
+        'conditional uniform bound')
+
+
+class temporary_model_seq_len:
+  """Keep ``model.num_tokens`` and ``backbone.n_tokens`` in lockstep.
+
+  Used by lm-eval when extending the generation buffer past train length.
+  Restores both on exit (including exceptions).
+  """
+
+  def __init__(self, model, seq_len: int, *, seq_len_holder=None):
+    self.model = model
+    self.seq_len = int(seq_len)
+    self.seq_len_holder = seq_len_holder
+    self.prev_num_tokens = int(model.num_tokens)
+    backbone = getattr(model, 'backbone', None)
+    self.backbone = backbone
+    self.prev_n_tokens = (
+        int(getattr(backbone, 'n_tokens', self.prev_num_tokens))
+        if backbone is not None else self.prev_num_tokens)
+    self.extended = self.seq_len != self.prev_num_tokens
+    self.prev_holder_seq_len = (
+        int(getattr(seq_len_holder, 'seq_len', self.prev_num_tokens))
+        if seq_len_holder is not None else None)
+
+  def __enter__(self):
+    if self.extended:
+      self.model.num_tokens = self.seq_len
+      if self.backbone is not None and hasattr(self.backbone, 'n_tokens'):
+        self.backbone.n_tokens = self.seq_len
+      if self.seq_len_holder is not None:
+        self.seq_len_holder.seq_len = self.seq_len
+    return self
+
+  def __exit__(self, exc_type, exc, tb):
+    del exc_type, exc, tb
+    if self.extended:
+      self.model.num_tokens = self.prev_num_tokens
+      if self.backbone is not None and hasattr(self.backbone, 'n_tokens'):
+        self.backbone.n_tokens = self.prev_n_tokens
+      if self.seq_len_holder is not None and self.prev_holder_seq_len is not None:
+        self.seq_len_holder.seq_len = self.prev_holder_seq_len
+    return False

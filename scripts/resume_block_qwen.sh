@@ -140,6 +140,9 @@ if path:
 
 owned = {
     '+experiment', 'experiment', 'algo',
+    # Launch re-pins sampling=block|block_uniform per arm; never replay an
+    # old wrong group (e.g. uniform trained under sampling=block).
+    'sampling',
     'checkpointing.save_dir', 'checkpointing.resume_from_ckpt',
     'checkpointing.resume_ckpt_path', 'hydra.run.dir',
     'trainer.devices', 'trainer.num_nodes', 'strategy',
@@ -211,7 +214,9 @@ HYDRA_OVERRIDES="${HYDRA_OVERRIDES:+${HYDRA_OVERRIDES} }checkpointing.resume_ckp
 export RUN_ROOT="${RUN_DIR}"
 export LINE="${LINE}"
 export RESUME_FROM_CKPT=true
-export WANDB_MODE="${_REQUESTED_WANDB_MODE:-offline}"
+# Compute nodes cannot reach api.wandb.ai; force offline (sync later).
+export WANDB_FORCE_OFFLINE=1
+export WANDB_MODE=offline
 export AUTO_RESUME="${AUTO_RESUME:-0}"
 export RUN_FULL_EVAL="${RUN_FULL_EVAL:-false}"
 export WANDB_PROJECT
@@ -241,15 +246,22 @@ if [[ "${DRY_RUN:-0}" == "1" ]]; then
   exit 0
 fi
 
+# Strip eval knobs before --export=ALL (same class of bug as submit_lever).
+unset FORCE_STACK FORCE_DECODE_PROFILE FORCE_UNMASK_THRESHOLD \
+  FORCE_GREEDY_PIN FORCE_GREEDY FORCE_ARPC \
+  OUT_DIR SUITE TASKS JOB_NAME DECODE_PROFILE UNMASK_THRESHOLD \
+  ALLOW_FULL_SEQ_DECODE EVAL_DECODE_PROFILE ARPC_OUT HYGIENE_OUT CKPT \
+  || true
+
 JOB_ID="$(sbatch --parsable \
-  --account="${JUWELS_ACCOUNT:-scifi}" \
+  --account="${JUWELS_ACCOUNT:-profound}" \
   --time="${TIME_LIMIT}" \
   --nodes="${NUM_NODES}" \
   --ntasks-per-node="${GPUS_PER_NODE}" \
   --gres="gpu:${GPUS_PER_NODE}" \
   --job-name="resume_${LINE}_${ARM}" \
   --chdir="${REPO_ROOT}" \
-  --export=ALL,RUN_ROOT,LINE,RESUME_FROM_CKPT,WANDB_MODE,WANDB_PROJECT,WANDB_RUN_ID,WANDB_RUN_NAME,WANDB_RESUME,HYDRA_OVERRIDES,NUM_NODES,GPUS_PER_NODE,NUM_GPUS,DATA_CACHE,AUTO_RESUME,RUN_FULL_EVAL \
+  --export=ALL,RUN_ROOT,LINE,RESUME_FROM_CKPT,WANDB_FORCE_OFFLINE,WANDB_MODE,WANDB_PROJECT,WANDB_RUN_ID,WANDB_RUN_NAME,WANDB_RESUME,HYDRA_OVERRIDES,NUM_NODES,GPUS_PER_NODE,NUM_GPUS,DATA_CACHE,AUTO_RESUME,RUN_FULL_EVAL \
   "${SBATCH_SCRIPT}")"
 echo "Submitted ${JOB_ID}"
 echo "${JOB_ID}"

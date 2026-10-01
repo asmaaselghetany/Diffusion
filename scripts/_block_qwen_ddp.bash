@@ -57,26 +57,31 @@ append_block_qwen_trainer_overrides() {
   _force_override "loader.eval_global_batch_size" "${NUM_GPUS}"
 }
 
-# Slurm prologs may set CUDA_VISIBLE_DEVICES to a single GPU per task.
-# Lightning with devices=N needs all node GPUs visible; LOCAL_RANK picks one.
-_cuda_visible_all_node_gpus() {
+# Slurm prologs often set CUDA_VISIBLE_DEVICES to a *single* GPU per task.
+# Assigning CVD=0,1,2,3 *without unsetting first* only remaps within that
+# singleton → Lightning sees 1 device and dies with
+#   "You requested gpu: [0,1,2,3] But your machine only has: [0]"
+# (C3 job 1856100). Unset, then expose all node GPUs; LOCAL_RANK picks one.
+_cuda_visible_all_node_gpus_value() {
   local last=$((GPUS_PER_NODE - 1))
-  local ids
-  ids="$(seq -s, 0 "${last}")"
-  echo "CUDA_VISIBLE_DEVICES=${ids}"
+  seq -s, 0 "${last}"
+}
+
+_cuda_visible_all_node_gpus() {
+  echo "CUDA_VISIBLE_DEVICES=$(_cuda_visible_all_node_gpus_value)"
 }
 
 run_block_qwen_srun_train() {
   local train_rc=0
   local py_bin
-  local cvd
+  local cvd_val
   py_bin="$(command -v python)"
   # Absolute path — ParaStation spawn is less brittle than PATH lookup.
   if [[ "${py_bin}" != /* ]]; then
     py_bin="$(readlink -f "${py_bin}" 2>/dev/null || true)"
   fi
   py_bin="${py_bin:-python}"
-  cvd="$(_cuda_visible_all_node_gpus)"
+  cvd_val="$(_cuda_visible_all_node_gpus_value)"
 
   # Jupiter ParaStation: first multi-node srun often fails with
   #   PSI: doSpawn … Invalid argument / PSI_spawnRsrvtn
@@ -85,16 +90,21 @@ run_block_qwen_srun_train() {
   source "${_BLOCK_QWEN_DDP_DIR}/_srun_retry.bash"
   srun_warmup
 
+  # --gpu-bind=none: all tasks on a node may see all allocated GPUs (needed
+  # for trainer.devices=GPUS_PER_NODE with one srun task per GPU).
   if [[ "${NUM_NODES}" -gt 1 ]]; then
     # Multi-node: one Slurm task per GPU; Lightning uses the external process group.
     srun_retry --ntasks-per-node="${GPUS_PER_NODE}" --cpu-bind=cores \
-      env "${cvd}" \
+      --gpu-bind=none \
+      env -u CUDA_VISIBLE_DEVICES -u SLURM_CUDA_VISIBLE_DEVICES \
+      "CUDA_VISIBLE_DEVICES=${cvd_val}" \
       "${py_bin}" -u -m discrete_diffusion "+experiment=${EXPERIMENT}" "algo=${ALGO}" \
       data.cache_dir="${DATA_CACHE}" \
       checkpointing.save_dir="${RUN_ROOT}" \
       checkpointing.resume_from_ckpt="${RESUME_FROM_CKPT:-true}" \
       hydra.run.dir="${RUN_ROOT}/hydra" \
       "wandb.project=${WANDB_PROJECT}" \
+      "wandb.entity=${WANDB_ENTITY:-aselghetany-nu}" \
       "wandb.name=${WANDB_RUN_NAME}" \
       "wandb.id=${WANDB_RUN_ID}" \
       "wandb.resume=${WANDB_RESUME}" \
@@ -103,13 +113,16 @@ run_block_qwen_srun_train() {
     # Single-node: still launch one task per GPU.
     srun_retry --ntasks="${GPUS_PER_NODE}" --ntasks-per-node="${GPUS_PER_NODE}" \
       --cpu-bind=cores \
-      env "${cvd}" \
+      --gpu-bind=none \
+      env -u CUDA_VISIBLE_DEVICES -u SLURM_CUDA_VISIBLE_DEVICES \
+      "CUDA_VISIBLE_DEVICES=${cvd_val}" \
       "${py_bin}" -u -m discrete_diffusion "+experiment=${EXPERIMENT}" "algo=${ALGO}" \
       data.cache_dir="${DATA_CACHE}" \
       checkpointing.save_dir="${RUN_ROOT}" \
       checkpointing.resume_from_ckpt="${RESUME_FROM_CKPT:-true}" \
       hydra.run.dir="${RUN_ROOT}/hydra" \
       "wandb.project=${WANDB_PROJECT}" \
+      "wandb.entity=${WANDB_ENTITY:-aselghetany-nu}" \
       "wandb.name=${WANDB_RUN_NAME}" \
       "wandb.id=${WANDB_RUN_ID}" \
       "wandb.resume=${WANDB_RESUME}" \

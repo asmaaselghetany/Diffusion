@@ -74,6 +74,10 @@ def _bare(*, complementary: bool) -> SimpleNamespace:
       joint_ar_alpha=0.0,
       causal_clean_stream=False,
       _pending_clean_logits=None,
+      loss_weighting='elbo',
+      _plain_ce_mask_buf=None,
+      _plain_ce_token_count=None,
+      tokenizer=None,
   )
 
   class _FP:
@@ -112,6 +116,7 @@ def _bare(*, complementary: bool) -> SimpleNamespace:
   m._apply_ignore_bos_mask = lambda *a, **k: BlockTrainer._apply_ignore_bos_mask(m, *a, **k)
   m.nll = lambda *a, **k: BlockTrainer.nll(m, *a, **k)
   m._elbo_schedule_weights = lambda t: BlockTrainer._elbo_schedule_weights(m, t)
+  m._record_plain_ce_mask = lambda mp: BlockTrainer._record_plain_ce_mask(m, mp)
   return m
 
 

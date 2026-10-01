@@ -13,6 +13,7 @@ RUN_NAME="${WANDB_NAME:-ar2block_uniform}"
 python -u -m discrete_diffusion \
   +experiment=block_qwen \
   algo=block_uniform \
+  sampling=block_uniform \
   model.load_pretrained=true \
   wandb.project="${WANDB_PROJECT}" \
   wandb.name="${RUN_NAME}" \

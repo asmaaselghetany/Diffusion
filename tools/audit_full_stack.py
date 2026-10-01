@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Full-stack audit across training, data, launch, resume, eval, and codex parity.
+"""Static *wiring* audit across training, data, launch, resume, eval paths.
+
+This tool is intentionally **not** a behavioral full-stack test. Default mode
+only greps/asserts that expected symbols, scripts, and config hooks exist in
+source. A correctly *named* but broken function can still pass static checks.
 
 Layers:
   1. algorithm   — loss/timestep/sampler invariants (pytest when --run-tests)
@@ -12,7 +16,7 @@ Layers:
   8. paper_ops   — paper cells, lever submitter, milestone tooling
 
 Usage:
-  python tools/audit_full_stack.py              # static checks only
+  python tools/audit_full_stack.py              # static wiring only
   python tools/audit_full_stack.py --run-tests  # static + core pytest per layer
   python tools/audit_full_stack.py --run-tests --strict  # + orphaned suite
   python tools/audit_full_stack.py --layer launch_ddp
@@ -29,6 +33,11 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 REPO = Path(__file__).resolve().parents[1]
+
+STATIC_ONLY_DISCLAIMER = (
+    'NOTE: static mode checks source presence/wiring only — not behavior. '
+    'Re-run with --run-tests for pytest coverage.'
+)
 
 
 @dataclass
@@ -79,14 +88,17 @@ def audit_data_sft() -> LayerResult:
   layer = LayerResult('data_sft')
   processing = _read(REPO / 'src/discrete_diffusion/data/processing.py')
   loaders = _read(REPO / 'src/discrete_diffusion/data/loaders.py')
+  baseline = _read(REPO / 'src/discrete_diffusion/data/conversion_baseline.py')
   cache_mod = _read(REPO / 'src/discrete_diffusion/data/dataset_cache.py')
   trainer = _read(REPO / 'src/discrete_diffusion/algorithms/block_trainer.py')
 
   layer.checks.extend([
       _must_contain(processing, 'def _group_block_aligned_sft',
                     label='block-aligned SFT grouper'),
-      _must_contain(loaders, '_FAST_DLLM_SFT_CHAT_TEMPLATE',
+      _must_contain(baseline, 'FAST_DLLM_SFT_CHAT_TEMPLATE',
                     label='Fast-dLLM chat template'),
+      _must_contain(loaders, 'install_conversion_chat_template',
+                    label='loaders installs conversion chat template'),
       _must_contain(loaders, 'return_assistant_tokens_mask=True',
                     label='assistant token mask in tokenization'),
       _must_contain(loaders, '_group_block_aligned_sft',
@@ -186,7 +198,8 @@ def audit_launch_ddp() -> LayerResult:
                     label='launch uses shared srun train'),
       _must_contain(ar_sft, 'source scripts/_block_qwen_ddp.bash',
                     label='ar_sft sources DDP helper'),
-      _must_contain(ar_sft, 'trainer.num_nodes', label='ar_sft sets num_nodes'),
+      _must_contain(ar_sft, 'append_block_qwen_trainer_overrides',
+                    label='ar_sft sets num_nodes'),
       _must_not_contain(ar_sft, '--gpus-per-task=1',
                         label='ar_sft avoids gpus-per-task=1'),
       _must_contain(lever, 'GPUS_PER_NODE', label='lever submitter exports gpus/node'),
@@ -242,8 +255,9 @@ def audit_codex_parity() -> LayerResult:
        lambda: _must_contain(_read(REPO / 'src/discrete_diffusion/data/processing.py'),
                              '_group_block_aligned_sft', label='17754e9')),
       ('84b898a Fast-dLLM training/decode',
-       lambda: _must_contain(_read(REPO / 'src/discrete_diffusion/data/loaders.py'),
-                             '_FAST_DLLM_SFT_CHAT_TEMPLATE', label='84b898a')),
+       lambda: _must_contain(
+           _read(REPO / 'src/discrete_diffusion/data/conversion_baseline.py'),
+           'FAST_DLLM_SFT_CHAT_TEMPLATE', label='84b898a')),
       ('880cefa worktree-safe eval/resume',
        lambda: Check('880cefa', (REPO / 'scripts/_resolve_block_qwen_run.bash').is_file(),
                      '' if (REPO / 'scripts/_resolve_block_qwen_run.bash').is_file()
@@ -397,7 +411,10 @@ def run_audit(
   failed = 0
   mode = 'strict' if strict and run_tests else ('tests' if run_tests else 'static')
   print(f'=== Full-stack audit ({mode}) ===')
-  print(f'Repo: {REPO}\n')
+  print(f'Repo: {REPO}')
+  if not run_tests:
+    print(STATIC_ONLY_DISCLAIMER)
+  print()
   for lr in results:
     status = 'PASS' if lr.passed else 'FAIL'
     print(f'[{status}] {lr.layer}')
@@ -411,7 +428,8 @@ def run_audit(
 
   total = sum(len(lr.checks) for lr in results)
   passed = total - failed
-  print(f'Summary: {passed}/{total} checks passed across {len(results)} layers')
+  kind = 'wiring checks' if not run_tests else 'checks'
+  print(f'Summary: {passed}/{total} {kind} passed across {len(results)} layers')
   return 1 if failed else 0
 
 

@@ -1,0 +1,208 @@
+[1/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_hybrid_1836811/hydra/wandb/offline-run-20260916_172025-lever_B4_hybrid_p10_ar2block_hybrid_1836811
+wandb: ERROR Nothing to sync.
+  OK
+[2/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_hybrid_1836812/hydra/wandb/offline-run-20260916_172657-lever_B4_hybrid_p10_ar2block_hybrid_1836812
+wandb: ERROR Nothing to sync.
+  OK
+[3/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_hybrid_1857475/hydra/wandb/offline-run-20260917_174303-lever_B4_joint_curriculum_ar2block_hybrid_1857475
+wandb: ERROR Nothing to sync.
+  OK
+[4/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_hybrid_1857476/hydra/wandb/offline-run-20260917_174847-lever_B4_shift_explorative_ar2block_hybrid_1857476
+wandb: ERROR Nothing to sync.
+  OK
+[5/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1467698/hydra/wandb/offline-run-20260823_172349-ar2block_masked_1467698
+wandb: ERROR Nothing to sync.
+  OK
+[6/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1660576/hydra/wandb/offline-run-20260906_141210-lever_C2_fdllm_full_ar2block_masked_1660576
+wandb: ERROR Nothing to sync.
+  OK
+[7/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1660579/hydra/wandb/offline-run-20260904_124204-ar2block_masked_1660579
+wandb: ERROR Nothing to sync.
+  OK
+[8/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1691161/hydra/wandb/offline-run-20260906_155106-lever_fastdllm_v2_ar2block_masked_1691161
+wandb: ERROR Nothing to sync.
+  OK
+[9/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1691206/hydra/wandb/offline-run-20260906_160356-lever_fastdllm_v2_ar2block_masked_1691206
+wandb: ERROR Nothing to sync.
+  OK
+[10/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1692667/hydra/wandb/offline-run-20260906_174304-lever_fastdllm_v2_ar2block_masked_1692667
+wandb: ERROR Nothing to sync.
+  OK
+[11/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1694554/hydra/wandb/offline-run-20260906_193941-lever_fastdllm_v2_ar2block_masked_1694554
+wandb: ERROR Nothing to sync.
+  OK
+[12/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1701099/hydra/wandb/offline-run-20260909_110947-lever_C2_fdllm_full_ar2block_masked_1701099
+wandb: ERROR Nothing to sync.
+  OK
+[13/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1735919/hydra/wandb/offline-run-20260909_235352-lever_C2_fdllm_full_ar2block_masked_1735919
+wandb: ERROR Nothing to sync.
+  OK
+[14/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1739031/hydra/wandb/offline-run-20260910_092750-lever_C0_ar2block_masked_1739031
+wandb: ERROR Nothing to sync.
+  OK
+[15/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1739851/hydra/wandb/offline-run-20260911_221605-lever_C0_ar2block_masked_1739851
+wandb: ERROR Nothing to sync.
+  OK
+[16/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1739853/hydra/wandb/offline-run-20260911_221606-lever_C2_fdllm_full_ar2block_masked_1739853
+wandb: ERROR Nothing to sync.
+  OK
+[17/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1762504/hydra/wandb/offline-run-20260911_222753-lever_C2_fdllm_full_ar2block_masked_1762504
+wandb: ERROR Nothing to sync.
+  OK
+[18/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1762534/hydra/wandb/offline-run-20260911_223411-lever_C0_ar2block_masked_1762534
+wandb: ERROR Nothing to sync.
+  OK
+[19/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1762536/hydra/wandb/offline-run-20260911_223429-lever_C2_fdllm_full_ar2block_masked_1762536
+wandb: ERROR Nothing to sync.
+  OK
+[20/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1763301/hydra/wandb/offline-run-20260911_235658-lever_C2_fdllm_full_ar2block_masked_1763301
+wandb: ERROR Nothing to sync.
+  OK
+[21/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1773297/hydra/wandb/offline-run-20260913_020517-lever_C0_ar2block_masked_1773297
+wandb: ERROR Nothing to sync.
+  OK
+[22/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1773298/hydra/wandb/offline-run-20260913_020517-lever_C2_fdllm_full_ar2block_masked_1773298
+wandb: ERROR Nothing to sync.
+  OK
+[23/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1809099/hydra/wandb/offline-run-20260915_153122-lever_C2_fdllm_full_ar2block_masked_1809099
+wandb: ERROR Nothing to sync.
+  OK
+[24/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1809191/hydra/wandb/offline-run-20260915_162335-lever_C2_fdllm_full_ar2block_masked_1809191
+wandb: ERROR Nothing to sync.
+  OK
+[25/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1809194/hydra/wandb/offline-run-20260915_160500-lever_C2_fdllm_full_ar2block_masked_1809194
+wandb: ERROR Nothing to sync.
+  OK
+[26/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1836723/hydra/wandb/offline-run-20260916_172025-lever_C5_causal_clean_ar2block_masked_1836723
+wandb: ERROR Nothing to sync.
+  OK
+[27/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1836725/hydra/wandb/offline-run-20260916_172024-lever_shift+complementary+mask_schedule_fdllm+loss_plain_ce+hub_train_parity+joint_ar+causal_clean_ar2block_masked_1836725
+wandb: ERROR Nothing to sync.
+  OK
+[28/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1836800/hydra/wandb/offline-run-20260916_172134-lever_C2_fdllm_full_ar2block_masked_1836800
+wandb: ERROR Nothing to sync.
+  OK
+[29/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1855537/hydra/wandb/offline-run-20260917_133512-lever_xfer_bg_mix_32_ar2block_masked_1855537
+wandb: ERROR Nothing to sync.
+  OK
+[30/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1856101/hydra/wandb/offline-run-20260917_140547-lever_C2_shift_ar2block_masked_1856101
+wandb: ERROR Nothing to sync.
+  OK
+[31/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1856103/hydra/wandb/offline-run-20260917_141514-lever_C2_comp_ar2block_masked_1856103
+wandb: ERROR Nothing to sync.
+  OK
+[32/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1856105/hydra/wandb/offline-run-20260917_141711-lever_C2_fdllm_ar2block_masked_1856105
+wandb: ERROR Nothing to sync.
+  OK
+[33/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1857473/hydra/wandb/offline-run-20260917_174303-lever_C0_anneal_ar2block_masked_1857473
+wandb: ERROR Nothing to sync.
+  OK
+[34/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_2020048/hydra/wandb/offline-run-20260926_034258-xfer_bg_mix_32_blockgen_ar2block_masked_2020048
+wandb: ERROR Nothing to sync.
+  OK
+[35/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_2024324/hydra/wandb/offline-run-20260926_103207-xfer_bg_mix_32_ar2block_masked_2024324
+wandb: ERROR Nothing to sync.
+  OK
+[36/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_uniform_1457696/hydra/wandb/offline-run-20260822_185643-ar2block_uniform_1457696
+wandb: ERROR Nothing to sync.
+  OK
+[37/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_uniform_1660931/hydra/wandb/offline-run-20260904_125657-lever_blockgen_uniform_ar2block_uniform_1660931
+wandb: ERROR Nothing to sync.
+  OK
+[38/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_uniform_1660932/hydra/wandb/offline-run-20260904_125657-ar2block_uniform_1660932
+wandb: ERROR Nothing to sync.
+  OK
+[39/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_uniform_1836729/hydra/wandb/offline-run-20260916_172024-lever_neutral_ar2block_uniform_1836729
+wandb: ERROR Nothing to sync.
+  OK
+[40/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_uniform_1836776/hydra/wandb/offline-run-20260916_172025-lever_joint_ar+causal_clean_ar2block_uniform_1836776
+wandb: ERROR Nothing to sync.
+  OK
+[41/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_uniform_1836802/hydra/wandb/offline-run-20260916_172656-lever_joint_ar+causal_clean_ar2block_uniform_1836802
+wandb: ERROR Nothing to sync.
+  OK
+[42/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_uniform_1848814/hydra/wandb/offline-run-20260917_072510-lever_U0_ar2block_uniform_1848814
+wandb: ERROR Nothing to sync.
+  OK
+[43/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_uniform_1848844/hydra/wandb/offline-run-20260917_072719-lever_U2_ar2block_uniform_1848844
+wandb: ERROR Nothing to sync.
+  OK
+[44/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_uniform_1849287/hydra/wandb/offline-run-20260917_080540-lever_xfer_blockgen_uniform_32_ar2block_uniform_1849287
+wandb: ERROR Nothing to sync.
+  OK
+[45/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_uniform_1849335/hydra/wandb/offline-run-20260917_080742-lever_U0_ar2block_uniform_1849335
+wandb: ERROR Nothing to sync.
+  OK
+[46/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_uniform_1855541/hydra/wandb/offline-run-20260917_133513-lever_xfer_bg_mix_32_ar2block_uniform_1855541
+wandb: ERROR Nothing to sync.
+  OK
+[47/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_uniform_1857278/hydra/wandb/offline-run-20260917_170800-lever_U0_shift_ar2block_uniform_1857278
+wandb: ERROR Nothing to sync.
+  OK
+[48/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_uniform_1857471/hydra/wandb/offline-run-20260917_174303-lever_U0_anneal_ar2block_uniform_1857471
+wandb: ERROR Nothing to sync.
+  OK
+[49/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_uniform_1857519/hydra/wandb/offline-run-20260917_174453-lever_U0_ar2block_uniform_1857519
+wandb: ERROR Nothing to sync.
+  OK
+[50/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_uniform_1955203/hydra/wandb/offline-run-20260923_210321-U0_ar2block_uniform_1955203
+wandb: ERROR Nothing to sync.
+  OK
+[51/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_uniform_1994131/hydra/wandb/offline-run-20260924_193309-U0_ss_pack_ar2block_uniform_1994131
+wandb: ERROR Nothing to sync.
+  OK
+[52/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_uniform_2020049/hydra/wandb/offline-run-20260926_034257-xfer_bg_mix_32_blockgen_ar2block_uniform_2020049
+wandb: ERROR Nothing to sync.
+  OK
+[53/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_uniform_2024327/hydra/wandb/offline-run-20260926_103303-xfer_bg_mix_32_ar2block_uniform_2024327
+wandb: ERROR Nothing to sync.
+  OK
+[54/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_uniform_2092151/hydra/wandb/offline-run-20260927_131253-U0_ss_shift_ar2block_uniform_2092151
+wandb: ERROR Nothing to sync.
+  OK
+[55/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_uniform_2092154/hydra/wandb/offline-run-20260927_131403-xfer_bg_mix_32_blockgen_ss_ar2block_uniform_2092154
+wandb: ERROR Nothing to sync.
+  OK
+[56/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_uniform_2092155/hydra/wandb/offline-run-20260927_131403-xfer_bg_mix_32_blockgen_ss_shift_ar2block_uniform_2092155
+wandb: ERROR Nothing to sync.
+  OK
+[57/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_uniform_2092156/hydra/wandb/offline-run-20260928_091026-xfer_bg_mix_32_blockgen_unifv_ar2block_uniform_2092156
+wandb: ERROR Nothing to sync.
+  OK
+[58/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_uniform_2096579/hydra/wandb/offline-run-20260928_091505-C3_fullseq_ar2block_uniform_2096579
+wandb: ERROR Nothing to sync.
+  OK
+[59/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar_sft_1857323/hydra/wandb/offline-run-20260917_170800-ar_sft_1857323
+wandb: ERROR Nothing to sync.
+  OK
+[60/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/block_masked_1467699/hydra/wandb/offline-run-20260823_172356-block_masked_1467699
+wandb: ERROR Nothing to sync.
+  OK
+[61/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/block_masked_1660933/hydra/wandb/offline-run-20260904_125703-block_masked_1660933
+wandb: ERROR Nothing to sync.
+  OK
+[62/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/block_masked_1836796/hydra/wandb/offline-run-20260916_172033-lever_neutral_block_masked_1836796
+wandb: ERROR Nothing to sync.
+  OK
+[63/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/block_uniform_1467700/hydra/wandb/offline-run-20260823_172356-block_uniform_1467700
+wandb: ERROR Nothing to sync.
+  OK
+[64/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/block_uniform_1660935/hydra/wandb/offline-run-20260904_125703-block_uniform_1660935
+wandb: ERROR Nothing to sync.
+  OK
+[65/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/block_uniform_1836795/hydra/wandb/offline-run-20260916_172033-lever_N0_block_uniform_1836795
+wandb: ERROR Nothing to sync.
+  OK
+[66/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/block_uniform_1836803/hydra/wandb/offline-run-20260916_172701-lever_N0_block_uniform_1836803
+wandb: ERROR Nothing to sync.
+  OK
+[67/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/merge_C2_chat1773298_math1763301_a30/hydra/wandb/offline-run-20260913_020517-lever_C2_fdllm_full_ar2block_masked_1773298
+wandb: ERROR Nothing to sync.
+  OK
+[68/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/merge_C2_chat1773298_math1763301_a50/hydra/wandb/offline-run-20260913_020517-lever_C2_fdllm_full_ar2block_masked_1773298
+wandb: ERROR Nothing to sync.
+  OK
+[69/69] sync /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/merge_C2_chat1773298_math1763301_a70/hydra/wandb/offline-run-20260913_020517-lever_C2_fdllm_full_ar2block_masked_1773298
+wandb: ERROR Nothing to sync.
+  OK
+DONE n=69 ok=69 fail=0

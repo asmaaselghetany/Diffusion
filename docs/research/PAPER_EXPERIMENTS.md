@@ -101,12 +101,31 @@ or contradict the same knob on `N0`? Always report `line × arm × data × budge
 Five axes total; **three primary (conversion), two native/extras.** Every result
 row must state **`line × arm × data × budget`**.
 
+### Presentation / write-up frame (paradigms × components)
+
+Keep these **two layers** distinct in tables and talks:
+
+| Layer | Question | Levels |
+|-------|----------|--------|
+| **Paradigm** | What training path? | **Native** (`LINE=block`) · **AR→block** (`ar2block`, bs=32) · **AR→full-seq diffusion** (C3 only — “full-seq” = diffusion) · **Matched causal AR** (`A_ar_sft`) · **Joint** (C5 / U2) |
+| **Components** | Which train knobs? | `shift`, `complementary`, `mask_schedule`, `plain_ce`, hub train parity, `joint_ar`, `causal_clean`, intra-block / kernel anneal, … |
+
+**Orthogonal cross-cuts (not paradigms, not “one more component”):**
+
+- **Corruption (axis C):** masked · uniform · hybrid  
+- **Geometry (axis B):** fixed-32 · mixture / weights · … (native home; `xfer_*` on conversion)  
+- **Eval (axis E):** decode profile, NFE, likelihood vs generative suite  
+
+Components attach mainly to **AR→block** (portable to uniform/hybrid). Joint is a
+**paradigm** (auxiliary AR objective), not a geometry or corruption choice.
+Live scoreboard: [PRESENTATION_SNAPSHOT_2026-09-18.md](PRESENTATION_SNAPSHOT_2026-09-18.md).
+
 ### Primary axes (conversion spine — `LINE=ar2block`)
 
 | Axis | Name | Question it answers | Neutral reference | Knobs |
 |------|------|---------------------|-------------------|-------|
-| **A** | **Init & budget** | What are you converting from, for how long? | Qwen2.5-Instruct, ~3B tokens | `LINE=ar2block`, `model.load_pretrained`, `trainer.max_steps`, data |
-| **D** | **Conversion recipe** | How is the AR backbone adapted to block training? | hooks off | `submit_lever.sh --preset C2_*` / `C5_*` (`shift`, `complementary`, `joint_ar_alpha`, …) |
+| **A** | **Init & budget** | What are you converting from, for how long? | Qwen2.5-Instruct, ~3B tokens | `LINE=ar2block`, data/budget; **C3** = full-seq **diffusion** (`block_size=length`); **`A_ar_sft`** = matched causal AR (not “full-seq”) |
+| **D** | **Components** (train knobs on AR→block) | How is the AR backbone adapted? | hooks off | `submit_lever.sh --preset C2_*` / anneal / … (`shift`, `complementary`, …); joint packs → C5 paradigm |
 | **E** | **Decode evaluation** | How do we *measure* conversion output? | 32-step BlockSampler | `NUM_STEPS`, `max_new_tokens`, lm-eval harness |
 
 ### Native / extras axes
@@ -114,7 +133,7 @@ row must state **`line × arm × data × budget`**.
 | Axis | Name | Home family | Fixed in conversion main | Knobs when varied |
 |------|------|-------------|--------------------------|-------------------|
 | **B** | Block geometry | **Native** (`B3_*`, BlockGen); optional **transfer** (`xfer_*`) | `block_size=32`, no mixture | `block_size_mixture`, `block_weights`, `u-stratified` |
-| **C** | Corruption / noising | Both (arm); B1 under conversion; BlockGen often uniform | **masked** on conversion main | `algo=block_masked \| block_uniform` |
+| **C** | Corruption / noising | Both (arm); B1 under conversion; BlockGen often uniform | **masked** on conversion main | `algo=block_masked \| block_uniform \| block_hybrid` |
 
 **Conversion reference:** `C0` — AR instruct init, masked, block 32, hooks off, Nemotron SFT 6000×256.
 
@@ -170,7 +189,8 @@ val BPD + conditional lm-eval (≥ GSM8K, IFEval) + gen-PPL + optional tok/s.
 |----------|---------|
 | **`C0`** (narrative: `C0_ar2block_masked`) | Neutral conversion reference |
 | **`C2_fdllm`** | Fast-dLLM positive control (axis D) |
-| **`C3`** (narrative: `C3_ar_sft`) | Matched AR SFT, same data/steps (axis A) |
+| **`C3`** (narrative: `C3_fullseq`) | AR→full-seq **diffusion**, uniform+shift, `block_size=2048` |
+| **`A_ar_sft`** | Matched causal AR SFT (Tab-1 AR reference — not full-seq) |
 | **External** (Fast-dLLM, NLD) | Cited on design-space map only |
 
 Scratch-init arms (`block_*`, `N0`) are the **native family reference**, not
@@ -242,6 +262,8 @@ impl is retired — discard any C2 readout trained under that bug.
 | Cell | Registry preset | Axis D knobs |
 |------|-----------------|--------------|
 | `C2_shift` | `--preset C2_shift` | `shift_loss_targets` |
+| `C0_shift` | `--preset C0_shift` | alias of `C2_shift` (Unifusion \(x_0\) naming) |
+| `U0_shift` | `--preset U0_shift --arm uniform` | same shift on **uniform** (Unifusion-style) |
 | `C2_comp` | `--preset C2_comp` | `complementary_masks` |
 | `C2_fdllm` | `--preset C2_fdllm` | shift + complementary (**strict Tab 2**) |
 | `C2_fdllm_full` | `--preset C2_fdllm_full` | + `mask_schedule=fast_dllm` + `loss_plain_ce` (recipe fidelity) |
@@ -271,18 +293,27 @@ impl is retired — discard any C2 readout trained under that bug.
 
 ---
 
-#### C3 — Matched AR SFT baseline
+#### C3 — AR→full-seq diffusion (Unifusion floor)
 
-**Goal:** Is block conversion worth it vs same-budget AR fine-tuning? (RQ2)
+**Goal:** Fair **full-sequence diffusion** baseline from the same AR Instruct init /
+Nemotron budget as C0/U0. **“Full-seq” in this paper always means diffusion**
+(`block_size=model.length`), never causal AR.
 
 | Cell | Description |
 |------|-------------|
-| `C3` | Causal LM SFT, same Nemotron / steps / LR / batch |
+| `C3` | Full-seq diffusion: `block_size=2048`, **uniform + shift** |
+| `A_ar_sft` | Matched **causal AR SFT** (separate paradigm — not called full-seq) |
 
-**Requires:** `algo=ar_sft` — wired via `configs/experiment/ar_sft_qwen.yaml` +
-`scripts/slurm/ar_sft.sbatch`.
+**Requires:** `./scripts/submit_paper_cell.sh C3` → preset `C3_fullseq`,
+`BLOCK=2048`, `arm=uniform`. Reuses `BlockTrainer` / `ar2block` with one block
+= whole sequence. AR reference: `./scripts/submit_paper_cell.sh A_ar_sft`
+(floor already done: `ar_sft_1857323`).
 
-**Outputs:** **Tab 1** three-way: C0 vs C3 vs (optional best C2).
+**Decode note:** `num_blocks=1` — hierarchical truncation ≡ full seq. The
+multi-block `full_seq_dual` decode ban (bs=32) is unchanged.
+
+**Outputs:** **Tab 1** paradigm columns: C0 (block diffusion) vs C3 (full-seq
+diffusion) vs optional `A_ar_sft` (causal AR).
 
 ---
 
@@ -343,6 +374,18 @@ Hold A, B, D, E fixed. One table row comparison—not a full 2×2 main-track stu
 
 **Do not lead with:** uniform-vs-masked thesis. **Do report:** whether gen-PPL /
 GSM8K invert val BPD ranking under the **same conversion pipeline**.
+
+**Discussion-only (gated):** editable-token protocol locked in populated plan
+(§ editable-token investigation). Mechanism = prior art (GIDD / remask lit);
+contribution = **prove/deny** whether it causally explains local IFEval/code
+under matched C0 vs U0 convert. Taxonomy → local-slice Δ; causal only with
+inject/remask. Never “we discovered editable tokens.”
+
+**Optional gated follow-up (`U0_from_C0`):** AR→**masked**→**uniform** continue-FT
+(resume C0 into uniform arm) only if matched direct U0 underperforms C0.
+Motivation: Unifusion finds two-stage ≈ direct on full-seq GenPPL; we test whether
+a masked warm-start helps **block-Instruct** uniform. See populated plan §5.
+Do **not** make two-stage the default conversion path.
 
 ---
 
@@ -540,7 +583,9 @@ baseline (C3 uses same schedule on causal SFT).
 | **Fig 1** | Design space: conversion vs native vs transfer | Main |
 | **Fig 2** | C0 train/val curves | Main |
 | **Fig 3** | Capability recovery vs step (C0 / C2 / C3 longitudinal) | Main |
-| **Fig 4** | NFE sweep on conversion ckpt (optional) | Supporting |
+| **Fig 4** | NFE sweep on conversion ckpt: **(PPL, H) vs steps** | Supporting (Unifusion hygiene) |
+| **Fig 4b** | Dual GenPPL modes (first_chunk vs full) on C0/U0/C2 | Appendix |
+| **Fig 4c** | Qualitative collapse panel (2–3 samples) | Appendix |
 | **Fig 5** | Metric agreement / disagreement (BPD vs gen-PPL vs GSM8K) | Main if Outcome A |
 | **Tab 1** | C0, C2*, C3 — final-step metrics | Main conversion |
 | **Tab 2** | Fast-dLLM lever ablation (C2) | Main conversion |
@@ -548,6 +593,29 @@ baseline (C3 uses same schedule on causal SFT).
 | **Tab X1** | `xfer_*` vs C0 (optional) | Transfer |
 | **Tab B1** | B1 masked vs uniform (same conversion skeleton) | Extra |
 | **Tab A1** | Literature vs axes / families (full map) | Appendix |
+
+### GenPPL reporting rule (Unifusion hygiene)
+
+**Never** put GenPPL alone in a table or figure. Every free-gen row is
+`(PPL, H_mean[, H_med])` from `gen_ppl_metrics.json` / `gen_ppl_pair.json`.
+
+Protocol (cell **C4** / `scripts/submit_gen_ppl_hygiene.sh`):
+
+| Piece | What |
+|-------|------|
+| Pair always | `tools/gen_ppl_hygiene.py pair` after every gen-PPL |
+| NFE sweep | steps ∈ {8,16,32,64}, same ckpt/prefix; plot PPL↓ & H vs NFE |
+| Dual modes | `first_chunk_only=true` (claim) **and** `false` (full string) on C0/U0/C2 — separate columns |
+| Collapse panel | 2–3 samples → `collapse_panel/panel.md` appendix |
+| Optional | `RUN_MULTISEED=1` on U0/U0_shift; `--with-winogrande` base-LM slice |
+
+```bash
+CKPT=.../ar2block_masked_1762534/checkpoints/last.ckpt \
+  ./scripts/submit_paper_cell.sh C4
+# or:
+CKPT=... MODE=all RUN_MULTISEED=0 ./scripts/submit_gen_ppl_hygiene.sh
+CKPT=... ./scripts/submit_gen_ppl_hygiene.sh --with-winogrande
+```
 
 ---
 
@@ -632,7 +700,7 @@ Prefer interpreting C0/C2 before writing B3/B4/C5 results (scheduling, not stubs
 |----------|-------------------|-------|
 | P0 | C0 validation + finish conversion spine | Longitudinal at 500/1k/2k/4k/6k |
 | P1 | C2 Fast-dLLM combined control | Discard polarity-flip micros for Tab 2 |
-| P2 | C3 matched AR SFT | Same schedule; init = pretrained AR |
+| P2 | C3 full-seq diffusion | `BLOCK=2048` uniform+shift; AR SFT = `A_ar_sft` |
 | P3 | C4 decode sweep on best conversion ckpt | After P0–P1 |
 | P4 | B1 `B1_uniform` | Conversion-family corruption slice |
 | P5 | N0 / B2 scratch pair | Native floor at matched budget |

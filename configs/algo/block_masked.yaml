@@ -1,7 +1,8 @@
 defaults:
   - /forward_process: block_masked
-  - /sampling: block
   - /noise: log-linear
+  # Must use @_global_.sampling + override: bare `/sampling:` nests as algo.sampling.
+  - override /sampling@_global_.sampling: block
 
 _target_: discrete_diffusion.algorithms.block_trainer.BlockTrainer
 name: block_masked
@@ -23,6 +24,8 @@ block_weights: null
 block_size_per_gpu: null
 stratified_gamma: null
 pure_noise_block_sizes: []
+pure_noise_mode: soft
+x0_causal: false
 loss_type_special_cases: []
 # NLD-style joint AR (C5); 0 = off.
 joint_ar_alpha: 0.0
@@ -32,3 +35,6 @@ hub_struct_attn_only: false
 # Hybrid arm only (ignored on masked/uniform).
 hybrid_p_uniform: 0.1
 hybrid_decode: masked
+intra_block_attn_anneal_steps: 0
+kernel_anneal_steps: 0
+shift_on_hybrid: false

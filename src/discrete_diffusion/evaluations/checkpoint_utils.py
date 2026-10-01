@@ -15,6 +15,21 @@ from discrete_diffusion.data.conversion_baseline import (
 )
 
 
+def trusted_torch_load(path, map_location='cpu'):
+  """Load a checkpoint dict from a trusted operator path.
+
+  Tries ``weights_only=True`` first (safe for pure tensor state_dicts). Full
+  Lightning ckpts embed OmegaConf / custom objects and require pickle —
+  those loads are **trusted-cluster-only** (do not point this at untrusted
+  uploads). Prefer safetensors for public weight exchange.
+  """
+  path = str(path)
+  try:
+    return torch.load(path, map_location=map_location, weights_only=True)
+  except Exception:
+    return torch.load(path, map_location=map_location, weights_only=False)
+
+
 def load_block_trainer_checkpoint(
     checkpoint_path: str | Path,
     device: torch.device,
@@ -31,7 +46,7 @@ def load_block_trainer_checkpoint(
   path = Path(checkpoint_path).expanduser().resolve()
   if not path.is_file():
     raise FileNotFoundError(f'checkpoint not found: {path}')
-  ckpt = torch.load(path, map_location='cpu', weights_only=False)
+  ckpt = trusted_torch_load(path, map_location='cpu')
   if 'hyper_parameters' not in ckpt or 'config' not in ckpt['hyper_parameters']:
     raise ValueError(f'{path} missing hyper_parameters.config')
   config = ckpt['hyper_parameters']['config']
@@ -86,4 +101,8 @@ def merge_hydra_overrides(config, overrides: list[str]):
   return config
 
 
-__all__ = ['load_block_trainer_checkpoint', 'merge_hydra_overrides']
+__all__ = [
+    'load_block_trainer_checkpoint',
+    'merge_hydra_overrides',
+    'trusted_torch_load',
+]

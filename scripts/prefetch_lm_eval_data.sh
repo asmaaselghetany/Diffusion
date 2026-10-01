@@ -37,10 +37,13 @@ PY
 
 CORE_TASKS="mmlu,gpqa_main_n_shot,gsm8k,minerva_math,ifeval"
 CODE_TASKS="humaneval,humaneval_plus,mbpp,mbpp_plus"
+PAPER_GEN_TASKS="mmlu_generative,gsm8k,ifeval"
 SUITE="${SUITE:-fastdllm}"
 case "${SUITE}" in
   core) DEFAULT_TASKS="${CORE_TASKS}" ;;
   code) DEFAULT_TASKS="${CODE_TASKS}" ;;
+  paper_gen|paper-gen|uniform_gen) DEFAULT_TASKS="${PAPER_GEN_TASKS}" ;;
+  paper_acc|paper-acc) DEFAULT_TASKS="mmlu,gsm8k,ifeval" ;;
   fastdllm|full|paper) DEFAULT_TASKS="${CORE_TASKS},${CODE_TASKS}" ;;
   *) echo "Unknown SUITE=${SUITE}" >&2; exit 2 ;;
 esac
@@ -68,6 +71,8 @@ direct = [
     # Official Fast-dLLM / lm-eval mmlu loads cais/mmlu *per subject*
     # (prehistory, …). Caching only name='all' breaks offline Hub eval.
     ('cais/mmlu', 'all'),
+    # Generative MMLU (uniform/hybrid paper_gen suite).
+    ('hails/mmlu_no_train', 'all'),
     ('Idavidrein/gpqa', 'gpqa_main'),
 ]
 for path, name in direct:

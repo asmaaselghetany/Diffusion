@@ -60,6 +60,7 @@ eval:
 
 wandb:
   project: block_qwen
+  entity: aselghetany-nu
   name: null
   id: null
   resume: allow

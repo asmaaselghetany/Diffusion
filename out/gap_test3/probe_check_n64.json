@@ -1,0 +1,145 @@
+{
+  "protocol": "GAP_DIAGNOSIS_M_U_2026-10-01 Test 3 probe-check",
+  "simplex": {
+    "forward_process_name": "uniform",
+    "uniform_simplex_mode": "conversion",
+    "v_eff": 151663,
+    "vocab_size": 151936,
+    "n_exclude": 273,
+    "exclude_ids_head": [
+      151665,
+      151643,
+      151644,
+      151666,
+      151667,
+      151668,
+      151669,
+      151670
+    ],
+    "mask_id": 151665,
+    "block_size": 32,
+    "noise_schedule": "LogLinear",
+    "eps": 0.001,
+    "shift_loss_targets": false,
+    "time_conditioning": false,
+    "alpha_map": {
+      "1.0": 0.0,
+      "0.95": 0.050050050050050095,
+      "0.9": 0.10010010010010008,
+      "0.7": 0.30030030030030036,
+      "0.5": 0.5005005005005005,
+      "0.3": 0.7007007007007007,
+      "0.1": 0.9009009009009009
+    }
+  },
+  "n_sequences": 64,
+  "alpha_1_0": {
+    "alpha_t": 1.0,
+    "t_schedule": 0.0,
+    "n_problems": 64,
+    "corrupt_acc": {
+      "mean": null,
+      "lo": null,
+      "hi": null,
+      "n": 0
+    },
+    "corrupt_ce": {
+      "mean": null,
+      "lo": null,
+      "hi": null,
+      "n": 0
+    },
+    "clean_acc": {
+      "mean": 0.1318359375,
+      "lo": 0.10693359375,
+      "hi": 0.15380859375,
+      "n": 64
+    },
+    "clean_ce": {
+      "mean": 4886.149642115459,
+      "lo": 1468.0302438307554,
+      "hi": 8304.214123087004,
+      "n": 64
+    },
+    "clean_copy_xt_acc": {
+      "mean": 0.1318359375,
+      "lo": 0.10693359375,
+      "hi": 0.15380859375,
+      "n": 64
+    },
+    "clean_acc_note": "top-1 == x0 on sites with xt==x0 (after dropping collisions)",
+    "detect_auroc": {
+      "mean": null,
+      "lo": null,
+      "hi": null,
+      "n": 0
+    },
+    "detect_auroc_note": "score=1-p(xt) on active block",
+    "n_attempted_moves_total": 0,
+    "n_collision_xt_eq_x0_total": 0,
+    "n_kept_no_move_total": 2048,
+    "n_xt_ne_x0_total": 0,
+    "collision_rate_among_moves": null,
+    "fraction_dropped_as_not_corrupt": 0.0,
+    "mean_n_corrupted": 0.0
+  },
+  "alpha_0_95": {
+    "alpha_t": 0.95,
+    "t_schedule": 0.050050050050050095,
+    "n_problems": 64,
+    "corrupt_acc": {
+      "mean": 0.7414965994504034,
+      "lo": 0.6411564642069291,
+      "hi": 0.853741497409587,
+      "n": 49
+    },
+    "corrupt_ce": {
+      "mean": 1.2003813804828347,
+      "lo": 0.6475825831248678,
+      "hi": 1.837970589329156,
+      "n": 49
+    },
+    "clean_acc": {
+      "mean": 0.23999891802668571,
+      "lo": 0.2070991371292621,
+      "hi": 0.27337288652779534,
+      "n": 64
+    },
+    "clean_ce": {
+      "mean": 5115.684586638585,
+      "lo": 1548.1530051194131,
+      "hi": 8751.563236342743,
+      "n": 64
+    },
+    "clean_copy_xt_acc": {
+      "mean": 0.23999891802668571,
+      "lo": 0.2070991371292621,
+      "hi": 0.27337288652779534,
+      "n": 64
+    },
+    "clean_acc_note": "top-1 == x0 on sites with xt==x0 (after dropping collisions)",
+    "detect_auroc": {
+      "mean": 0.9956096342875304,
+      "lo": 0.9919684002633312,
+      "hi": 0.9983432082510424,
+      "n": 49
+    },
+    "detect_auroc_note": "score=1-p(xt) on active block",
+    "n_attempted_moves_total": 99,
+    "n_collision_xt_eq_x0_total": 0,
+    "n_kept_no_move_total": 1949,
+    "n_xt_ne_x0_total": 99,
+    "collision_rate_among_moves": 0.0,
+    "fraction_dropped_as_not_corrupt": 0.0,
+    "mean_n_corrupted": 1.546875
+  },
+  "train_context": {
+    "val_nll": 1.3756713881576237,
+    "val_ppl": 3.9577330061936262,
+    "train_nll": 1.366000956005375,
+    "note": "No token-acc in wandb; compare probe clean_acc to whether copy would be near 1. Soft NLL\u2260top-1.",
+    "summary_path": "/e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_uniform_2020049/hydra/wandb/offline-run-20260926_034257-xfer_bg_mix_32_blockgen_ar2block_uniform_2020049/files/wandb-summary.json"
+  },
+  "verdict_copy": "does_not_copy_at_alpha1",
+  "note": "If \u03b1=1 clean_acc\u226a1, model does not identity-copy; smoke clean~0.25 can be real. Metric self-check is separate."
+}

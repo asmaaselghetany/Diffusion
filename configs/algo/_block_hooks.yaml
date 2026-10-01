@@ -13,6 +13,12 @@ block_size_per_gpu: null
 stratified_gamma: null
 # Force t=1 (full prior) when training at these block sizes (BlockGen).
 pure_noise_block_sizes: []
+# soft = Fast-dLLM-ish: only set t=1, still Bernoulli at α(1)≈ε.
+# hard = BlockGen q_xt: fill MASK / Unif(V_eff) on supervised sites.
+pure_noise_mode: soft
+# Clean-stream x0→x0: false = Fast-dLLM block-causal; true = BlockGen token-causal
+# (needed for multi-size AR↔diff KV share / ARPC size-1 path).
+x0_causal: false
 # Flat list [size, type, ...] or mapping; types: elbo | ce | ce-noisy
 loss_type_special_cases: []
 # NLD joint AR: L = L_AR + alpha * L_diff (0 = off).
@@ -23,6 +29,18 @@ loss_weighting: elbo  # elbo | plain_ce (plain_ce = Hub mask-site CE mean; never
 # Hub modeling.py training: overwrite attention with structural block-diff only
 # (no pad masking). When true, backbone gets attention_mask=None.
 hub_struct_attn_only: false
+# Train packing: false = Fast-dLLM dual concat(xt,x0); true = Hub decode graph
+# (xt only + eval_block_diff_mask). Pair with sampling.single_stream_decode.
+single_stream_train: false
+# conversion = Unif(V\E); blockgen = literal Unif(V) ablation (uniform arm).
+uniform_simplex_mode: conversion
 hybrid_p_uniform: 0.1
 # B4v1 locked decode (DESIGN_LOCKS.md).
 hybrid_decode: masked
+# Unifusion-style novelty probes (DEFAULT OFF — do not change C0/C2/U0).
+# 0 = full bi within block (legacy). >0 = anneal causal→bi over N train steps.
+intra_block_attn_anneal_steps: 0
+# Hybrid-only: ramp p_uniform 0→hybrid_p_uniform over N steps (0 = fixed p).
+kernel_anneal_steps: 0
+# Opt-in: allow shift_loss_targets on hybrid (explorative B4_shift_* only).
+shift_on_hybrid: false

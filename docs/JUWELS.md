@@ -27,14 +27,14 @@ After `git pull` from upstream (HAICORE paths): `bash scripts/setup_juwels.sh`
 **DDP smoke** (after data download):
 
 ```bash
-sbatch --account=scifi scripts/train_block_qwen_ddp_smoke.sbatch
+sbatch --account=profound scripts/train_block_qwen_ddp_smoke.sbatch
 ```
 
 ## Submit
 
 ```bash
 # Smoke (full node, 4 GPU)
-sbatch --account=scifi scripts/train_block_qwen_verify.sbatch
+sbatch --account=profound scripts/train_block_qwen_verify.sbatch
 
 # Paper arms (Pipeline 1 + 2)
 ./scripts/submit_ar2block.sh both
@@ -59,7 +59,7 @@ scripts/
 
 - **Paper arms:** `--nodes=4 --ntasks-per-node=4 --gres=gpu:4 --cpus-per-task=72` (16 GPUs)
 - **Smoke / eval:** usually 1 node (`--ntasks=1 --gres=gpu:4`)
-- **Account:** `--account=scifi` on every `sbatch` (including chained resume/eval)
+- **Account:** `--account=profound` on every `sbatch` (including chained resume/eval)
 - **Walltime:** `12:00:00` (booster QOS cap on Jupiter)
 - **Modules:** `Stages/2026 GCC Python CUDA` (never pipe `module load` through sed)
 - **Torch:** `torch==2.6.0+cu126` on aarch64 GH200 (see `setup_venv.sh`)

@@ -147,3 +147,29 @@ def test_checkpoint_embed_vocab_helpers():
   tok = SimpleNamespace()
   apply_checkpoint_embed_vocab_size(tok, 151666)
   assert tok._effective_vocab_size == 151666
+
+
+def test_maybe_keep_hub_vocab_logs_lookup_failure(monkeypatch, caplog):
+  """Hub config lookup failures must be visible, not silent."""
+  import logging
+  from discrete_diffusion.data.conversion_baseline import maybe_keep_hub_vocab_size
+
+  class _Boom:
+    @staticmethod
+    def from_pretrained(*args, **kwargs):
+      del args, kwargs
+      raise OSError('offline / missing cache')
+
+  class _Tok:
+    name_or_path = 'Qwen/Qwen2.5-1.5B-Instruct'
+
+    def __len__(self):
+      return 151666
+
+  import transformers
+  monkeypatch.setattr(transformers, 'AutoConfig', _Boom)
+  tok = _Tok()
+  with caplog.at_level(logging.WARNING):
+    maybe_keep_hub_vocab_size(tok)
+  assert any('Hub vocab_size lookup failed' in r.message for r in caplog.records)
+  assert not hasattr(tok, '_effective_vocab_size')

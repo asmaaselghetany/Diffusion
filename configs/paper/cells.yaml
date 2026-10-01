@@ -25,14 +25,87 @@ cells:
     notes: "Reference conversion skeleton. Prefer existing ar2block_masked_141728 if already done."
 
   C2_shift:
-    title: "Axis D — shift only"
+    title: "Axis D — shift only (C0 + shifted AR logits)"
     status: ready
     kind: train
     axis: [D]
     launch: lever
     preset: C2_shift
     arm: masked
-    notes: "Strict Tab-2 single factor."
+    notes: "Strict Tab-2 / Unifusion-compare on masked. Alias preset C0_shift."
+
+  C0_shift:
+    title: "C0 + shift (alias of C2_shift)"
+    status: ready
+    kind: train
+    axis: [D]
+    launch: lever
+    preset: C0_shift
+    arm: masked
+    notes: "Same overrides as C2_shift; use for Unifusion x0 naming in tables."
+
+  U0_shift:
+    title: "U0 + Unifusion-style shift on uniform"
+    status: ready
+    kind: train
+    axis: [C, D]
+    launch: lever
+    preset: U0_shift
+    arm: uniform
+    notes: >
+      Direct AR→uniform with shift_loss_targets. Compare to U0 (no shift) and
+      to C0_shift/C2_shift (same shift, masked). Math mix. Behind C3/Tab2 unless
+      bandwidth allows parallel.
+
+  U0_from_C0:
+    title: "Two-stage AR→masked→uniform continue-FT (gated)"
+    status: ready
+    kind: train
+    axis: [C]
+    launch: u0_from_c0
+    notes: >
+      Isolated continue-FT from C0 into a NEW uniform run dir (never writes C0).
+      Use scripts/submit_u0_from_c0.sh. Gate: when direct U0 weak vs C0.
+
+  C0_anneal:
+    title: "C0 + intra-block causal→bi anneal"
+    status: ready
+    kind: train
+    axis: [E, novelty]
+    launch: lever
+    preset: C0_anneal
+    arm: masked
+    notes: "Unifusion anneal port. Isolated — do not confuse with C0."
+
+  U0_anneal:
+    title: "U0 + intra-block causal→bi anneal"
+    status: ready
+    kind: train
+    axis: [C, novelty]
+    launch: lever
+    preset: U0_anneal
+    arm: uniform
+    notes: "Primary novelty probe. Fresh run dir; default U0 unchanged."
+
+  B4_joint_curriculum:
+    title: "Hybrid joint curriculum (attn anneal × kernel p ramp)"
+    status: ready
+    kind: train
+    axis: [C, novelty]
+    launch: lever
+    preset: B4_joint_curriculum
+    arm: hybrid
+    notes: "Explorative. Does not replace B4_hybrid_p10 claim row."
+
+  B4_shift_explorative:
+    title: "Hybrid + shift_on_hybrid (x0 interface probe)"
+    status: ready
+    kind: train
+    axis: [C, novelty]
+    launch: lever
+    preset: B4_shift_explorative
+    arm: hybrid
+    notes: "Opt-in shift on hybrid. Not a main-track B4 row."
 
   C2_comp:
     title: "Axis D — complementary only"
@@ -65,20 +138,54 @@ cells:
     notes: "Label separately from C2_fdllm in tables."
 
   C3:
-    title: "Matched AR SFT baseline"
+    title: "AR→full-seq diffusion (Unifusion floor) — v2 retry"
+    status: eval_pending
+    kind: train
+    axis: [A]
+    launch: lever
+    preset: C3_fullseq_v2
+    arm: uniform
+    notes: >
+      Train 2125372 COMPLETED (6k). Eval pending: 2127988 (offline),
+      2127989 (GenPPL+H hierarchical), 2127990 (paper_gen lm_eval).
+      ARPC skipped (no size-1 mixture). Ckpt:
+      outputs/block_qwen/ar2block_uniform_2125372/checkpoints/last.ckpt.
+      Forensic: docs/research/C3_UNIFUSION_GAP_2026-09-30.md.
+
+  C3_v1_fail:
+    title: "C3 shift-only (failed — do not cite as floor)"
+    status: done
+    kind: train
+    axis: [A]
+    launch: lever
+    preset: C3_fullseq
+    arm: uniform
+    notes: >
+      Job 2104831: GSM 1.8/4.5; GenPPL~59 soup (FLR=1). Missing anneal+ss.
+
+  A_ar_sft:
+    title: "Matched causal AR SFT (Tab-1 AR reference)"
     status: ready
     kind: train
     axis: [A]
     launch: ar_sft
-    notes: "Resume ar_sft_143599 / job 145451 if incomplete; else fresh ar_sft.sbatch."
+    notes: >
+      Causal next-token SFT only — not full-seq diffusion, not C3.
+      Floor: ar_sft_1857323 (job 1857323, 6k). GSM 70.8 / IFE 24.6 / MMLU 48.4.
+      Fair "stay AR" column vs block (C0) and full-seq diffusion (C3).
 
   C4:
-    title: "Decode NFE sweep on a conversion ckpt"
+    title: "Decode NFE + GenPPL–entropy hygiene on a conversion ckpt"
     status: eval_only
     kind: eval_nfe
     axis: [E]
     launch: nfe_sweep
-    notes: "Requires CKPT=... NUM_STEPS_LIST='8 16 32 64'"
+    notes: >
+      Unifusion hygiene: NFE ∈ {8,16,32,64} with (PPL, H) pairs; dual GenPPL
+      modes (first_chunk vs full); collapse panel. Requires CKPT=...
+      Optional: RUN_MULTISEED=1; --with-winogrande on submit_gen_ppl_hygiene.sh.
+      Uniform/hybrid: default DECODE_PROFILE=hierarchical_ss; also auto-queued
+      from submit_family_eval.sh (SKIP_GENPPL_HYGIENE=1 to disable).
 
   C5_joint_ar:
     title: "Joint AR + diffusion (block-clean stream, α=0.3)"

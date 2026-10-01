@@ -12,6 +12,7 @@ import torch.nn as nn
 
 from discrete_diffusion.models.block_mask import (
     build_block_diff_bool_mask,
+    build_block_generation_bool_mask,
     build_causal_bool_mask,
     build_sdpa_mask,
 )
@@ -181,3 +182,20 @@ def test_attention_hook_fails_loudly_without_updater():
     assert 'PYTHONPATH' in str(err) or 'transformers' in str(err)
   else:
     raise AssertionError('expected AttributeError for missing updater')
+
+
+def test_block_generation_mask_prefix_block_geometry():
+  """BlockGen generate: xt sees all prefix; prefix never sees xt."""
+  ctx, xt_len, bs = 8, 4, 4
+  m = build_block_generation_bool_mask(ctx, xt_len, bs)
+  assert m.shape == (ctx + xt_len, ctx + xt_len)
+  # First block token (idx 8) attends every prefix token.
+  assert bool(m[8, :8].all())
+  # Prefix token never attends into the noisy block.
+  assert not bool(m[:8, 8:].any())
+  # Within noisy block: bidirectional (one block).
+  assert m[8, 9].item() and m[9, 8].item()
+  # Empty prefix: block-diagonal only.
+  m0 = build_block_generation_bool_mask(0, 4, 4)
+  assert m0.shape == (4, 4)
+  assert bool(m0.all())

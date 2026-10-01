@@ -1,0 +1,17 @@
+# Uniform-arm sampling defaults (= BlockGen skeleton floor / hierarchical).
+# Truncated dual + mid-α ancestral; Hub ss is a lever (hierarchical_ss / UCC).
+defaults:
+  - block
+  - _self_
+
+hierarchical_kv: true
+single_stream_decode: false
+use_block_cache: false
+use_arpc: false
+unmask_threshold: null
+greedy: false
+x0_temperature: 1.0
+arpc_temperature: 1.0
+posterior_sampler: fast
+sub_block_size: null
+ban_mask_pad_logits: true

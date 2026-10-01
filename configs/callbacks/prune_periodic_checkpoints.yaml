@@ -1,0 +1,5 @@
+prune_periodic_checkpoints:
+  _target_: discrete_diffusion.callbacks.prune_periodic_checkpoints.PrunePeriodicCheckpoints
+  dirpath: ${checkpointing.save_dir}/checkpoints
+  # Keep newest 2 periodics (+ last.ckpt + best.ckpt from other callbacks).
+  keep_newest: 2

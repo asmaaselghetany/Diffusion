@@ -1,55 +1,132 @@
-# Baseline: masked + uniform block diffusion (Qwen path)
+# Baseline: AR → block × {masked, uniform} — BlockGen block skeleton
 
-This verified stack does **not** use BD3LM or BlockDiT. See [BLOCK_PATH.md](BLOCK_PATH.md) for the full layout.
+**Fixed:** AR Instruct → block (`LINE=ar2block`). That is the conversion family,
+not a lever.
 
-**Design rationale (masked vs uniform, pretrained Qwen vs train-our-own AR):** [BASELINE_MASKED_UNIFORM_AR.md](BASELINE_MASKED_UNIFORM_AR.md)
+**Block skeleton (both arms):** BlockGen’s claim — one blockwise recipe, two
+corruptions. Levers are ablations/combos on top of this, never silent defaults.
+
+See [FAIR_AR2BLOCK_MAP.md](FAIR_AR2BLOCK_MAP.md) · [BLOCK_PATH.md](../BLOCK_PATH.md) ·
+[LEVERS.md](LEVERS.md) · `configs/levers/registry.yaml`.
+
+---
+
+## Experimental contract (do not redefine)
+
+| Layer | Baseline (= C0 / U0) | Levers (ablations) |
+|-------|----------------------|--------------------|
+| **Init (fixed)** | AR Instruct → block | — |
+| **Block spine** | Same BlockTrainer / Qwen block / `block_size` / data / optim | mixture, ARPC, anneals, … |
+| **Train hooks** | **All off**: no shift, complementary, plain_ce, fdllm schedule, mixture, ARPC, anneals | `C2_*`, `fastdllm_*`, `xfer_*`, … |
+| **Decode** | Masked floor: packing + **conf remask** (`hierarchical` thr=0.9). Uniform open-loop: packing + **ancestral** (`hierarchical_ancestral`); remask twin = `uniform_commit` (UCC). `baseline`→`hierarchical` pins thr on both names but thr is **dead on Unif** without sticky | `hierarchical_ss`, `hierarchical_arpc`, `hubmatch`, `dual_cache`, `uniform_commit`, `hierarchical_quiet`, `hierarchical_ancestral` |
+| **Arm difference only** | Absorbing vs uniform process (+ `subs`/`mean`, prior/posterior) | — |
+| **Primary meters** | lm-eval under that shared ancestral decode | Same meters on lever cells for Δ |
+| **Not baseline** | Fast-dLLM remask/DualCache claim, UCC, BlockGen TinyGSM T≈0.1/mixture scratch | Lever or other-family cells |
+
+**What BlockGen shares that we share on the block path:**
+
+- Same geometry hooks available (off by default on conversion floor)
+- **Generate packing:** `[clean_prefix | noisy_block]` + `block_generation_mask`
+  (`backbone.block_gen_logits`; BlockGen `forward_generate`) — wired in
+  `BlockSampler` open-loop hierarchical path
+- Masked conf remask (`hierarchical`); Unif open-loop ancestral
+  (`hierarchical_ancestral`); Unif remask twin = `uniform_commit`
+- ARPC as a **shared sampler add-on** (lever; profile `hierarchical_arpc` =
+  B0 packing + ARPC at T=1; `hierarchical_quiet` = TinyGSM-ish T≈0.1 + ss)
+
+**What changes with the arm (not a lever):** process, parameterization label,
+prior / posterior / ARPC redraw kernel.
+
+**Fairness rule:** `(lever cell) − (matched C0 or U0 floor)` under the same
+decode unless the lever *is* a decode lever.
+
+**Naming:** `C0` = masked floor · `U0` = uniform floor · `N0` = native floor.  
+`fastdllm_*` / `B3_*` / `xfer_*` are **not** the conversion baseline.
+
+**Claim ckpts for new decode bake-offs:** C0 `1762534` · U0 `1955203`+  
+(Do **not** use U0 `1849335` as floor — see DESIGN_LOCKS `U0-1849335-CONTAMINATED`.)
+
+---
+
+## Phase-0 bake-off cells (decode-only)
+
+Paper-faithful both-arm recipes + homemade twin probes.  
+Submit: `./scripts/submit_baseline_bakeoff.sh`
+
+| Cell | Profile | Steps | Role |
+|------|---------|-------|------|
+| **B1** | `hierarchical` | 32 | Contract floor (BlockGen ancestral) |
+| **B2** | `hierarchical_arpc` | 32 | BlockGen ARPC on B0 packing |
+| **B3** | `hierarchical_ss` | 32 | Hub packing + ancestral |
+| **B4** | `hierarchical_arpc` | 8 | BlockGen `ar-then-arpc` few-step (not naked ancestral) |
+| **DC** | `dual_cache` | 32 | Masked DualCache only (no U0 twin in bake) |
+| **UC** | `uniform_commit` | 32 | Our UCC probe — **once**, uniform only |
+
+**Scores:** [`BAKEOFF_2026-09-24.md`](BAKEOFF_2026-09-24.md) (valid/invalid marked).  
+On disk: `Diffusion/outputs/block_qwen/ar2block_{masked_1762534,uniform_1955203}/lm_eval_bakeoff_20260924_*`
+
+---
 
 ## Neutral comparison design
 
-`block_qwen` trains two arms from the same AR-init checkpoint with **identical** everything except corruption:
+`block_qwen` trains two arms from the same AR-init checkpoint with **identical**
+everything except corruption:
 
 | Shared | Masked arm | Uniform arm |
 |--------|------------|-------------|
 | Qwen2.5 block backbone, `block_size`, seq len, data, optim, steps | `forward_process_name: masked` | `forward_process_name: uniform` |
 | `configs/experiment/block_qwen.yaml` | `algo=block_masked` | `algo=block_uniform` |
-| SUBS parameterization, log-linear noise, block sampler | absorbing per-block mask | uniform π = 1/V per block |
+| SUBS / Duo ELBO, log-linear noise, block sampler | absorbing per-block mask | uniform π = 1/V_eff per block |
 
-Optional hooks (`shift_loss_targets`, `complementary_masks`, `block_size_mixture`, `stratified_gamma`, `use_arpc`) default to **off** in both `configs/algo/block_*.yaml`. See [BLOCK_QWEN_TRAINING.md](BLOCK_QWEN_TRAINING.md) for literature sources and how to enable them via `HYDRA_OVERRIDES`.
+Optional hooks default **off** in `configs/algo/block_*.yaml`. Enable only via
+`./scripts/submit_lever.sh --preset …`.
 
-## Enhanced conversion baseline (not levers)
+## Shared conversion hygiene (not levers)
 
-Shared by **masked and uniform** arms — see
-`src/discrete_diffusion/data/conversion_baseline.py`:
+See `src/discrete_diffusion/data/conversion_baseline.py`:
 
-- Train↔eval ChatML (short system prompt; not stock Alibaba Qwen template)
-- Hub-like vocab keep (`151936` padded table; never shrink after MASK)
-- Nemotron defaults: `chat,safety,science,math,code` (math/code capped at 100k)
-- Ancestral decode floor: `decode_profile=baseline` (no DualCache / ARPC)
+- Train↔eval ChatML (conversion template)
+- Hub-padded vocab keep (`151936`)
+- Nemotron split defaults (math/code capped)
 
-Fast-dLLM / ARPC overlays stay in `configs/levers/registry.yaml`.
+Decode **truncation** (`hierarchical_kv`) + BlockGen generate packing is skeleton
+fairness. Confidence remask / DualCache / UCC are **decode levers**.
 
-## Masked arm (per-block absorbing diffusion)
+## Decode profiles (source of truth)
 
-| Adopted | Location |
-|---------|----------|
-| `block_diff_mask` on `concat(xt, x0)` | `models/block_mask.py` |
-| Qwen2 block attention via mask injection | `models/qwen/` |
-| Per-block masked corruption + SUBS ELBO | `forward_process/block_masked.py`, `losses/block_elbo.py` |
+`src/discrete_diffusion/evaluations/decode_profiles.py` · allowlist in
+`examples/block_qwen/lm_eval.sh`.
 
-**Paper-only (Fast-dLLM v2):** token shift, complementary masks, partial masking, sub-block decode — config keys exist but neutral baseline keeps them `false`.
+| Profile | Packing | Kernel | Notes |
+|---------|---------|--------|-------|
+| `baseline` → `hierarchical` | B0 `block_gen_logits` | conf remask thr=0.9 | Floor (B1) |
+| `hierarchical_ss` | Hub single-stream | conf remask thr=0.9 | B3 |
+| `hierarchical_ancestral` | B0 | mid-α ancestral thr=null | Forensic only |
+| `hierarchical_arpc` | B0 | remask + ARPC (T=1) | B2 |
+| `hierarchical_quiet` | Hub ss | ARPC + T≈0.1 | TinyGSM-ish lever |
+| `hubmatch` | Hub ss + sub8 | conf remask | Masked |
+| `dual_cache` | Hub ss + DualCache | conf remask thr=1 | Masked only |
+| `uniform_commit` / `uniform_dual` | B1 pack thr=0.9 / DualCache pack thr=1 | Hub-clean UCC (no revise) | Uniform **UC** / DualCache twin; **ours** |
+| `full_seq_dual` | full-seq | ancestral | Ablation only |
 
-## Uniform arm (BlockGen-style corruption)
+## Eval routing (baseline)
 
-| Adopted | Location |
-|---------|----------|
-| Per-block uniform corruption π = 1/V | `forward_process/block_uniform.py` |
-| Uniform-state ELBO (`DUO_BASE.nll_per_token`) | `losses/block_elbo.py` |
-| Single trainer, switch `forward_process_name` | `algorithms/block_trainer.py` |
+| Cell | `submit_family_eval` stack | Decode |
+|------|----------------------------|--------|
+| C0 / U0 (hooks off) | `conversion_lm_eval` / U0 `blockgen_arpc` + `--lm-eval-only` | `hierarchical` |
+| Bake-off matrix | `submit_baseline_bakeoff.sh` | B1–B4 / DC / UC |
+| Hub remask / DualCache lever | `FORCE_DECODE_PROFILE=hubmatch` / `fastdllm_lm_eval` | remask ± K/V |
+| UCC lever | `FORCE_DECODE_PROFILE=uniform_commit` | USDM conf-commit |
+| Native BlockGen | `blockgen_*` | ancestral ± ARPC |
+| Fast-dLLM GitHub × our mix | `submit_hub_fastdllm_c2.sh` | their `eval.py` on that train |
 
-**Paper-only (BlockGen):** block-size mixture, stratified γ, ARPC sampler — config keys exist but neutral baseline keeps them off.
+Override with `FORCE_STACK` / `FORCE_DECODE_PROFILE` / `NUM_STEPS`.
 
-Reference: [BlockGen](https://github.com/jdeschena/blockgen) ([2606.02241](https://arxiv.org/abs/2606.02241))
+## Masked / uniform code map
 
-## UNI-D² (infrastructure)
+| Arm | FP + loss | Notes |
+|-----|-----------|--------|
+| Masked | `block_masked` + SUBS ELBO | Fast-dLLM train levers off by default |
+| Uniform | `block_uniform` + Duo ELBO | BlockGen train levers off by default |
 
-Hydra configs, `python -m discrete_diffusion`, Lightning `train.py`, data loaders — shared with other algorithms in this repo.
+References: BlockGen [2606.02241](https://arxiv.org/abs/2606.02241) · Fast-dLLM [2509.26328](https://arxiv.org/abs/2509.26328) · UNI-D² infrastructure.

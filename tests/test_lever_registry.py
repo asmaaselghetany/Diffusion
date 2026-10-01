@@ -60,16 +60,100 @@ def test_paper_C0_empty(reg):
   assert r['overrides'] == []
 
 
+def test_U0_ss_pack_pins_train_and_decode(reg):
+  r = resolve(
+      preset='U0_ss_pack', arm='uniform', line='ar2block', registry=reg)
+  assert 'algo.single_stream_train=true' in r['overrides']
+  assert 'sampling.single_stream_decode=true' in r['overrides']
+
+
+def test_U0_ss_shift_adds_unifusion_shift(reg):
+  r = resolve(
+      preset='U0_ss_shift', arm='uniform', line='ar2block', registry=reg)
+  assert 'algo.single_stream_train=true' in r['overrides']
+  assert 'sampling.single_stream_decode=true' in r['overrides']
+  assert 'algo.shift_loss_targets=true' in r['overrides']
+
+
+def test_U0_shift_pins_shift_only(reg):
+  r = resolve(
+      preset='U0_shift', arm='uniform', line='ar2block', registry=reg)
+  assert r['overrides'] == ['algo.shift_loss_targets=true']
+
+
+def test_C3_fullseq_is_uniform_shift(reg):
+  r = resolve(
+      preset='C3_fullseq', arm='uniform', line='ar2block', registry=reg)
+  assert r['overrides'] == ['algo.shift_loss_targets=true']
+  with pytest.raises(ValueError, match='only allows arms'):
+    resolve(preset='C3_fullseq', arm='masked', line='ar2block', registry=reg)
+
+
+def test_C3_fullseq_v2_adds_anneal_and_ss(reg):
+  r = resolve(
+      preset='C3_fullseq_v2', arm='uniform', line='ar2block', registry=reg)
+  joined = ' '.join(r['overrides'])
+  assert 'algo.shift_loss_targets=true' in joined
+  assert 'algo.intra_block_attn_anneal_steps=2000' in joined
+  assert 'algo.single_stream_train=true' in joined
+  assert 'sampling.single_stream_decode=true' in joined
+  with pytest.raises(ValueError, match='only allows arms'):
+    resolve(preset='C3_fullseq_v2', arm='masked', line='ar2block', registry=reg)
+
+
+def test_xfer_blockgen_ss_and_unifv_presets(reg):
+  ss = resolve(
+      preset='xfer_bg_mix_32_blockgen_ss', arm='uniform', line='ar2block',
+      registry=reg)
+  joined = ' '.join(ss['overrides'])
+  assert 'algo.single_stream_train=true' in joined
+  assert 'sampling.single_stream_decode=true' in joined
+  assert 'algo.x0_causal=true' in joined
+  assert 'algo.pure_noise_mode=hard' in joined
+
+  ss_shift = resolve(
+      preset='xfer_bg_mix_32_blockgen_ss_shift', arm='uniform',
+      line='ar2block', registry=reg)
+  assert 'algo.shift_loss_targets=true' in ss_shift['overrides']
+
+  unifv = resolve(
+      preset='xfer_bg_mix_32_blockgen_unifv', arm='uniform', line='ar2block',
+      registry=reg)
+  assert 'algo.uniform_simplex_mode=blockgen' in unifv['overrides']
+
+
+def test_unif_v_blockgen_masked_refused(reg):
+  with pytest.raises(ValueError, match='only allowed on arms'):
+    resolve(
+        lever_ids=['unif_v_blockgen'], arm='masked', line='ar2block',
+        registry=reg)
+
+
+def test_extra_overrides_uniform_simplex_orphan_refused():
+  with pytest.raises(ValueError, match='algo. prefix'):
+    _MOD.validate_extra_overrides(['uniform_simplex_mode=blockgen'])
+
+
+def test_single_stream_train_masked_refused(reg):
+  with pytest.raises(ValueError, match='only allowed on arms'):
+    resolve(
+        lever_ids=['single_stream_train'], arm='masked', line='ar2block',
+        registry=reg)
+
+
 def test_fdllm_preset_uniform_refused(reg):
   with pytest.raises(ValueError, match='only allows arms'):
     resolve(preset='fdllm', arm='uniform', line='ar2block', registry=reg)
 
 
-def test_arpc_masked_refused(reg):
-  with pytest.raises(ValueError, match='only allowed on arms'):
-    resolve(
-        lever_ids=['mixture_1_32', 'arpc'],
-        arm='masked', line='block', registry=reg)
+def test_arpc_allowed_on_masked_absorb(reg):
+  r = resolve(
+      lever_ids=['mixture_1_32', 'arpc_blockgen'],
+      arm='masked', line='block', registry=reg)
+  joined = ' '.join(r['overrides'])
+  assert 'use_arpc=true' in joined
+  assert 'arpc_corruption_mode=ar_metric' in joined
+  assert 'arpc_ar_metric=nll' in joined
 
 
 def test_mixture_vs_weights_conflict(reg):
@@ -183,6 +267,8 @@ def test_extra_overrides_orphan_root_refused():
     _MOD.validate_extra_overrides(['hybrid_decode=masked'])
   with pytest.raises(ValueError, match='algo. prefix'):
     _MOD.validate_extra_overrides(['causal_clean_stream=true'])
+  with pytest.raises(ValueError, match='algo. prefix'):
+    _MOD.validate_extra_overrides(['single_stream_train=true'])
   with pytest.raises(ValueError, match='sampling. prefix'):
     _MOD.validate_extra_overrides(['hierarchical_kv=true'])
   with pytest.raises(ValueError, match='sampling. prefix'):

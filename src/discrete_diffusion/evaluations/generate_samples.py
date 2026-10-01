@@ -8,8 +8,9 @@ Family-aware free sampling (matches native vs Instruct paper practice):
   sample story for ``LINE=ar2block`` / Nemotron Instruct conversion.
 * ``bare_bos`` — legacy bare-BOS ablation (often misleading on Instruct).
 
-Default ``decode_profile=baseline`` clears confidence / ARPC / DualCache so
-free-gen measures the shared ancestral ``BlockSampler``, not exactness overlays.
+Default ``decode_profile=baseline`` → ``hierarchical`` (BlockGen packing +
+conf remask thr=0.9 greedy on both arms). Mid-α ancestral thr=null is
+``hierarchical_ancestral`` (forensic). Hub DualCache / UCC / ARPC remain levers.
 """
 
 from __future__ import annotations
@@ -25,7 +26,10 @@ from discrete_diffusion.evaluations.checkpoint_utils import (
     load_block_trainer_checkpoint,
 )
 from discrete_diffusion.evaluations.decode_profiles import (
+    allow_full_seq_decode_requested,
+    coerce_profile_for_forward,
     conversion_prefix_ids,
+    infer_forward_from_checkpoint_path,
     infer_sample_mode,
     profile_overrides,
     write_samples_meta,
@@ -36,8 +40,11 @@ def _collect_sampling_overrides(cfg) -> list[str]:
   """Build ``sampling.*=`` override tokens for checkpoint merge.
 
   Order (last wins per key): nested ``sampling.*`` / legacy knobs first, then
-  ``decode_profile`` clears (so baseline cannot be defeated by nested thr/ARPC),
-  then explicit ``hydra_overrides`` (intentional CLI wins last).
+  coerced ``decode_profile`` clears (so ancestral cannot be defeated by nested
+  thr/ARPC), then explicit ``hydra_overrides`` (intentional CLI wins last).
+
+  Coerce happens **here** (before ckpt load) using hydra cfg beside the ckpt
+  or path heuristics — never apply raw illegal packing pins first.
   """
   overrides: list[str] = []
 
@@ -71,8 +78,14 @@ def _collect_sampling_overrides(cfg) -> list[str]:
     overrides.append(
         f"sampling.greedy={'true' if bool(greedy) else 'false'}")
 
-  profile = str(cfg.get('decode_profile', 'baseline') or 'baseline').strip()
-  overrides.extend(profile_overrides(profile))
+  req = str(cfg.get('decode_profile', 'baseline') or 'baseline').strip()
+  ckpt = cfg.get('checkpoint_path', None)
+  fp = infer_forward_from_checkpoint_path(ckpt) if ckpt else None
+  allow_fs = allow_full_seq_decode_requested(cfg)
+  safe = coerce_profile_for_forward(req, fp, allow_full_seq=allow_fs)
+  if safe != req:
+    cfg.decode_profile = safe
+  overrides.extend(profile_overrides(safe))
 
   extra = cfg.get('hydra_overrides') or []
   if isinstance(extra, str):
@@ -91,11 +104,25 @@ def _collect_sampling_overrides(cfg) -> list[str]:
   return list(seen.values())
 
 
-def _truncate_im_end(text: str) -> str:
+def _truncate_im_end(text: str, *, prefix_text: str | None = None) -> str:
+  """Stop at the first ``<|im_end|>`` *after* the chat prefix.
+
+  ``conversion_free`` prefixes already contain ``<|im_end|>`` after the system
+  turn. Truncating at the first match wiped the assistant generation and made
+  free-gen look like total collapse in ``samples.txt``.
+  """
   stop = '<|im_end|>'
-  if stop in text:
-    return text.split(stop, 1)[0] + stop
-  return text
+  start = 0
+  if prefix_text:
+    # Prefer exact prefix match; fall back to len if decode whitespace drifts.
+    if text.startswith(prefix_text):
+      start = len(prefix_text)
+    else:
+      start = len(prefix_text)
+  idx = text.find(stop, start)
+  if idx < 0:
+    return text
+  return text[: idx + len(stop)]
 
 
 @hydra.main(
@@ -106,6 +133,14 @@ def main(cfg):
   device = torch.device(cfg.device if torch.cuda.is_available() else 'cpu')
   torch.set_float32_matmul_precision('high')
   torch.set_grad_enabled(False)
+
+  seed = cfg.get('seed', None)
+  if seed is not None and str(seed).strip().lower() not in ('', 'null', 'none'):
+    seed_i = int(seed)
+    torch.manual_seed(seed_i)
+    if torch.cuda.is_available():
+      torch.cuda.manual_seed_all(seed_i)
+    print(f'Seeded torch RNG with seed={seed_i}')
 
   print(f'Loading checkpoint from {cfg.checkpoint_path}')
   checkpoint_path = hydra.utils.to_absolute_path(cfg.checkpoint_path)
@@ -120,6 +155,36 @@ def main(cfg):
   model, model_config, tokenizer = load_block_trainer_checkpoint(
       checkpoint_path, device, hydra_overrides=overrides or None)
   print(f'Detected algorithm class: {model.__class__.__name__}')
+
+  # Profile already coerced in _collect_sampling_overrides; re-assert from the
+  # live model forward process in case path heuristics missed it.
+  fp_name = str(getattr(model, 'forward_process_name', '') or '').lower()
+  req = str(cfg.get('decode_profile', 'baseline') or 'baseline').strip()
+  allow_fs = allow_full_seq_decode_requested(cfg)
+  safe = coerce_profile_for_forward(req, fp_name, allow_full_seq=allow_fs)
+  if safe != req:
+    print(
+        f'Post-load coerce decode_profile {req!r}→{safe!r} '
+        f'(forward={fp_name})')
+    cfg.decode_profile = safe
+    for token in profile_overrides(safe):
+      if not token.startswith('sampling.'):
+        continue
+      key, _, val = token.partition('=')
+      attr = key.split('.', 1)[-1]
+      if val in ('null', 'None', ''):
+        parsed = None
+      elif val.lower() in ('true', 'false'):
+        parsed = val.lower() == 'true'
+      else:
+        try:
+          parsed = float(val) if ('.' in val or 'e' in val.lower()) else int(val)
+        except ValueError:
+          parsed = val
+      if hasattr(model_config, 'sampling'):
+        setattr(model_config.sampling, attr, parsed)
+      if hasattr(model, 'config') and hasattr(model.config, 'sampling'):
+        setattr(model.config.sampling, attr, parsed)
 
   mode = str(cfg.get('sample_mode', 'auto') or 'auto').strip().lower()
   if mode == 'auto':
@@ -206,6 +271,10 @@ def main(cfg):
   torch.save(all_samples, out_path)
   print(f'Saved {len(all_samples)} samples to {out_path}')
 
+  revision = None
+  if hasattr(sampler, 'pop_revision_stats'):
+    revision = sampler.pop_revision_stats()
+
   meta = {
       'checkpoint_path': str(Path(checkpoint_path).resolve()),
       'sample_mode': mode,
@@ -216,6 +285,15 @@ def main(cfg):
       'max_new_tokens': max_new,
       'num_samples': int(all_samples.shape[0]),
       'seq_len': int(all_samples.shape[1]),
+      'num_steps': (
+          int(num_steps) if num_steps is not None
+          and str(num_steps).strip().lower() not in ('', 'null', 'none')
+          else None),
+      'seed': (
+          int(seed) if seed is not None
+          and str(seed).strip().lower() not in ('', 'null', 'none')
+          else None),
+      'revision_stats': revision,
       'note': (
           'conversion_free = Instruct-aligned open assistant header; '
           'native_free = LM free-gen; bare_bos = legacy ablation.'),
@@ -234,7 +312,7 @@ def main(cfg):
     else:
       texts = tokenizer.batch_decode(all_samples, skip_special_tokens=False)
     if stop:
-      texts = [_truncate_im_end(t) for t in texts]
+      texts = [_truncate_im_end(t, prefix_text=prefix_text) for t in texts]
     text_path = out_path.with_suffix('.txt')
     with open(text_path, 'w', encoding='utf-8') as f:
       f.write(f'# sample_mode={mode} decode_profile={cfg.get("decode_profile")}\n')

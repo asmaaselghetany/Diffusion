@@ -1,0 +1,5 @@
+{
+  "left": "docs/research/decode_viz/baseline_masked",
+  "right": "docs/research/decode_viz/hybrid_anneal",
+  "n_frames": 102
+}

@@ -61,7 +61,8 @@ def main(argv: list[str] | None = None) -> int:
       help='auto|native_free|conversion_free|bare_bos (see generate_samples.yaml)')
   parser.add_argument(
       '--decode-profile', default='baseline',
-      help='baseline|hierarchical|hubmatch|dual_cache|keep — free-gen defaults to baseline clears')
+      help='baseline|hierarchical|hierarchical_ss|hierarchical_quiet|hubmatch|'
+           'dual_cache|keep — baseline coerces → hierarchical (not UCC / ss)')
   parser.add_argument(
       '--max-new-tokens', type=int, default=512,
       help='Cap free-gen length (default 512; was null→2048 fill)')

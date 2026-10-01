@@ -1,0 +1,182 @@
+syncing 45 missing offline runs
+[1/45] /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_hybrid_1836812/hydra/wandb/offline-run-20260916_172657-lever_B4_hybrid_p10_ar2block_hybrid_1836812
+Find logs at: /tmp/debug-cli.elsayed3.log
+Syncing: https://wandb.ai/aselghetany-nu/block_qwen/runs/lever_B4_hybrid_p10_ar2block_hybrid_1836812 ... done.
+  OK
+[2/45] /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_hybrid_1857476/hydra/wandb/offline-run-20260917_174847-lever_B4_shift_explorative_ar2block_hybrid_1857476
+Find logs at: /tmp/debug-cli.elsayed3.log
+Syncing: https://wandb.ai/aselghetany-nu/block_qwen/runs/lever_B4_shift_explorative_ar2block_hybrid_1857476 ... done.
+  OK
+[3/45] /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1467698/hydra/wandb/offline-run-20260823_172349-ar2block_masked_1467698
+Find logs at: /tmp/debug-cli.elsayed3.log
+Syncing: https://wandb.ai/aselghetany-nu/block_qwen/runs/ar2block_masked_1467698 ... done.
+  OK
+[4/45] /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1660576/hydra/wandb/offline-run-20260906_141210-lever_C2_fdllm_full_ar2block_masked_1660576
+Find logs at: /tmp/debug-cli.elsayed3.log
+Syncing: https://wandb.ai/aselghetany-nu/block_qwen/runs/lever_C2_fdllm_full_ar2block_masked_1660576 ... done.
+  OK
+[5/45] /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1660579/hydra/wandb/offline-run-20260904_124204-ar2block_masked_1660579
+Find logs at: /tmp/debug-cli.elsayed3.log
+Syncing: https://wandb.ai/aselghetany-nu/block_qwen/runs/ar2block_masked_1660579 ... done.
+  OK
+[6/45] /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1691161/hydra/wandb/offline-run-20260906_155106-lever_fastdllm_v2_ar2block_masked_1691161
+Find logs at: /tmp/debug-cli.elsayed3.log
+Syncing: https://wandb.ai/aselghetany-nu/block_qwen/runs/lever_fastdllm_v2_ar2block_masked_1691161 ... done.
+  OK
+[7/45] /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1691206/hydra/wandb/offline-run-20260906_160356-lever_fastdllm_v2_ar2block_masked_1691206
+Find logs at: /tmp/debug-cli.elsayed3.log
+Syncing: https://wandb.ai/aselghetany-nu/block_qwen/runs/lever_fastdllm_v2_ar2block_masked_1691206 ... done.
+  OK
+[8/45] /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1692667/hydra/wandb/offline-run-20260906_174304-lever_fastdllm_v2_ar2block_masked_1692667
+Find logs at: /tmp/debug-cli.elsayed3.log
+Syncing: https://wandb.ai/aselghetany-nu/block_qwen/runs/lever_fastdllm_v2_ar2block_masked_1692667 ... done.
+  OK
+[9/45] /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1694554/hydra/wandb/offline-run-20260906_193941-lever_fastdllm_v2_ar2block_masked_1694554
+Find logs at: /tmp/debug-cli.elsayed3.log
+Syncing: https://wandb.ai/aselghetany-nu/block_qwen/runs/lever_fastdllm_v2_ar2block_masked_1694554 ... done.
+  OK
+[10/45] /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1701099/hydra/wandb/offline-run-20260909_110947-lever_C2_fdllm_full_ar2block_masked_1701099
+Find logs at: /tmp/debug-cli.elsayed3.log
+Syncing: https://wandb.ai/aselghetany-nu/block_qwen/runs/lever_C2_fdllm_full_ar2block_masked_1701099 ... done.
+  OK
+[11/45] /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1735919/hydra/wandb/offline-run-20260909_235352-lever_C2_fdllm_full_ar2block_masked_1735919
+Find logs at: /tmp/debug-cli.elsayed3.log
+Syncing: https://wandb.ai/aselghetany-nu/block_qwen/runs/lever_C2_fdllm_full_ar2block_masked_1735919 ... done.
+  OK
+[12/45] /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1739031/hydra/wandb/offline-run-20260910_092750-lever_C0_ar2block_masked_1739031
+Find logs at: /tmp/debug-cli.elsayed3.log
+Syncing: https://wandb.ai/aselghetany-nu/block_qwen/runs/lever_C0_ar2block_masked_1739031 ... done.
+  OK
+[13/45] /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1739851/hydra/wandb/offline-run-20260911_221605-lever_C0_ar2block_masked_1739851
+Find logs at: /tmp/debug-cli.elsayed3.log
+Syncing: https://wandb.ai/aselghetany-nu/block_qwen/runs/lever_C0_ar2block_masked_1739851 ... done.
+  OK
+[14/45] /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1739853/hydra/wandb/offline-run-20260911_221606-lever_C2_fdllm_full_ar2block_masked_1739853
+Find logs at: /tmp/debug-cli.elsayed3.log
+Syncing: https://wandb.ai/aselghetany-nu/block_qwen/runs/lever_C2_fdllm_full_ar2block_masked_1739853 ... done.
+  OK
+[15/45] /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1762504/hydra/wandb/offline-run-20260911_222753-lever_C2_fdllm_full_ar2block_masked_1762504
+Find logs at: /tmp/debug-cli.elsayed3.log
+Syncing: https://wandb.ai/aselghetany-nu/block_qwen/runs/lever_C2_fdllm_full_ar2block_masked_1762504 ... done.
+  OK
+[16/45] /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1762536/hydra/wandb/offline-run-20260911_223429-lever_C2_fdllm_full_ar2block_masked_1762536
+Find logs at: /tmp/debug-cli.elsayed3.log
+Syncing: https://wandb.ai/aselghetany-nu/block_qwen/runs/lever_C2_fdllm_full_ar2block_masked_1762536 ... done.
+  OK
+[17/45] /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1773297/hydra/wandb/offline-run-20260913_020517-lever_C0_ar2block_masked_1773297
+Find logs at: /tmp/debug-cli.elsayed3.log
+Syncing: https://wandb.ai/aselghetany-nu/block_qwen/runs/lever_C0_ar2block_masked_1773297 ... done.
+  OK
+[18/45] /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1809099/hydra/wandb/offline-run-20260915_153122-lever_C2_fdllm_full_ar2block_masked_1809099
+Find logs at: /tmp/debug-cli.elsayed3.log
+Syncing: https://wandb.ai/aselghetany-nu/block_qwen/runs/lever_C2_fdllm_full_ar2block_masked_1809099 ... done.
+  OK
+[19/45] /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1809191/hydra/wandb/offline-run-20260915_162335-lever_C2_fdllm_full_ar2block_masked_1809191
+Find logs at: /tmp/debug-cli.elsayed3.log
+Syncing: https://wandb.ai/aselghetany-nu/block_qwen/runs/lever_C2_fdllm_full_ar2block_masked_1809191 ... done.
+  OK
+[20/45] /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_1809194/hydra/wandb/offline-run-20260915_160500-lever_C2_fdllm_full_ar2block_masked_1809194
+Find logs at: /tmp/debug-cli.elsayed3.log
+Syncing: https://wandb.ai/aselghetany-nu/block_qwen/runs/lever_C2_fdllm_full_ar2block_masked_1809194 ... done.
+  OK
+[21/45] /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_2020048/hydra/wandb/offline-run-20260926_034258-xfer_bg_mix_32_blockgen_ar2block_masked_2020048
+Find logs at: /tmp/debug-cli.elsayed3.log
+Syncing: https://wandb.ai/aselghetany-nu/block_qwen/runs/xfer_bg_mix_32_blockgen_ar2block_masked_2020048 ... done.
+  OK
+[22/45] /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_masked_2024324/hydra/wandb/offline-run-20260926_103207-xfer_bg_mix_32_ar2block_masked_2024324
+Find logs at: /tmp/debug-cli.elsayed3.log
+Syncing: https://wandb.ai/aselghetany-nu/block_qwen/runs/xfer_bg_mix_32_ar2block_masked_2024324 ... done.
+  OK
+[23/45] /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_uniform_1457696/hydra/wandb/offline-run-20260822_185643-ar2block_uniform_1457696
+Find logs at: /tmp/debug-cli.elsayed3.log
+Syncing: https://wandb.ai/aselghetany-nu/block_qwen/runs/ar2block_uniform_1457696 ... done.
+  OK
+[24/45] /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_uniform_1660931/hydra/wandb/offline-run-20260904_125657-lever_blockgen_uniform_ar2block_uniform_1660931
+Find logs at: /tmp/debug-cli.elsayed3.log
+Syncing: https://wandb.ai/aselghetany-nu/block_qwen/runs/lever_blockgen_uniform_ar2block_uniform_1660931 ... done.
+  OK
+[25/45] /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_uniform_1660932/hydra/wandb/offline-run-20260904_125657-ar2block_uniform_1660932
+Find logs at: /tmp/debug-cli.elsayed3.log
+Syncing: https://wandb.ai/aselghetany-nu/block_qwen/runs/ar2block_uniform_1660932 ... done.
+  OK
+[26/45] /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_uniform_1836729/hydra/wandb/offline-run-20260916_172024-lever_neutral_ar2block_uniform_1836729
+Find logs at: /tmp/debug-cli.elsayed3.log
+Syncing: https://wandb.ai/aselghetany-nu/block_qwen/runs/lever_neutral_ar2block_uniform_1836729 ... done.
+  OK
+[27/45] /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_uniform_1836776/hydra/wandb/offline-run-20260916_172025-lever_joint_ar+causal_clean_ar2block_uniform_1836776
+Find logs at: /tmp/debug-cli.elsayed3.log
+Syncing: https://wandb.ai/aselghetany-nu/block_qwen/runs/lever_joint_ar%2Bcausal_clean_ar2block_uniform_1836776 ... done.
+  OK
+[28/45] /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_uniform_1836802/hydra/wandb/offline-run-20260916_172656-lever_joint_ar+causal_clean_ar2block_uniform_1836802
+Find logs at: /tmp/debug-cli.elsayed3.log
+Syncing: https://wandb.ai/aselghetany-nu/block_qwen/runs/lever_joint_ar%2Bcausal_clean_ar2block_uniform_1836802 ... done.
+  OK
+[29/45] /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_uniform_1848814/hydra/wandb/offline-run-20260917_072510-lever_U0_ar2block_uniform_1848814
+Find logs at: /tmp/debug-cli.elsayed3.log
+Syncing: https://wandb.ai/aselghetany-nu/block_qwen/runs/lever_U0_ar2block_uniform_1848814 ... done.
+  OK
+[30/45] /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_uniform_1855541/hydra/wandb/offline-run-20260917_133513-lever_xfer_bg_mix_32_ar2block_uniform_1855541
+Find logs at: /tmp/debug-cli.elsayed3.log
+Syncing: https://wandb.ai/aselghetany-nu/block_qwen/runs/lever_xfer_bg_mix_32_ar2block_uniform_1855541 ... done.
+  OK
+[31/45] /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_uniform_1955203/hydra/wandb/offline-run-20260923_210321-U0_ar2block_uniform_1955203
+Find logs at: /tmp/debug-cli.elsayed3.log
+Syncing: https://wandb.ai/aselghetany-nu/block_qwen/runs/U0_ar2block_uniform_1955203 ... done.
+  OK
+[32/45] /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_uniform_1994131/hydra/wandb/offline-run-20260924_193309-U0_ss_pack_ar2block_uniform_1994131
+Find logs at: /tmp/debug-cli.elsayed3.log
+Syncing: https://wandb.ai/aselghetany-nu/block_qwen/runs/U0_ss_pack_ar2block_uniform_1994131 ... done.
+  OK
+[33/45] /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_uniform_2020049/hydra/wandb/offline-run-20260926_034257-xfer_bg_mix_32_blockgen_ar2block_uniform_2020049
+Find logs at: /tmp/debug-cli.elsayed3.log
+Syncing: https://wandb.ai/aselghetany-nu/block_qwen/runs/xfer_bg_mix_32_blockgen_ar2block_uniform_2020049 ... done.
+  OK
+[34/45] /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_uniform_2024327/hydra/wandb/offline-run-20260926_103303-xfer_bg_mix_32_ar2block_uniform_2024327
+Find logs at: /tmp/debug-cli.elsayed3.log
+Syncing: https://wandb.ai/aselghetany-nu/block_qwen/runs/xfer_bg_mix_32_ar2block_uniform_2024327 ... done.
+  OK
+[35/45] /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_uniform_2092151/hydra/wandb/offline-run-20260927_131253-U0_ss_shift_ar2block_uniform_2092151
+Find logs at: /tmp/debug-cli.elsayed3.log
+Syncing: https://wandb.ai/aselghetany-nu/block_qwen/runs/U0_ss_shift_ar2block_uniform_2092151 ... done.
+  OK
+[36/45] /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_uniform_2092154/hydra/wandb/offline-run-20260927_131403-xfer_bg_mix_32_blockgen_ss_ar2block_uniform_2092154
+Find logs at: /tmp/debug-cli.elsayed3.log
+Syncing: https://wandb.ai/aselghetany-nu/block_qwen/runs/xfer_bg_mix_32_blockgen_ss_ar2block_uniform_2092154 ... done.
+  OK
+[37/45] /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_uniform_2092155/hydra/wandb/offline-run-20260927_131403-xfer_bg_mix_32_blockgen_ss_shift_ar2block_uniform_2092155
+Find logs at: /tmp/debug-cli.elsayed3.log
+Syncing: https://wandb.ai/aselghetany-nu/block_qwen/runs/xfer_bg_mix_32_blockgen_ss_shift_ar2block_uniform_2092155 ... done.
+  OK
+[38/45] /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_uniform_2092156/hydra/wandb/offline-run-20260928_091026-xfer_bg_mix_32_blockgen_unifv_ar2block_uniform_2092156
+Find logs at: /tmp/debug-cli.elsayed3.log
+Syncing: https://wandb.ai/aselghetany-nu/block_qwen/runs/xfer_bg_mix_32_blockgen_unifv_ar2block_uniform_2092156 ... done.
+  OK
+[39/45] /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_uniform_2096579/hydra/wandb/offline-run-20260928_091505-C3_fullseq_ar2block_uniform_2096579
+Find logs at: /tmp/debug-cli.elsayed3.log
+.wandb file is empty (header is 0 bytes instead of the expected 7), skipping: /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_uniform_2096579/hydra/wandb/offline-run-20260928_091505-C3_fullseq_ar2block_uniform_2096579/run-C3_fullseq_ar2block_uniform_2096579.wandb
+  OK
+[40/45] /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/block_masked_1467699/hydra/wandb/offline-run-20260823_172356-block_masked_1467699
+Find logs at: /tmp/debug-cli.elsayed3.log
+Syncing: https://wandb.ai/aselghetany-nu/block_qwen/runs/block_masked_1467699 ... done.
+  OK
+[41/45] /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/block_masked_1660933/hydra/wandb/offline-run-20260904_125703-block_masked_1660933
+Find logs at: /tmp/debug-cli.elsayed3.log
+Syncing: https://wandb.ai/aselghetany-nu/block_qwen/runs/block_masked_1660933 ... done.
+  OK
+[42/45] /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/block_uniform_1467700/hydra/wandb/offline-run-20260823_172356-block_uniform_1467700
+Find logs at: /tmp/debug-cli.elsayed3.log
+Syncing: https://wandb.ai/aselghetany-nu/block_qwen/runs/block_uniform_1467700 ... done.
+  OK
+[43/45] /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/block_uniform_1660935/hydra/wandb/offline-run-20260904_125703-block_uniform_1660935
+Find logs at: /tmp/debug-cli.elsayed3.log
+Syncing: https://wandb.ai/aselghetany-nu/block_qwen/runs/block_uniform_1660935 ... done.
+  OK
+[44/45] /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/block_uniform_1836795/hydra/wandb/offline-run-20260916_172033-lever_N0_block_uniform_1836795
+Find logs at: /tmp/debug-cli.elsayed3.log
+Syncing: https://wandb.ai/aselghetany-nu/block_qwen/runs/lever_N0_block_uniform_1836795 ... done.
+  OK
+[45/45] /e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/block_uniform_1836803/hydra/wandb/offline-run-20260916_172701-lever_N0_block_uniform_1836803
+Find logs at: /tmp/debug-cli.elsayed3.log
+Syncing: https://wandb.ai/aselghetany-nu/block_qwen/runs/lever_N0_block_uniform_1836803 ... done.
+  OK
+DONE ok=45 fail=0 total=45

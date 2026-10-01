@@ -33,16 +33,20 @@ export HF_EVALUATE_CACHE="${HF_EVALUATE_CACHE:-${OUT_DIR}/hf_evaluate_cache}"
 mkdir -p "${HF_METRICS_CACHE}" "${HF_EVALUATE_CACHE}"
 
 # Suites (override with TASKS=...):
-#   paper_acc — MMLU + GSM8K + IFEval (paper Table 1 accuracy core; no code)
+#   paper_acc — likelihood MMLU + GSM8K + IFEval (masked conversion only)
+#   paper_gen — generative MMLU + GSM8K + IFEval (uniform/hybrid / Instruct-gen)
 #   core      — Fast-dLLM v2 eval_script.sh tasks without code
 #   code      — HumanEval/MBPP base+plus (lm-eval EvalPlus datasets)
 #   fastdllm  — core + code  (full paper columns; code tasks are fragile offline)
 SUITE="${SUITE:-fastdllm}"
 PAPER_ACC_TASKS="mmlu,gsm8k,ifeval"
+# LLaDA-Instruct / BlockGen-style: no masked-CE loglikelihood MMLU.
+PAPER_GEN_TASKS="mmlu_generative,gsm8k,ifeval"
 CORE_TASKS="mmlu,gpqa_main_n_shot,gsm8k,minerva_math,ifeval"
 CODE_TASKS="humaneval,humaneval_plus,mbpp,mbpp_plus"
 case "${SUITE}" in
   paper_acc|paper-acc) DEFAULT_TASKS="${PAPER_ACC_TASKS}" ;;
+  paper_gen|paper-gen|uniform_gen) DEFAULT_TASKS="${PAPER_GEN_TASKS}" ;;
   core) DEFAULT_TASKS="${CORE_TASKS}" ;;
   code) DEFAULT_TASKS="${CODE_TASKS}" ;;
   fastdllm|full|paper) DEFAULT_TASKS="${CORE_TASKS},${CODE_TASKS}" ;;
@@ -53,13 +57,21 @@ case "${SUITE}" in
     fi
     DEFAULT_TASKS="${TASKS}"
     ;;
-  *) echo "Unknown SUITE=${SUITE} (paper_acc|core|code|fastdllm|custom)" >&2; exit 2 ;;
+  *) echo "Unknown SUITE=${SUITE} (paper_acc|paper_gen|core|code|fastdllm|custom)" >&2; exit 2 ;;
 esac
 # Empty TASKS (e.g. sbatch export) → suite default.
 if [[ -z "${TASKS:-}" ]]; then
   TASKS="${DEFAULT_TASKS}"
 fi
 
+# Hard refuse likelihood MMLU on uniform/hybrid (even if caller forced TASKS).
+if [[ "${EVAL_FORWARD:-}" == "uniform" || "${EVAL_FORWARD:-}" == "hybrid" ]]; then
+  if [[ ",${TASKS}," == *",mmlu,"* ]]; then
+    echo "REFUSED: likelihood task 'mmlu' is invalid for forward=${EVAL_FORWARD}." >&2
+    echo "Use SUITE=paper_gen (mmlu_generative,gsm8k,ifeval) or omit mmlu." >&2
+    exit 2
+  fi
+fi
 # Multi-GPU / multi-node (lm-eval data-parallel via Accelerate, Fast-dLLM-style).
 # Under Slurm: NUM_NODES × GPUS_PER_NODE processes, one model replica each.
 NUM_NODES="${NUM_NODES:-${SLURM_JOB_NUM_NODES:-1}}"
@@ -82,6 +94,11 @@ BATCH_SIZE="${BATCH_SIZE:-1}"
 # models are usually length=2048 — block_qwen_lm_eval clamps max_new so the
 # prompt is not wiped (seq_len-max_new must stay >>1). Prefer 512 for fair
 # 2k-context roofs unless you know the ckpt context is larger.
+#
+# IMPORTANT: BlockSampler still generates ``max_new`` tokens even when the
+# task ``until`` stop would truncate text afterward. Task ceilings in
+# ``cap_max_new_for_task`` (e.g. mmlu_generative→64) prevent 12h TIMEOUTs.
+# Env MAX_NEW_TOKENS remains a global ceiling (smoke: MAX_NEW_TOKENS=32).
 MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-2048}"
 NUM_STEPS="${NUM_STEPS:-32}"
 LIMIT="${LIMIT:-}"   # e.g. LIMIT=8 for smoke
@@ -99,6 +116,31 @@ FORCE_GREEDY="${FORCE_GREEDY:-}"
 # (UNI-D2 ports — NOT Fast-dLLM fused CUDA kernels).
 DECODE_PROFILE="${DECODE_PROFILE:-baseline}"
 
+# Hard protocol lock (mirror lm_eval.sbatch). ``baseline`` → hierarchical.
+if [[ -z "${EVAL_FORWARD:-}" && -f "${CKPT}" ]]; then
+  _hydra="$(dirname "$(dirname "${CKPT}")")/hydra/.hydra/config.yaml"
+  if [[ -f "${_hydra}" ]] && grep -qE 'forward_process_name:[[:space:]]*uniform' "${_hydra}" 2>/dev/null; then
+    EVAL_FORWARD=uniform
+  elif [[ -f "${_hydra}" ]] && grep -qE 'forward_process_name:[[:space:]]*hybrid' "${_hydra}" 2>/dev/null; then
+    EVAL_FORWARD=hybrid
+  fi
+fi
+if [[ "${DECODE_PROFILE}" == "baseline" || "${DECODE_PROFILE}" == "auto" ]]; then
+  if [[ "${ALLOW_FULL_SEQ_DECODE:-0}" == "1" ]]; then
+    echo "WARNING: DECODE_PROFILE=baseline with ALLOW_FULL_SEQ_DECODE=1 (legacy full-seq ablation)." >&2
+  else
+    echo "NOTE: DECODE_PROFILE=baseline → hierarchical (BlockGen packing + confidence commit)." >&2
+    DECODE_PROFILE=hierarchical
+  fi
+fi
+if [[ "${EVAL_FORWARD:-}" == "uniform" || "${EVAL_FORWARD:-}" == "hybrid" ]]; then
+  if [[ "${FORCE_GREEDY}" == "1" || "${FORCE_GREEDY}" == "true" || "${FORCE_GREEDY}" == "True" ]]; then
+    echo "REFUSED: FORCE_GREEDY=${FORCE_GREEDY} illegal for forward=${EVAL_FORWARD} (use 0)" >&2
+    exit 2
+  fi
+  FORCE_GREEDY="${FORCE_GREEDY:-0}"
+fi
+
 SPEED_PATH="${OUT_DIR}/tok_s_lm_eval.json"
 THROUGHPUT_PATH="${OUT_DIR}/tok_s.json"
 
@@ -110,11 +152,10 @@ if [[ -n "${FORCE_GREEDY}" ]]; then
   MODEL_ARGS="${MODEL_ARGS},greedy=${FORCE_GREEDY}"
 fi
 case "${DECODE_PROFILE}" in
-  baseline|hierarchical|hubmatch|dual_cache)
-    # Pins applied inside block_qwen_lm_eval via decode_profile=…
+  baseline|hierarchical|hierarchical_ancestral|hierarchical_ancestral_t01|hierarchical_ss|hierarchical_ss_ancestral|hierarchical_arpc|hierarchical_arpc_t01|hierarchical_quiet|hubmatch|dual_cache|uniform_dual|uniform_dual_random|ucc_l2r_sub8|ss_quiet_ancestral|uniform_commit|uniform_commit_t1|uniform_commit_ss|full_seq_dual)    # Pins applied inside block_qwen_lm_eval via decode_profile=…
     ;;
   *)
-    echo "Unknown DECODE_PROFILE=${DECODE_PROFILE} (baseline|hierarchical|hubmatch|dual_cache)" >&2
+    echo "Unknown DECODE_PROFILE=${DECODE_PROFILE} (see DECODE_PROFILES in decode_profiles.py)" >&2
     exit 2
     ;;
 esac
@@ -133,7 +174,12 @@ run_python() {
   main_ip="${main_ip:-127.0.0.1}"
   echo "=== accelerate launch processes=${NUM_PROCESSES} nodes=${NUM_NODES} gpus/node=${GPUS_PER_NODE} rank=${machine_rank} master=${main_ip}:${MASTER_PORT} ===" \
     | tee -a "${OUT_DIR}/lm_eval.log"
-  accelerate launch \
+  # Prefer console script; fall back to module entry (venv bin/ may be incomplete).
+  local accel=(accelerate)
+  if ! command -v accelerate >/dev/null 2>&1; then
+    accel=(python -m accelerate.commands.accelerate_cli)
+  fi
+  "${accel[@]}" launch \
     --num_processes "${NUM_PROCESSES}" \
     --num_machines "${NUM_NODES}" \
     --machine_rank "${machine_rank}" \
@@ -149,13 +195,19 @@ run_task() {
   local limit_args=()
   case "${task}" in
     mmlu) fewshot_args=(--num_fewshot 5) ;;
+    mmlu_generative) fewshot_args=(--num_fewshot 5) ;;
     gsm8k|minerva_math) fewshot_args=(--num_fewshot 0) ;;
     # mbpp / mbpp_plus yaml defaults to 3-shot; leave harness default.
   esac
   if [[ -n "${LIMIT}" ]]; then
     limit_args=(--limit "${LIMIT}")
   fi
-  echo "=== task=${task} ===" | tee -a "${OUT_DIR}/lm_eval.log"
+  local log_sample_args=()
+  if [[ "${LOG_SAMPLES:-0}" == "1" ]]; then
+    log_sample_args=(--log_samples)
+  fi
+  echo "=== task=${task} (MAX_NEW_TOKENS=${MAX_NEW_TOKENS}; per-task cap in cap_max_new_for_task) ===" \
+    | tee -a "${OUT_DIR}/lm_eval.log"
   run_python -m discrete_diffusion.evaluations.block_qwen_lm_eval \
     --model block_qwen \
     --tasks "${task}" \
@@ -167,6 +219,7 @@ run_task() {
     --output_path "${OUT_DIR}/${task}" \
     "${fewshot_args[@]}" \
     "${limit_args[@]}" \
+    "${log_sample_args[@]}" \
     2>&1 | tee -a "${OUT_DIR}/lm_eval.log"
 }
 
@@ -247,6 +300,7 @@ def pick_score(metrics: dict):
       "exact_match,flexible-extract",
       "exact_match,strict-match",
       "exact_match,none",
+      "exact_match,get_response",
       "acc,none",
       "acc_norm,none",
       "pass@1,none",

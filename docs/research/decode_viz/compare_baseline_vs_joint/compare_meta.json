@@ -1,0 +1,5 @@
+{
+  "left": "docs/research/decode_viz/baseline_masked",
+  "right": "docs/research/decode_viz/joint_masked",
+  "n_frames": 102
+}

@@ -8,6 +8,37 @@ from discrete_diffusion.evaluations.block_qwen_eval_utils import (
 )
 
 
+def test_cap_max_new_for_task():
+  from discrete_diffusion.evaluations.block_qwen_eval_utils import (
+      cap_max_new_for_task,
+  )
+  assert cap_max_new_for_task('mmlu_generative', 2048) == 64
+  assert cap_max_new_for_task('gsm8k', 2048) == 2048
+  assert cap_max_new_for_task('minerva_math', 2048) == 2048
+  assert cap_max_new_for_task('ifeval', 2048) == 1024
+  assert cap_max_new_for_task('mmlu_generative', 32) == 32  # smoke ceiling
+  assert cap_max_new_for_task('unknown_task', 777) == 777
+
+
+def test_gsm8k_uses_adapter_max_not_task_default():
+  """Regression: gsm8k lm-eval max_gen_toks=512 must not defeat MAX_NEW=2048."""
+  from discrete_diffusion.evaluations.block_qwen_eval_utils import (
+      cap_max_new_for_task,
+  )
+  adapter_max = 2048
+  task_default = 512  # lm-eval gsm8k typical
+  # Wrong old logic:
+  wrong = cap_max_new_for_task('gsm8k', min(task_default, adapter_max))
+  assert wrong == 512
+  # Correct: adapter then task ceiling.
+  right = cap_max_new_for_task('gsm8k', adapter_max)
+  assert right == 2048
+  # Smoke still wins via low adapter max.
+  assert cap_max_new_for_task('gsm8k', 32) == 32
+  # mmlu still capped hard.
+  assert cap_max_new_for_task('mmlu_generative', adapter_max) == 64
+
+
 def test_generation_request_args_preserve_task_limits_and_stops():
   request = SimpleNamespace(args=(
       'prompt',
@@ -109,6 +140,53 @@ def test_uniform_likelihood_fails_instead_of_reporting_masked_ce():
     assert 'invalid for the uniform arm' in str(error)
   else:
     raise AssertionError('uniform likelihood must not report masked CE')
+  try:
+    require_masked_likelihood('hybrid')
+  except NotImplementedError as error:
+    assert 'invalid for the hybrid arm' in str(error)
+    assert 'paper_gen' in str(error) or 'mmlu_generative' in str(error)
+  else:
+    raise AssertionError('hybrid likelihood must not report masked CE')
+
+
+def test_causal_ar_loglikelihood_teacher_forced():
+  """C3 paper_acc MMLU must use causal NLL, not masked Hub CE."""
+  import torch
+  import torch.nn.functional as F
+  from discrete_diffusion.evaluations.block_qwen_lm_eval import (
+      BlockQwenEvalHarness,
+  )
+
+  class _FakeBackbone(torch.nn.Module):
+    def __init__(self):
+      super().__init__()
+      self.forward_mode = 'causal'
+
+    def forward(self, x0, sigma=None):
+      del sigma
+      # Deterministic logits: prefer token id == position index % vocab.
+      b, t = x0.shape
+      v = 32
+      logits = torch.zeros(b, t, v)
+      for i in range(t):
+        logits[0, i, (i + 1) % v] = 10.0
+      return logits
+
+  harness = BlockQwenEvalHarness.__new__(BlockQwenEvalHarness)
+  harness._is_causal_ar = True
+  harness._device = torch.device('cpu')
+  harness.seq_len = 64
+  harness.model = SimpleNamespace(backbone=_FakeBackbone())
+
+  # prefix=[1,2], target=[3] → score logits at pos 1 for token 3.
+  # Fake prefers (i+1)%32 at position i → pos1 prefers 2, so token 3 is worse.
+  ll_bad = harness._causal_ar_loglikelihood([1, 2], [3])
+  ll_good = harness._causal_ar_loglikelihood([1, 2], [2])
+  assert ll_good > ll_bad
+  # Manual check for good target.
+  logits = harness.model.backbone(torch.tensor([[1, 2, 2]]), sigma=None)
+  expected = float(F.log_softmax(logits[0, 1:2], dim=-1)[0, 2].item())
+  assert abs(ll_good - expected) < 1e-5
 
 
 def test_patch_code_eval_metric_cache_injects_unique_experiment_id(monkeypatch):

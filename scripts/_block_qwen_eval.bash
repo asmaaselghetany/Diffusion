@@ -57,3 +57,14 @@ srun python -u tools/run_block_qwen_eval.py \
   "$@"
 
 echo "Done. Results under ${RUN_DIR}"
+
+# Active WandB upload of GenPPL / samples / ELBO / ckpt refs (best-effort).
+if [[ "${WANDB_UPLOAD_EVAL:-1}" == "1" && -n "${WANDB_API_KEY:-}" ]]; then
+  _parent="$(dirname "${RUN_DIR}")"
+  _jid="$(basename "${_parent}" | grep -oE '[0-9]+$' || true)"
+  if [[ -n "${_jid}" ]]; then
+    echo "=== wandb attach eval → train run (job=${_jid}) ==="
+    JOBS="${_jid}" SKIP_SCOREBOARD=1 python -u scripts/upload_wandb_panels.py \
+      || echo "WARNING: wandb eval upload failed (non-fatal)" >&2
+  fi
+fi

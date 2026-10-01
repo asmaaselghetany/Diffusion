@@ -1,0 +1,20 @@
+Loading uniform…
+V_eff=151663 V=151936 mode=conversion shift=False time_cond=False
+{
+  "verdict_copy": "does_not_copy_at_alpha1",
+  "alpha_1_clean_acc": 0.1318359375,
+  "alpha_1_n_corrupted_mean": 0.0,
+  "alpha_095_corrupt_acc": 0.7414965994504034,
+  "alpha_095_clean_acc": 0.23999891802668571,
+  "V_eff": 151663,
+  "collision_among_moves_a095": 0.0,
+  "n_collision_dropped_a095": 0,
+  "train_context": {
+    "val_nll": 1.3756713881576237,
+    "val_ppl": 3.9577330061936262,
+    "train_nll": 1.366000956005375,
+    "note": "No token-acc in wandb; compare probe clean_acc to whether copy would be near 1. Soft NLL\u2260top-1.",
+    "summary_path": "/e/project1/scifi/elsayed3/Diffusion/outputs/block_qwen/ar2block_uniform_2020049/hydra/wandb/offline-run-20260926_034257-xfer_bg_mix_32_blockgen_ar2block_uniform_2020049/files/wandb-summary.json"
+  }
+}
+Wrote out/gap_test3/probe_check_n64.json

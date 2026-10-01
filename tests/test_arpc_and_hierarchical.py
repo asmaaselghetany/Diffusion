@@ -11,7 +11,7 @@ from discrete_diffusion.sampling.arpc import (
     divergence_scores,
 )
 from discrete_diffusion.sampling.block_sampler import BlockSampler
-from tests.test_block_sampler import _MockBlockTrainer, _config
+from test_block_sampler import _MockBlockTrainer, _config
 
 
 def test_divergence_scores_shapes():
@@ -56,7 +56,8 @@ def test_blockgen_arpc_uniform_generate():
   cfg = _config('uniform')
   cfg.sampling.use_arpc = True
   cfg.sampling.arpc_mode = 'blockgen'
-  cfg.sampling.arpc_corruption_mode = 'diffusion_metric'
+  cfg.sampling.arpc_corruption_mode = 'ar_metric'
+  cfg.sampling.arpc_ar_metric = 'nll'
   cfg.sampling.arpc_use_prefix_fill = False
   cfg.sampling.arpc_warmup_steps = 0
   cfg.sampling.arpc_guide_every = 1
@@ -65,6 +66,36 @@ def test_blockgen_arpc_uniform_generate():
   out = sampler.generate(
       model, num_samples=1, num_steps=4, eps=1e-3, inject_bos=False)
   assert out.shape == (1, 16)
+
+
+def test_blockgen_arpc_absorb_remasks_lowest_ll():
+  """Masked BlockGen ARPC: propose → AR NLL score → remask top-k with MASK."""
+  model = _MockBlockTrainer(mode='masked', n=16)
+  model.block_size = 8
+  # Deterministic AR: token 3 is high-LL; others look bad under NLL scoring.
+  def _causal(ids):
+    logits = torch.full(
+        (ids.shape[0], ids.shape[1], model.vocab_size), -10.0)
+    logits[:, :, 3] = 10.0
+    return logits
+  model.backbone.causal_logits = _causal
+  cfg = _config('masked')
+  cfg.sampling.use_arpc = True
+  cfg.sampling.arpc_mode = 'blockgen'
+  cfg.sampling.arpc_corruption_mode = 'ar_metric'
+  cfg.sampling.arpc_ar_metric = 'nll'
+  cfg.sampling.arpc_use_prefix_fill = False
+  cfg.sampling.arpc_warmup_steps = 0
+  cfg.sampling.arpc_guide_every = 1
+  cfg.sampling.unmask_threshold = None
+  sampler = BlockSampler(cfg)
+  out = sampler.generate(
+      model, num_samples=1, num_steps=4, eps=1e-3, inject_bos=False)
+  assert out.shape == (1, 16)
+  # Guided steps remask; final noise-removal may leave some MASK if incomplete.
+  # Smoke: path runs without refuse and stays in vocab.
+  assert out.min() >= 0
+  assert out.max() < model.vocab_size
 
 
 def test_hierarchical_kv_truncated_path():
@@ -78,16 +109,100 @@ def test_hierarchical_kv_truncated_path():
   assert out.shape == (1, 16)
 
 
-def test_arpc_on_masked_refused_at_sampler():
+def test_arpc_on_hybrid_allowed():
+  cfg = _config('hybrid')
+  cfg.algo.hybrid_decode = 'masked'
+  cfg.sampling.use_arpc = True
+  cfg.sampling.arpc_mode = 'blockgen'
+  sampler = BlockSampler(cfg)
+  assert sampler.use_arpc
+  assert sampler.mode == 'masked'
+
+
+def test_masked_arpc_refuses_confidence_unmask():
+  model = _MockBlockTrainer(mode='masked', n=16)
+  model.backbone.causal_logits = lambda ids: torch.randn(
+      ids.shape[0], ids.shape[1], model.vocab_size)
   cfg = _config('masked')
   cfg.sampling.use_arpc = True
+  cfg.sampling.arpc_mode = 'blockgen'
+  cfg.sampling.unmask_threshold = 0.9
+  sampler = BlockSampler(cfg)
   try:
-    BlockSampler(cfg)
+    sampler.generate(
+        model, num_samples=1, num_steps=2, eps=1e-3, inject_bos=False)
     raised = False
   except ValueError as e:
     raised = True
-    assert 'uniform' in str(e).lower()
+    assert 'unmask_threshold' in str(e)
   assert raised
+
+
+def test_absorb_arpc_guided_step_writes_mask():
+  """Corrector must remask (not Unif-redraw) on the absorb arm."""
+  torch.manual_seed(0)
+  model = _MockBlockTrainer(mode='masked', n=16)
+  model.block_size = 8
+
+  def _causal(ids):
+    logits = torch.full(
+        (ids.shape[0], ids.shape[1], model.vocab_size), -5.0)
+    logits[:, :, 3] = 5.0
+    return logits
+
+  model.backbone.causal_logits = _causal
+  cfg = _config('masked')
+  cfg.sampling.use_arpc = True
+  cfg.sampling.arpc_mode = 'blockgen'
+  cfg.sampling.arpc_corruption_mode = 'ar_metric'
+  cfg.sampling.arpc_ar_metric = 'nll'
+  cfg.sampling.arpc_use_prefix_fill = False
+  sampler = BlockSampler(cfg)
+  xt = torch.randint(0, model.vocab_size - 1, (1, 16))
+  x0 = xt.clone()
+  # Force a fully clean proposal block, then guide once.
+  start, end = 0, 8
+  t = torch.ones(1)
+  sampler._arpc_guided_step(
+      model, xt, x0, start, end, t, dt=0.25, block_prefix_len=0)
+  remasked = (xt[:, start:end] == model.mask_id).sum().item()
+  assert remasked >= 1, 'absorb ARPC must remask ≥1 lowest-LL token'
+
+
+def test_uniform_arpc_guided_step_redraws_unif_not_mask():
+  """Corrector must Unif-redraw (never plant MASK) on the uniform arm."""
+  torch.manual_seed(0)
+  model = _MockBlockTrainer(mode='uniform', n=16)
+  model.block_size = 8
+
+  def _causal(ids):
+    logits = torch.full(
+        (ids.shape[0], ids.shape[1], model.vocab_size), -5.0)
+    logits[:, :, 3] = 5.0
+    return logits
+
+  model.backbone.causal_logits = _causal
+  cfg = _config('uniform')
+  cfg.sampling.use_arpc = True
+  cfg.sampling.arpc_mode = 'blockgen'
+  cfg.sampling.arpc_corruption_mode = 'ar_metric'
+  cfg.sampling.arpc_ar_metric = 'nll'
+  cfg.sampling.arpc_use_prefix_fill = False
+  sampler = BlockSampler(cfg)
+  # Avoid MASK in the clean proposal so any MASK after guide is from corruptor.
+  content_v = model.vocab_size - 1  # mask_id is last id on the mock
+  xt = torch.randint(0, content_v, (1, 16))
+  x0 = xt.clone()
+  before = xt[:, :8].clone()
+  start, end = 0, 8
+  t = torch.ones(1)
+  sampler._arpc_guided_step(
+      model, xt, x0, start, end, t, dt=0.25, block_prefix_len=0)
+  block = xt[:, start:end]
+  assert (block == model.mask_id).sum().item() == 0, (
+      'uniform ARPC must not write MASK; expected Unif redraw')
+  assert not torch.equal(block, before), (
+      'uniform ARPC corrector must change ≥1 site via Unif redraw')
 
 
 def test_simplified_arpc_still_works():

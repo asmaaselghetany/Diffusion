@@ -1,7 +1,9 @@
 # Gap diagnosis M−U under ARPC — protocol 2026-10-01
 
-**Status:** cutoffs written **before** runs. Tests 1–3 are decode/forward only;
-do not start a training campaign until 1+2+3 are read together.
+**Honest verdict (2026-10-01):** the Unif **denoiser looks mostly healthy** so
+far. What is unhealthy is **end-to-end** performance (33–38% vs 55.6% masked
+under ARPC). The gap is **not explained** yet. Do not start a training campaign
+until Tests 1+2+3 are read together.
 
 **Hard twins (locked):** masked `2020048` ∥ uniform `2020049`
 (`xfer_bg_mix_32_blockgen`). Floor `2092151` is **not** the gap twin.
@@ -11,6 +13,25 @@ real. For **gaps**, use bootstrap CIs on the paired (M−U) differences, not
 only on each arm. A gap of ~5 pp at n≈1300 is within noise — apply the
 “≤5 pp” exposure cutoff to the **CI upper bound** of the gap, not the point
 estimate. Same idea for “≥15 pp”: use the CI lower bound.
+
+### Cause board (ruling out one at a time)
+
+| Cause | Status |
+|-------|--------|
+| Sampler kernel wrong | **Ruled out** (matches BlockGen posterior; H2/H2b/H3) |
+| Leak / bug in UCC decode | Probes pass; live harness checks pending |
+| Probe / code-version problem | **Mostly closed** (utils restored, committed, hashed, submit guard). Val-NLL reproduction **pending** |
+| Unif can't denoise | **Not supported** — corrupt-site acc ≈ masked at n=64 |
+| Unif overwrites correct tokens | **Not supported at T=1** (soft keep ≈0.99). T=0.1 **open** |
+| Temperature | **Untested** on matched pair (`arpc_t01` not run) |
+| Exposure (own-error prefix) | **Untested** — Test 2 |
+| Training recipe (no time-cond, N2C, V_eff) | **Open** |
+
+### Is Unif healthy?
+
+- **Fine so far:** denoises corrupt sites ≈ masked; random-corruption AUROC ≈0.997; sampler soft-keeps clean tokens at T=1.
+- **Real problems:** no identity-copy at α=1.0 (partly OOD vs train α_max≈0.999); **no time conditioning**; large E2E gap while BlockGen's M−U gap is small.
+- **Blind spot:** tests use **random** corruption (easy). Own decode-time errors are untested — best suspect until Test 2 speaks.
 
 ### ARPC∥ARPC baseline lock (parallel enough)
 
@@ -93,9 +114,10 @@ does not show a large M−U corrupt-site gap.
 | Soft keep drops at **T=0.1** (~0.4–0.6 on n=8) vs quiet ARPC gain (~38→52) | **Open** — isolation retention vs ARPC corrector; need n=1000 + retention inside ARPC |
 | Test 3 vs Unif denoiser | Corrupt-site M≈U (smoke); retention high at T=1; random-corruption AUROC easy → gap likely **elsewhere** (exposure / T / recipe / ARPC internals) |
 
-**Next most informative:** **Test 2** (prefix-oracle). Model-prefix AUROC on
-*random* replacements is still the easy case — build detection labels from
-positions where Unif decode **disagrees with a correct AR-teacher** solution.
+**Next most informative after n=1000 + val-NLL:** **Test 2** (prefix-oracle /
+exposure). Model-prefix AUROC on *random* replacements is still the easy case —
+build detection labels from positions where Unif decode **disagrees with a
+correct AR-teacher** solution.
 
 ## Preregistered cutoffs (Test 2)
 
@@ -110,23 +132,28 @@ All gap thresholds are on **paired bootstrap CIs**, not point estimates alone.
 
 ## Order
 
-`arpc_t01` and the T×pack 2×2 (Test 1) are **decode-only on the same
-checkpoints** — submit them in the **same batch as Test 3**. Do not hold them
-behind Test 2.
+**Login / now (no new training):**
 
-Order for data that needs new runs:
+1. Finish **Test 3** n=1000 — read **in-range α** (0.999, 0.99, 0.98) first,
+   then retention T=1 vs T=0.1, then train-NLL buckets vs probe clean-site NLL.
+2. Reproduce logged **val/nll** with committed code (`tools/reproduce_val_nll.py`).
+   Until that lands: forward-process equivalence is **not reproduced**.
+3. Build AR-teacher prefix JSONL and run **Test 2** (most likely to explain the
+   gap if the denoiser stays comparable).
 
-1. **Test 3** GPU — finish n=1000 (+ retention + in-range α). Script:
-   `tools/gap_test3_denoiser_quality.py`
-2. **Test 2** — prefix-oracle (now the main separator if Test 3 stays flat).
-   **f=0% under `hierarchical_arpc` first**. Then other f / `t01`.
-3. Build AR-teacher disagreement set for a **hard** detection probe (not
-   random replacements).
-4. Combine readouts → train only if 2/3/1 say so.
-5. Test 5 (harness) if BlockGen TinyGSM available — before large Unif retrain.
+**When booster returns (decode-only on same ckpts):**
 
-**Parallel with Test 3 (same batch):** `hierarchical_arpc_t01` + open-loop
-T×pack 2×2 on both twins (`scripts/submit_openloop_t_pack_matrix.sh`).
+4. `hierarchical_arpc_t01` + open-loop T×pack 2×2 on both twins
+   (`scripts/submit_openloop_t_pack_matrix.sh`).
+
+Only after those readouts choose a training change.
+
+Scripts:
+
+1. Test 3 — `tools/gap_test3_denoiser_quality.py`
+2. Test 2 — `tools/gap_test2_prefix_oracle.py` (`build-prefixes` then `run`)
+3. Val-NLL — `tools/reproduce_val_nll.py`
+4. Test 1 submit — `scripts/submit_openloop_t_pack_matrix.sh`
 
 ---
 

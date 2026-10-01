@@ -15,9 +15,20 @@ corruption-agnostic.
 | **shared** | either | decode `hierarchical_kv` / `dual_cache`; `t_strat_05` |
 
 **Free sampling (adopted default):** `sample_mode=auto` + `decode_profile=baseline`
-(see `.cursor/rules/sampling-family-policy.mdc`). Native → LM free-gen;
-conversion → chat-header free-gen; bare BOS is ablation only. Exactness overlays
-(DualCache+thr / ARPC) are opt-in, not free-gen defaults.
+→ `hierarchical` (BlockGen packing + conf remask thr=0.9 on **masked**;
+on **uniform** thr is ignored without sticky → ancestral; remask twin =
+`uniform_commit`. See BASELINE.md / FAIR_AR2BLOCK_MAP.md).
+Native → LM free-gen; conversion → chat-header free-gen.
+**Hub remask thr=1 / DualCache / UCC / ARPC / quiet T / Hub-ss packing are levers**,
+not the floor.
+
+**Phase-0 decode bake-off (no retrain):**
+```bash
+./scripts/submit_baseline_bakeoff.sh          # B1–B4 + DualCache + UCC
+./scripts/submit_baseline_bakeoff.sh --dry-run
+```
+Cells: B1 `hierarchical` · B2 `hierarchical_arpc` · B3 `hierarchical_ss` ·
+B4 `hierarchical_arpc` s=8 · DC `dual_cache` · UC `uniform_commit`.
 
 **Wiring:** use `./scripts/submit_lever.sh` →
 [`configs/levers/registry.yaml`](../../configs/levers/registry.yaml) via
@@ -34,20 +45,25 @@ wrong family, conflicts, and missing prerequisites are refused.
 ./scripts/submit_blockgen_owt.sh
 # Transfer (explicit)
 ./scripts/submit_lever.sh --preset xfer_mixture --arm masked --paper
+# External Fast-dLLM GitHub × our C2 mix → their eval
+./scripts/submit_hub_fastdllm_c2.sh
 ```
 
 `submit_blockgen_lever_micro.sh` is **retired** (old path forced `ar2block`).
 
 | Lever | Source | Family / arm | Config key | Individually tested? | Promoted to shared? | Notes |
 |-------|--------|--------------|------------|----------------------|---------------------|-------|
-| (none — skeleton) | — | both | defaults in `configs/algo/block_*.yaml` | Layer 0–3 unit tests | **yes** (neutral) | Correct-but-undertrained is OK |
+| (none — skeleton) | — | both | defaults in `configs/algo/block_*.yaml` | Layer 0–3 unit tests | **yes** (neutral) | Correct-but-undertrained is OK; packing = `block_gen_logits` |
 | `shift_loss_targets` | Fast-dLLM v2 | **conversion + masked** | `algo.shift_loss_targets` | yes | **no** | Prefer shift-only micro before full fdllm |
 | `complementary_masks` | Fast-dLLM v2 | **conversion + masked** | `algo.complementary_masks` (+ `complementary_batching=fused`) | yes | **no** | Paired m/~m; Hub fused 2B |
 | `mask_schedule=fast_dllm` | Fast-dLLM v2 | **conversion + masked** | `algo.mask_schedule` | unit | **no** | `p_mask=(1-ε)t+ε` |
 | `loss_weighting=plain_ce` | Fast-dLLM v2 Hub CE | **conversion + masked** | `algo.loss_weighting` | yes (denom tests) | **no** | Mask-site mean only; see **PLAIN-CE-DENOM** |
 | `sub_block_size` | Fast-dLLM decode | shared / decode | `sampling.sub_block_size` | sampler | **no** | Pair with `hierarchical_kv` |
-| `hierarchical_kv` | Fast-dLLM decode | shared / decode | `sampling.hierarchical_kv` | sampler | **no** | Truncate-only progressive |
-| `dual_cache` | Fast-dLLM DualCache | shared / decode | `sampling.use_block_cache` | unit | **no** | Requires `hierarchical_kv` |
+| `hierarchical_kv` | Fast-dLLM / BlockGen packing | shared / decode | `sampling.hierarchical_kv` | sampler | **yes** (floor pin) | Truncate; floor uses B0 `block_gen_logits` |
+| `single_stream_decode` | Fast-dLLM Hub packing | shared / decode | `sampling.single_stream_decode` | sampler | **no** | Profile `hierarchical_ss` = B3 bake-off |
+| `hierarchical_arpc` | BlockGen §3.3 | shared / decode | profile pins `use_arpc` + B0 packing | profile + sampler | **no** | B2 bake-off; T=1 (≠ quiet) |
+| `dual_cache` | Fast-dLLM DualCache | shared / decode | `sampling.use_block_cache` | unit | **no** | MASK DualCache K/V; Unif remask twin is UCC (`uniform_commit`), not a silent coerce |
+| `uniform_commit` (UCC) | **ours** (Hub DualCache-commit + USDM) | **uniform** decode | sticky; revise off | sampler | **no** | Not DualCache K/V; bake-off UC. `uniform_dual` = thr=1+ss twin |
 | `joint_ar` / `causal_clean` | NLD-style C5 | **conversion** | `algo.joint_ar_alpha` / `causal_clean_stream` | joint unit | **no** | `val/joint_nll` vs `val/nll` |
 | `hybrid_p10` / `hybrid_p50` | B4 hybrid | **conversion + hybrid** | `algo.hybrid_p_uniform` | hybrid unit | **no** | `p10` pins default; `p50` sweep |
 | `block_size_mixture` | BlockGen analogue | **native** (or `xfer_*`) | `algo.block_size_mixture` | unit | **no** | Uniform list draw |
@@ -56,7 +72,7 @@ wrong family, conflicts, and missing prerequisites are refused.
 | `stratified_gamma` | our t-strat | shared | `algo.stratified_gamma` | with mixture | **no** | ≠ BlockGen `u-stratified` |
 | `pure_noise_block_sizes` | BlockGen | **native** (or `xfer_*`) | `algo.pure_noise_block_sizes` | trainer | **no** | Force `t=1` at listed sizes |
 | `loss_type_special_cases` | BlockGen | **native** (or `xfer_*`) | `algo.loss_type_special_cases` | trainer | **no** | e.g. `[1,ce]` |
-| `use_arpc` | BlockGen §3.3 | **native + uniform** (or `xfer_*`) | `sampling.use_arpc` + `arpc_mode` | sampler | **no** | Needs size-1 in mix |
+| `use_arpc` | BlockGen §3.3 | **native + uniform** (or `xfer_*`) / decode probe | `sampling.use_arpc` + `arpc_mode` | sampler | **no** | Needs size-1 in mix for train claim; decode probe OK with warn |
 
 ## How to add a lever
 

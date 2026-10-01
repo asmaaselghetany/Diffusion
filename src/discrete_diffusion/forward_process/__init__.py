@@ -16,7 +16,16 @@ from .block_masked import (
 from .block_uniform import BlockUniformForwardProcess
 from .block_hybrid import BlockHybridForwardProcess
 from .flexmdm import FlexMDMForwardProcess
-from .utils import _effective_vocab_size, _mask_token_id, _unsqueeze, sample_categorical
+from .utils import (
+    _effective_vocab_size,
+    _mask_token_id,
+    _unsqueeze,
+    resolve_uniform_exclude_ids,
+    sample_categorical,
+    sample_uniform_excluding_mask,
+    uniform_noise_exclude_ids,
+    uniform_simplex_size,
+)
 
 __all__ = [
   'AbsorbingForwardProcess', 'ForwardProcess', '_unsqueeze',
@@ -26,4 +35,6 @@ __all__ = [
   'complementary_pair_from_mask',
   'sample_block_timesteps', 'FlexMDMForwardProcess',
   '_effective_vocab_size', '_mask_token_id', 'sample_categorical',
+  'sample_uniform_excluding_mask', 'uniform_simplex_size',
+  'uniform_noise_exclude_ids', 'resolve_uniform_exclude_ids',
 ]

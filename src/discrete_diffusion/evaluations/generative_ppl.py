@@ -27,26 +27,51 @@ from ..data.tokenizers import Text8Tokenizer
 from .decode_profiles import read_samples_meta
 
 
-def _trim_token_rows_at_eos(rows: np.ndarray, eos_id: int | None) -> np.ndarray:
+def _trim_token_rows_at_eos(
+    rows: np.ndarray,
+    eos_id: int | None,
+    *,
+    prefix_len: int = 0,
+    pad_id: int | None = None,
+) -> np.ndarray:
+  """Trim at first EOS at or after ``prefix_len`` (skip chat-header im_end).
+
+  Right-pad shorter rows with ``pad_id`` (default ``eos_id``, never bare 0 —
+  Qwen id 0 is ``!`` and was polluting first_chunk GenPPL text).
+  """
   if eos_id is None:
     return rows
+  prefix_len = max(0, int(prefix_len))
+  fill = int(eos_id if pad_id is None else pad_id)
   trimmed = []
   max_len = 0
   for row in rows:
-    hits = np.where(row == eos_id)[0]
+    search = row[prefix_len:]
+    hits = np.where(search == eos_id)[0]
     if hits.size:
-      row = row[: int(hits[0]) + 1]
+      row = row[: prefix_len + int(hits[0]) + 1]
     trimmed.append(row)
     max_len = max(max_len, row.shape[0])
-  out = np.zeros((len(trimmed), max_len), dtype=rows.dtype)
+  out = np.full((len(trimmed), max_len), fill, dtype=rows.dtype)
   for i, row in enumerate(trimmed):
     out[i, : row.shape[0]] = row
   return out
 
 
-def _eos_token_stats(rows: np.ndarray, eos_id: int | None) -> dict:
-  """Honesty metrics: how often / how early EOS appears in raw sample tensors."""
+def _eos_token_stats(
+    rows: np.ndarray,
+    eos_id: int | None,
+    *,
+    prefix_len: int = 0,
+) -> dict:
+  """Honesty metrics: how often / how early EOS appears *after* the prefix.
+
+  Chat ``conversion_free`` prefixes embed ``<|im_end|>`` (Qwen eos) after the
+  system turn. Counting that as generation EOS falsely reports collapse and
+  flattens first_chunk_only PPL.
+  """
   n, t = int(rows.shape[0]), int(rows.shape[1])
+  prefix_len = max(0, int(prefix_len))
   if eos_id is None:
     return {
         'eos_rate': None,
@@ -54,15 +79,17 @@ def _eos_token_stats(rows: np.ndarray, eos_id: int | None) -> dict:
         'median_tokens_before_eos': float(t),
         'full_length_rate': 1.0,
         'raw_seq_len': t,
+        'prefix_len': prefix_len,
         'num_samples': n,
     }
   lengths = []
   has_eos = 0
   for row in rows:
-    hits = np.where(row == eos_id)[0]
+    search = row[prefix_len:]
+    hits = np.where(search == eos_id)[0]
     if hits.size:
       has_eos += 1
-      lengths.append(int(hits[0]) + 1)
+      lengths.append(prefix_len + int(hits[0]) + 1)
     else:
       lengths.append(t)
   arr = np.asarray(lengths, dtype=np.float64)
@@ -72,7 +99,89 @@ def _eos_token_stats(rows: np.ndarray, eos_id: int | None) -> dict:
       'median_tokens_before_eos': float(np.median(arr)) if n else 0.0,
       'full_length_rate': float(np.mean(arr >= t)) if n else 0.0,
       'raw_seq_len': t,
+      'prefix_len': prefix_len,
       'num_samples': n,
+  }
+
+
+def _unigram_shannon_entropy(token_ids: np.ndarray | list[int]) -> float:
+  """Shannon entropy (nats) of the empirical unigram over ``token_ids``.
+
+  Unifusion-style hygiene: low GenPPL + low H → repetitive collapse; high H alone
+  can be noise. Empty / single-token → 0.
+  """
+  ids = np.asarray(token_ids, dtype=np.int64).reshape(-1)
+  if ids.size == 0:
+    return 0.0
+  _, counts = np.unique(ids, return_counts=True)
+  p = counts.astype(np.float64) / float(ids.size)
+  return float(-(p * np.log(p)).sum())
+
+
+def _strip_conversion_prefix(
+    body: str,
+    prefix_text: str | None,
+    *,
+    model_tokenizer=None,
+) -> str:
+  """Strip chat header whether or not specials were kept in ``body``."""
+  if not prefix_text:
+    return body
+  if body.startswith(prefix_text):
+    return body[len(prefix_text):]
+  if model_tokenizer is None:
+    return body
+  # Body usually comes from skip_special_tokens=True decode; prefix_text keeps
+  # ``<|im_start|>`` etc. Match the specials-stripped prefix instead.
+  try:
+    pref_ids = model_tokenizer.encode(prefix_text, add_special_tokens=False)
+    stripped = model_tokenizer.decode(pref_ids, skip_special_tokens=True)
+  except Exception:
+    return body
+  if stripped and body.startswith(stripped):
+    return body[len(stripped):]
+  return body
+
+
+def _unigram_entropy_stats(
+    texts: List[str],
+    tokenizer: AutoTokenizer,
+    *,
+    prefix_text: str | None = None,
+    model_tokenizer=None,
+) -> dict:
+  """Mean sample-level unigram entropy (Unifusion C.3 protocol, single seed).
+
+  Each text is retokenized with ``tokenizer`` (``add_special_tokens=False``).
+  If ``prefix_text`` is set, it is stripped once from the start so chat headers
+  do not dominate H.
+  """
+  hs: List[float] = []
+  lengths: List[int] = []
+  for text in texts:
+    body = _strip_conversion_prefix(
+        text, prefix_text, model_tokenizer=model_tokenizer)
+    body = body.strip()
+    if not body:
+      hs.append(0.0)
+      lengths.append(0)
+      continue
+    ids = tokenizer.encode(body, add_special_tokens=False)
+    hs.append(_unigram_shannon_entropy(ids))
+    lengths.append(len(ids))
+  arr = np.asarray(hs, dtype=np.float64)
+  len_arr = np.asarray(lengths, dtype=np.float64)
+  return {
+      'unigram_entropy_mean': float(arr.mean()) if arr.size else 0.0,
+      'unigram_entropy_median': float(np.median(arr)) if arr.size else 0.0,
+      'unigram_entropy_std': float(arr.std(ddof=0)) if arr.size else 0.0,
+      'unigram_entropy_tokenizer': str(
+          getattr(tokenizer, 'name_or_path', type(tokenizer).__name__)),
+      'unigram_entropy_mean_tokens': float(len_arr.mean()) if len_arr.size else 0.0,
+      'unigram_entropy_num_samples': int(arr.size),
+      'unigram_entropy_note': (
+          'Shannon H (nats) of empirical unigram per sample, then mean; '
+          'strip conversion_free prefix when present (Unifusion-style hygiene)'),
   }
 
 
@@ -171,11 +280,29 @@ def main(cfg):
   z_ts = _load_samples(cfg.samples_path)
   if z_ts.ndim != 2:
     raise ValueError(f"Expected 2D [N, T] tokens array, got {z_ts.shape}")
-  eos_stats = _eos_token_stats(z_ts, model_tokenizer.eos_token_id)
+  prefix_len = 0
+  if meta:
+    try:
+      prefix_len = int(meta.get('prefix_len') or 0)
+    except (TypeError, ValueError):
+      prefix_len = 0
+  eos_stats = _eos_token_stats(
+      z_ts, model_tokenizer.eos_token_id, prefix_len=prefix_len)
   if cfg.first_chunk_only:
-    z_ts = _trim_token_rows_at_eos(z_ts, model_tokenizer.eos_token_id)
+    z_ts = _trim_token_rows_at_eos(
+        z_ts, model_tokenizer.eos_token_id, prefix_len=prefix_len)
   texts = _decode_samples(model_tokenizer, z_ts)
   nonempty = sum(1 for t in texts if t.strip())
+  prefix_text = None
+  if meta:
+    raw_pref = meta.get('prefix_text')
+    if raw_pref is not None and str(raw_pref).strip():
+      prefix_text = str(raw_pref)
+  # Entropy needs only the eval tokenizer (cheap); compute even if GenPPL later fails.
+  entropy_stats = _unigram_entropy_stats(
+      texts, eval_tokenizer, prefix_text=prefix_text,
+      model_tokenizer=model_tokenizer)
+
   if nonempty == 0:
     print('WARNING: all decoded samples are empty; writing null gen-PPL metrics.')
     metrics = {
@@ -194,6 +321,7 @@ def main(cfg):
         "require_samples_meta": require_meta,
         "samples_meta": meta,
         **eos_stats,
+        **entropy_stats,
     }
     print(json.dumps(metrics, indent=2))
     out_path = Path(hydra.utils.to_absolute_path(cfg.metrics_path))
@@ -266,13 +394,56 @@ def main(cfg):
     "require_samples_meta": require_meta,
     "samples_meta": meta,
     **eos_stats,
+    **entropy_stats,
   }
   if bool(cfg.first_chunk_only) and eos_stats.get('eos_rate') is not None:
-    # Flag flattering short-chunk PPL after early collapse.
-    if float(eos_stats['eos_rate']) > 0.5 and float(
-        eos_stats['mean_tokens_before_eos']) < 64:
+    # Flag flattering short-chunk PPL after early *post-prefix* collapse.
+    gen_span = float(eos_stats['mean_tokens_before_eos']) - float(
+        eos_stats.get('prefix_len') or 0)
+    if float(eos_stats['eos_rate']) > 0.5 and gen_span < 64:
       metrics['honesty_warning'] = (
           'high_eos_rate_short_span: first_chunk_only PPL may launder collapse')
+  # Unifusion-style: low GenPPL with low unigram H is often repetitive collapse.
+  h_mean = float(entropy_stats.get('unigram_entropy_mean') or 0.0)
+  if float(ppl) < 80.0 and h_mean < 4.5:
+    prev = metrics.get('honesty_warning')
+    extra = 'low_ppl_low_unigram_entropy: possible repetitive collapse'
+    metrics['honesty_warning'] = f'{prev}; {extra}' if prev else extra
+  # Quiet/T≪1 digit-soup: GPT-2 PPL can look excellent (~5) while samples are
+  # long runs of digits / multilingual junk that almost never EOS. Unigram H
+  # stays moderate (~6) so the low-H gate above misses it.
+  flr = eos_stats.get('full_length_rate')
+  if flr is not None and float(ppl) < 20.0 and float(flr) > 0.75:
+    prev = metrics.get('honesty_warning')
+    extra = (
+        'low_ppl_high_full_length: likely digit/repetition soup '
+        '(do not cite as fluency — inspect samples.txt)')
+    metrics['honesty_warning'] = f'{prev}; {extra}' if prev else extra
+  # High full-length rate = rarely stops; GenPPL≠linguistic fluency (not a
+  # collapse gate — separate note so hygiene pairs stay citeable when PPL
+  # is ordinary).
+  if flr is not None and float(flr) > 0.75:
+    metrics['fluency_note'] = (
+        'high_full_length_rate: GenPPL+H is collapse hygiene only, '
+        'not linguistic fluency (models rarely emit EOS)')
+  # Prefix-EOS / empty-span scores must not be cited.
+  n_samp = int(metrics.get('num_samples') or eos_stats.get('num_samples') or 0)
+  if n_samp > 0 and int(total_tokens) < max(32, n_samp * 32):
+    prev = metrics.get('honesty_warning')
+    extra = (
+        f'too_few_scored_tokens ({int(total_tokens)} for n={n_samp}): '
+        'likely prefix-EOS bug or empty gens — do not cite GenPPL')
+    metrics['honesty_warning'] = f'{prev}; {extra}' if prev else extra
+    metrics['citeable'] = False
+  else:
+    w = str(metrics.get('honesty_warning') or '')
+    metrics['citeable'] = not any(
+        tag in w for tag in (
+            'too_few_scored_tokens',
+            'high_eos_rate_short_span',
+            'low_ppl_high_full_length',
+            'low_ppl_low_unigram_entropy',
+        ))
 
   print(json.dumps(metrics, indent=2))
   out_path = Path(hydra.utils.to_absolute_path(cfg.metrics_path))

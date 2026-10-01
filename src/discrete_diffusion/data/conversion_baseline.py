@@ -233,7 +233,14 @@ def maybe_keep_hub_vocab_size(tokenizer) -> None:
     from transformers import AutoConfig
     cfg = AutoConfig.from_pretrained(name, trust_remote_code=True)
     pad_v = int(getattr(cfg, 'vocab_size', 0) or 0)
-  except Exception:
+  except Exception as exc:
+    # Surface the cause — silent return previously left a shrunk vocab with
+    # no hint that Hub config lookup failed (offline, bad path, etc.).
+    import logging
+    logging.getLogger(__name__).warning(
+        'Hub vocab_size lookup failed for %r (%s: %s); '
+        'keeping tokenizer len=%s (may mismatch padded HF embed)',
+        name, type(exc).__name__, exc, len(tokenizer))
     return
   if pad_v <= 0:
     return

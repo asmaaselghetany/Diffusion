@@ -2,7 +2,7 @@
 #SBATCH --job-name=bqwen-eval
 #SBATCH --output=slurm_logs/%x_%j.out
 #SBATCH --error=slurm_logs/%x_%j.err
-#SBATCH --account=scifi
+#SBATCH --account=profound
 #SBATCH --partition=booster
 #SBATCH --nodes=1
 #SBATCH --ntasks=1

@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import functools
 import os
+import random
 from typing import Optional
 
 import datasets
+import numpy as np
 import tokenizers
 import torch
 import transformers
@@ -664,11 +666,43 @@ def _training_world_size(config) -> int:
   return max(torch.cuda.device_count(), 1)
 
 
+def _dataloader_worker_init_fn(worker_id: int) -> None:
+  """Seed numpy/random per worker (pairs with ``seed_everything(..., workers=True)``)."""
+  del worker_id
+  worker_seed = torch.initial_seed() % 2**32
+  np.random.seed(worker_seed)
+  random.seed(worker_seed)
+
+
+def _dataloader_generator(seed: int | None) -> torch.Generator | None:
+  if seed is None:
+    return None
+  gen = torch.Generator()
+  gen.manual_seed(int(seed) % (2**32))
+  return gen
+
+
+def _ensure_file_system_tensor_sharing() -> None:
+  """Prefer file-backed tensor IPC over /dev/shm for DataLoader workers.
+
+  Multi-node Jupiter paper jobs (8×4 GPUs × N workers) routinely hit
+  ``Unexpected bus error … insufficient shared memory (shm)`` under the
+  default ``file_descriptor`` strategy when /dev/shm is tight. Unifusion /
+  Unif(V) ablations are not special — any workered loader can trip this.
+  """
+  try:
+    torch.multiprocessing.set_sharing_strategy('file_system')
+  except (RuntimeError, AttributeError, ValueError):
+    pass
+
+
 def get_dataloaders(config, tokenizer, skip_train=False,
                     skip_valid=False, valid_seed=None):
   # Total DDP world size. Matches config.yaml accumulate_grad_batches resolver:
   #   GBS == batch_size * devices * num_nodes * accumulate_grad_batches
   num_gpus = _training_world_size(config)
+  if int(getattr(config.loader, 'num_workers', 0) or 0) > 0:
+    _ensure_file_system_tensor_sharing()
   if torch.cuda.device_count() < 1:
     raise RuntimeError(
         'No CUDA devices visible. Launch training on a GPU node (e.g. via Slurm).')
@@ -748,6 +782,9 @@ def get_dataloaders(config, tokenizer, skip_train=False,
   use_synthetic_collate = (
       config.data.train == 'synthetic' or config.data.valid == 'synthetic')
   collate_fn = _collate_tensor_dict if use_synthetic_collate else None
+  base_seed = int(getattr(config, 'seed', 0) or 0)
+  worker_init = (
+      _dataloader_worker_init_fn if int(config.loader.num_workers) > 0 else None)
 
   if skip_train:
     train_loader = None
@@ -758,6 +795,8 @@ def get_dataloaders(config, tokenizer, skip_train=False,
       num_workers=config.loader.num_workers,
       pin_memory=config.loader.pin_memory,
       shuffle=not config.data.streaming,
+      generator=_dataloader_generator(base_seed),
+      worker_init_fn=worker_init,
       persistent_workers=config.loader.num_workers > 0,
       collate_fn=collate_fn)
     train_loader.tokenizer = tokenizer
@@ -769,7 +808,7 @@ def get_dataloaders(config, tokenizer, skip_train=False,
       generator = None
     else:
       shuffle_valid = True
-      generator = torch.Generator().manual_seed(valid_seed)
+      generator = _dataloader_generator(int(valid_seed))
     valid_loader = torch.utils.data.DataLoader(
       valid_set,
       batch_size=config.loader.eval_batch_size,
@@ -777,6 +816,7 @@ def get_dataloaders(config, tokenizer, skip_train=False,
       pin_memory=config.loader.pin_memory,
       shuffle=shuffle_valid,
       generator=generator,
+      worker_init_fn=worker_init if shuffle_valid else None,
       persistent_workers=config.loader.num_workers > 0,
       collate_fn=collate_fn)
     valid_loader.tokenizer = tokenizer

@@ -1,0 +1,757 @@
+{
+  "protocol": "GAP_DIAGNOSIS_M_U_2026-10-01 Test 3",
+  "note": "Shared sequences. Corrupted := (xt!=x0)&block. Masked detect_auroc=N/A. Gaps: paired bootstrap CIs. Cause 6: no time conditioning; see noise_level_split.",
+  "time_conditioning_received": false,
+  "time_conditioning_note": "BlockTrainer passes sigma=None; Qwen forward deletes sigma. t is used only for corruption + ELBO weights.",
+  "alpha_match": {
+    "eps": 0.001,
+    "schedule": "LogLinear",
+    "map_t_from_alpha": {
+      "0.95": 0.050050050050050095,
+      "0.9": 0.10010010010010008,
+      "0.7": 0.30030030030030036,
+      "0.5": 0.5005005005005005,
+      "0.3": 0.7007007007007007,
+      "0.1": 0.9009009009009009
+    },
+    "matched": true
+  },
+  "masked": {
+    "checkpoint": "outputs/block_qwen/ar2block_masked_2020048/checkpoints/last.ckpt",
+    "simplex": {
+      "forward_process_name": "masked",
+      "uniform_simplex_mode": "conversion",
+      "v_eff": null,
+      "mask_id": 151665,
+      "block_size": 32,
+      "noise_schedule": "LogLinear",
+      "eps": 0.001,
+      "time_conditioning": false,
+      "alpha_map": {
+        "0.95": 0.050050050050050095,
+        "0.9": 0.10010010010010008,
+        "0.7": 0.30030030030030036,
+        "0.5": 0.5005005005005005,
+        "0.3": 0.7007007007007007,
+        "0.1": 0.9009009009009009
+      }
+    },
+    "n_sequences": 64,
+    "levels": [
+      {
+        "alpha_t": 0.95,
+        "t_schedule": 0.050050050050050095,
+        "n_problems": 64,
+        "corrupt_acc": {
+          "mean": 0.8260869591132455,
+          "lo": 0.7282608721567236,
+          "hi": 0.9021739156349845,
+          "n": 46
+        },
+        "corrupt_ce": {
+          "mean": 0.9871799566864121,
+          "lo": 0.4517596987264001,
+          "hi": 1.6605394236698985,
+          "n": 46
+        },
+        "clean_acc": {
+          "mean": 0.002488659229129553,
+          "lo": 0.0,
+          "hi": 0.005008820444345474,
+          "n": 64
+        },
+        "clean_ce": {
+          "mean": 13.40035542845726,
+          "lo": 13.057186663150787,
+          "hi": 13.760627284646034,
+          "n": 64
+        },
+        "detect_auroc": null,
+        "detect_auroc_note": "N/A \u2014 MASK is visible by construction",
+        "n_attempted_total": 82,
+        "n_collision_xt_eq_x0_total": 0,
+        "collision_rate_among_attempts": 0.0,
+        "mean_n_corrupted": 1.28125
+      },
+      {
+        "alpha_t": 0.9,
+        "t_schedule": 0.10010010010010008,
+        "n_problems": 64,
+        "corrupt_acc": {
+          "mean": 0.792460320487855,
+          "lo": 0.7353174648587666,
+          "hi": 0.8582010605032482,
+          "n": 63
+        },
+        "corrupt_ce": {
+          "mean": 0.7184178758505744,
+          "lo": 0.42513311058468795,
+          "hi": 1.0471742396122343,
+          "n": 63
+        },
+        "clean_acc": {
+          "mean": 0.004134223272558302,
+          "lo": 0.0010416667209938169,
+          "hi": 0.0072783417999744415,
+          "n": 64
+        },
+        "clean_ce": {
+          "mean": 13.00035785138607,
+          "lo": 12.666707769036293,
+          "hi": 13.321049809455872,
+          "n": 64
+        },
+        "detect_auroc": null,
+        "detect_auroc_note": "N/A \u2014 MASK is visible by construction",
+        "n_attempted_total": 190,
+        "n_collision_xt_eq_x0_total": 0,
+        "collision_rate_among_attempts": 0.0,
+        "mean_n_corrupted": 2.96875
+      },
+      {
+        "alpha_t": 0.7,
+        "t_schedule": 0.30030030030030036,
+        "n_problems": 64,
+        "corrupt_acc": {
+          "mean": 0.767819088883698,
+          "lo": 0.7185275829397142,
+          "hi": 0.8153820787556469,
+          "n": 64
+        },
+        "corrupt_ce": {
+          "mean": 1.048443665542436,
+          "lo": 0.791374248379725,
+          "hi": 1.317936625884613,
+          "n": 64
+        },
+        "clean_acc": {
+          "mean": 0.00519917591009289,
+          "lo": 0.0013450091937556863,
+          "hi": 0.009103422751650214,
+          "n": 64
+        },
+        "clean_ce": {
+          "mean": 12.08615617454052,
+          "lo": 11.694999918341637,
+          "hi": 12.412176340818405,
+          "n": 64
+        },
+        "detect_auroc": null,
+        "detect_auroc_note": "N/A \u2014 MASK is visible by construction",
+        "n_attempted_total": 595,
+        "n_collision_xt_eq_x0_total": 0,
+        "collision_rate_among_attempts": 0.0,
+        "mean_n_corrupted": 9.296875
+      },
+      {
+        "alpha_t": 0.5,
+        "t_schedule": 0.5005005005005005,
+        "n_problems": 64,
+        "corrupt_acc": {
+          "mean": 0.6609269832260907,
+          "lo": 0.6068110591731966,
+          "hi": 0.7126257168129086,
+          "n": 64
+        },
+        "corrupt_ce": {
+          "mean": 1.5709925932387705,
+          "lo": 1.2792725030740257,
+          "hi": 1.8735656119752093,
+          "n": 64
+        },
+        "clean_acc": {
+          "mean": 0.007477841863874346,
+          "lo": 0.0023437500931322575,
+          "hi": 0.014217836607713252,
+          "n": 64
+        },
+        "clean_ce": {
+          "mean": 11.253679595887661,
+          "lo": 10.861931718885899,
+          "hi": 11.6289347037673,
+          "n": 64
+        },
+        "detect_auroc": null,
+        "detect_auroc_note": "N/A \u2014 MASK is visible by construction",
+        "n_attempted_total": 999,
+        "n_collision_xt_eq_x0_total": 0,
+        "collision_rate_among_attempts": 0.0,
+        "mean_n_corrupted": 15.609375
+      },
+      {
+        "alpha_t": 0.3,
+        "t_schedule": 0.7007007007007007,
+        "n_problems": 64,
+        "corrupt_acc": {
+          "mean": 0.49815100303385407,
+          "lo": 0.4474519466748461,
+          "hi": 0.5438367074821144,
+          "n": 64
+        },
+        "corrupt_ce": {
+          "mean": 2.5540329681243747,
+          "lo": 2.22887774114497,
+          "hi": 2.8547837869264185,
+          "n": 64
+        },
+        "clean_acc": {
+          "mean": 0.00861833500675857,
+          "lo": 0.0024038462433964014,
+          "hi": 0.01767373294569552,
+          "n": 64
+        },
+        "clean_ce": {
+          "mean": 10.617607541382313,
+          "lo": 10.105954572558403,
+          "hi": 11.004090674221516,
+          "n": 64
+        },
+        "detect_auroc": null,
+        "detect_auroc_note": "N/A \u2014 MASK is visible by construction",
+        "n_attempted_total": 1423,
+        "n_collision_xt_eq_x0_total": 0,
+        "collision_rate_among_attempts": 0.0,
+        "mean_n_corrupted": 22.234375
+      },
+      {
+        "alpha_t": 0.1,
+        "t_schedule": 0.9009009009009009,
+        "n_problems": 64,
+        "corrupt_acc": {
+          "mean": 0.2674273523152806,
+          "lo": 0.2243317665415816,
+          "hi": 0.3135461301426403,
+          "n": 64
+        },
+        "corrupt_ce": {
+          "mean": 4.145825133658946,
+          "lo": 3.718842463567853,
+          "hi": 4.575418908149004,
+          "n": 64
+        },
+        "clean_acc": {
+          "mean": 0.033068783226467315,
+          "lo": 0.005291005448689537,
+          "hi": 0.072751322909007,
+          "n": 63
+        },
+        "clean_ce": {
+          "mean": 9.461950305908445,
+          "lo": 8.780469830074008,
+          "hi": 10.132853424738324,
+          "n": 63
+        },
+        "detect_auroc": null,
+        "detect_auroc_note": "N/A \u2014 MASK is visible by construction",
+        "n_attempted_total": 1814,
+        "n_collision_xt_eq_x0_total": 0,
+        "collision_rate_among_attempts": 0.0,
+        "mean_n_corrupted": 28.34375
+      }
+    ]
+  },
+  "uniform": {
+    "checkpoint": "outputs/block_qwen/ar2block_uniform_2020049/checkpoints/last.ckpt",
+    "simplex": {
+      "forward_process_name": "uniform",
+      "uniform_simplex_mode": "conversion",
+      "v_eff": "err:TypeError",
+      "mask_id": 151665,
+      "block_size": 32,
+      "noise_schedule": "LogLinear",
+      "eps": 0.001,
+      "time_conditioning": false,
+      "alpha_map": {
+        "0.95": 0.050050050050050095,
+        "0.9": 0.10010010010010008,
+        "0.7": 0.30030030030030036,
+        "0.5": 0.5005005005005005,
+        "0.3": 0.7007007007007007,
+        "0.1": 0.9009009009009009
+      }
+    },
+    "n_sequences": 64,
+    "levels": [
+      {
+        "alpha_t": 0.95,
+        "t_schedule": 0.050050050050050095,
+        "n_problems": 64,
+        "corrupt_acc": {
+          "mean": 0.8474842782290477,
+          "lo": 0.7625786189763051,
+          "hi": 0.9229559763422552,
+          "n": 53
+        },
+        "corrupt_ce": {
+          "mean": 0.8311427172831037,
+          "lo": 0.4438548356062007,
+          "hi": 1.2546675953918343,
+          "n": 53
+        },
+        "clean_acc": {
+          "mean": 0.2551285370718688,
+          "lo": 0.2195340011967346,
+          "hi": 0.29108057997655123,
+          "n": 64
+        },
+        "clean_ce": {
+          "mean": 2.63311979547143,
+          "lo": 2.336861265823245,
+          "hi": 2.9212686344981194,
+          "n": 64
+        },
+        "detect_auroc": {
+          "mean": 0.9972306755934266,
+          "lo": 0.994765672550213,
+          "hi": 0.9993710691823899,
+          "n": 53
+        },
+        "detect_auroc_note": "score=1-p(xt) on active block",
+        "n_attempted_total": 2048,
+        "n_collision_xt_eq_x0_total": 1937,
+        "collision_rate_among_attempts": 0.94580078125,
+        "mean_n_corrupted": 1.734375
+      },
+      {
+        "alpha_t": 0.9,
+        "t_schedule": 0.10010010010010008,
+        "n_problems": 64,
+        "corrupt_acc": {
+          "mean": 0.7865835267399984,
+          "lo": 0.7000000041628641,
+          "hi": 0.8654950895006694,
+          "n": 63
+        },
+        "corrupt_ce": {
+          "mean": 0.7647681457751426,
+          "lo": 0.4497147458611532,
+          "hi": 1.0338190242676477,
+          "n": 63
+        },
+        "clean_acc": {
+          "mean": 0.29121652396861464,
+          "lo": 0.26205934246536344,
+          "hi": 0.32587975170463324,
+          "n": 64
+        },
+        "clean_ce": {
+          "mean": 2.486695660278201,
+          "lo": 2.213479951955378,
+          "hi": 2.7309854282066226,
+          "n": 64
+        },
+        "detect_auroc": {
+          "mean": 0.9969146439726626,
+          "lo": 0.9936305717230731,
+          "hi": 0.9991874527588814,
+          "n": 63
+        },
+        "detect_auroc_note": "score=1-p(xt) on active block",
+        "n_attempted_total": 2048,
+        "n_collision_xt_eq_x0_total": 1852,
+        "collision_rate_among_attempts": 0.904296875,
+        "mean_n_corrupted": 3.0625
+      },
+      {
+        "alpha_t": 0.7,
+        "t_schedule": 0.30030030030030036,
+        "n_problems": 64,
+        "corrupt_acc": {
+          "mean": 0.7336758472956717,
+          "lo": 0.6758062848821282,
+          "hi": 0.7853486086241901,
+          "n": 64
+        },
+        "corrupt_ce": {
+          "mean": 1.262594440882168,
+          "lo": 1.0264666729256362,
+          "hi": 1.5852123487593417,
+          "n": 64
+        },
+        "clean_acc": {
+          "mean": 0.2981508523807861,
+          "lo": 0.2658164819586091,
+          "hi": 0.33698999288026243,
+          "n": 64
+        },
+        "clean_ce": {
+          "mean": 2.6124346926808357,
+          "lo": 2.344722116366029,
+          "hi": 2.8345203436911106,
+          "n": 64
+        },
+        "detect_auroc": {
+          "mean": 0.9961094639294725,
+          "lo": 0.9922429663204835,
+          "hi": 0.9988145792994192,
+          "n": 64
+        },
+        "detect_auroc_note": "score=1-p(xt) on active block",
+        "n_attempted_total": 2048,
+        "n_collision_xt_eq_x0_total": 1451,
+        "collision_rate_among_attempts": 0.70849609375,
+        "mean_n_corrupted": 9.328125
+      },
+      {
+        "alpha_t": 0.5,
+        "t_schedule": 0.5005005005005005,
+        "n_problems": 64,
+        "corrupt_acc": {
+          "mean": 0.6768399553839117,
+          "lo": 0.6254664794541895,
+          "hi": 0.724963366985321,
+          "n": 64
+        },
+        "corrupt_ce": {
+          "mean": 1.6205017002430395,
+          "lo": 1.2586028100849944,
+          "hi": 1.9279256745794555,
+          "n": 64
+        },
+        "clean_acc": {
+          "mean": 0.2874143896624446,
+          "lo": 0.24778469325974584,
+          "hi": 0.3319704164750874,
+          "n": 64
+        },
+        "clean_ce": {
+          "mean": 2.960559486411512,
+          "lo": 2.6657566763460636,
+          "hi": 3.2057768404483795,
+          "n": 64
+        },
+        "detect_auroc": {
+          "mean": 0.9978946485392403,
+          "lo": 0.9952312613641948,
+          "hi": 0.9997209821428572,
+          "n": 64
+        },
+        "detect_auroc_note": "score=1-p(xt) on active block",
+        "n_attempted_total": 2048,
+        "n_collision_xt_eq_x0_total": 1080,
+        "collision_rate_among_attempts": 0.52734375,
+        "mean_n_corrupted": 15.125
+      },
+      {
+        "alpha_t": 0.3,
+        "t_schedule": 0.7007007007007007,
+        "n_problems": 64,
+        "corrupt_acc": {
+          "mean": 0.4642605845583603,
+          "lo": 0.41185964178293943,
+          "hi": 0.5226179312448949,
+          "n": 64
+        },
+        "corrupt_ce": {
+          "mean": 2.878903224656824,
+          "lo": 2.4856796395615675,
+          "hi": 3.2414421147550456,
+          "n": 64
+        },
+        "clean_acc": {
+          "mean": 0.2331157827284187,
+          "lo": 0.18772441160399467,
+          "hi": 0.27443056635092944,
+          "n": 64
+        },
+        "clean_ce": {
+          "mean": 3.7241254607215524,
+          "lo": 3.2906517116352916,
+          "hi": 4.175432039424777,
+          "n": 64
+        },
+        "detect_auroc": {
+          "mean": 0.9967491381854225,
+          "lo": 0.9899361945620169,
+          "hi": 0.9995649429073342,
+          "n": 64
+        },
+        "detect_auroc_note": "score=1-p(xt) on active block",
+        "n_attempted_total": 2048,
+        "n_collision_xt_eq_x0_total": 616,
+        "collision_rate_among_attempts": 0.30078125,
+        "mean_n_corrupted": 22.375
+      },
+      {
+        "alpha_t": 0.1,
+        "t_schedule": 0.9009009009009009,
+        "n_problems": 64,
+        "corrupt_acc": {
+          "mean": 0.22956076572882012,
+          "lo": 0.18981186067685485,
+          "hi": 0.2645213747746311,
+          "n": 64
+        },
+        "corrupt_ce": {
+          "mean": 4.4646304892376065,
+          "lo": 4.0293978014960885,
+          "hi": 4.869583175517619,
+          "n": 64
+        },
+        "clean_acc": {
+          "mean": 0.127244343278838,
+          "lo": 0.07365339774577344,
+          "hi": 0.17501951949518235,
+          "n": 61
+        },
+        "clean_ce": {
+          "mean": 4.7702600232890395,
+          "lo": 4.245221829805218,
+          "hi": 5.403472624841283,
+          "n": 61
+        },
+        "detect_auroc": {
+          "mean": 0.9921392002138824,
+          "lo": 0.982720574252422,
+          "hi": 0.9980874316939891,
+          "n": 61
+        },
+        "detect_auroc_note": "score=1-p(xt) on active block",
+        "n_attempted_total": 2048,
+        "n_collision_xt_eq_x0_total": 196,
+        "collision_rate_among_attempts": 0.095703125,
+        "mean_n_corrupted": 28.9375
+      }
+    ]
+  },
+  "deltas_M_vs_U": [
+    {
+      "alpha_t": 0.95,
+      "t_schedule": 0.050050050050050095,
+      "d_corrupt_acc_M_minus_U": {
+        "mean": -0.0470085464991056,
+        "lo": -0.143162394181276,
+        "hi": 0.04059829008884919,
+        "n": 39
+      },
+      "d_corrupt_ce_U_minus_M": {
+        "mean": -0.25539103811522434,
+        "lo": -1.0107392516634464,
+        "hi": 0.17537132456340032,
+        "n": 39
+      },
+      "unif_detect_auroc": {
+        "mean": 0.9972306755934266,
+        "lo": 0.994765672550213,
+        "hi": 0.9993710691823899,
+        "n": 53
+      },
+      "masked_detect_auroc": null,
+      "unif_clean_acc": {
+        "mean": 0.2551285370718688,
+        "lo": 0.2195340011967346,
+        "hi": 0.29108057997655123,
+        "n": 64
+      },
+      "masked_clean_acc": {
+        "mean": 0.002488659229129553,
+        "lo": 0.0,
+        "hi": 0.005008820444345474,
+        "n": 64
+      },
+      "unif_collision_rate": 0.94580078125,
+      "masked_collision_rate": 0.0
+    },
+    {
+      "alpha_t": 0.9,
+      "t_schedule": 0.10010010010010008,
+      "d_corrupt_acc_M_minus_U": {
+        "mean": 0.005971580743789673,
+        "lo": -0.08951613018589635,
+        "hi": 0.101344084547412,
+        "n": 62
+      },
+      "d_corrupt_ce_U_minus_M": {
+        "mean": 0.045893159432961836,
+        "lo": -0.3837736037676076,
+        "hi": 0.48050554753704533,
+        "n": 62
+      },
+      "unif_detect_auroc": {
+        "mean": 0.9969146439726626,
+        "lo": 0.9936305717230731,
+        "hi": 0.9991874527588814,
+        "n": 63
+      },
+      "masked_detect_auroc": null,
+      "unif_clean_acc": {
+        "mean": 0.29121652396861464,
+        "lo": 0.26205934246536344,
+        "hi": 0.32587975170463324,
+        "n": 64
+      },
+      "masked_clean_acc": {
+        "mean": 0.004134223272558302,
+        "lo": 0.0010416667209938169,
+        "hi": 0.0072783417999744415,
+        "n": 64
+      },
+      "unif_collision_rate": 0.904296875,
+      "masked_collision_rate": 0.0
+    },
+    {
+      "alpha_t": 0.7,
+      "t_schedule": 0.30030030030030036,
+      "d_corrupt_acc_M_minus_U": {
+        "mean": 0.034143241588026285,
+        "lo": -0.017701573204249144,
+        "hi": 0.09591554151847959,
+        "n": 64
+      },
+      "d_corrupt_ce_U_minus_M": {
+        "mean": 0.21415077533973204,
+        "lo": -0.07354760251291736,
+        "hi": 0.5307359330208783,
+        "n": 64
+      },
+      "unif_detect_auroc": {
+        "mean": 0.9961094639294725,
+        "lo": 0.9922429663204835,
+        "hi": 0.9988145792994192,
+        "n": 64
+      },
+      "masked_detect_auroc": null,
+      "unif_clean_acc": {
+        "mean": 0.2981508523807861,
+        "lo": 0.2658164819586091,
+        "hi": 0.33698999288026243,
+        "n": 64
+      },
+      "masked_clean_acc": {
+        "mean": 0.00519917591009289,
+        "lo": 0.0013450091937556863,
+        "hi": 0.009103422751650214,
+        "n": 64
+      },
+      "unif_collision_rate": 0.70849609375,
+      "masked_collision_rate": 0.0
+    },
+    {
+      "alpha_t": 0.5,
+      "t_schedule": 0.5005005005005005,
+      "d_corrupt_acc_M_minus_U": {
+        "mean": -0.01591297215782106,
+        "lo": -0.06283235480077565,
+        "hi": 0.03741388185881078,
+        "n": 64
+      },
+      "d_corrupt_ce_U_minus_M": {
+        "mean": 0.049509107004269026,
+        "lo": -0.24111430798802758,
+        "hi": 0.33789281680219574,
+        "n": 64
+      },
+      "unif_detect_auroc": {
+        "mean": 0.9978946485392403,
+        "lo": 0.9952312613641948,
+        "hi": 0.9997209821428572,
+        "n": 64
+      },
+      "masked_detect_auroc": null,
+      "unif_clean_acc": {
+        "mean": 0.2874143896624446,
+        "lo": 0.24778469325974584,
+        "hi": 0.3319704164750874,
+        "n": 64
+      },
+      "masked_clean_acc": {
+        "mean": 0.007477841863874346,
+        "lo": 0.0023437500931322575,
+        "hi": 0.014217836607713252,
+        "n": 64
+      },
+      "unif_collision_rate": 0.52734375,
+      "masked_collision_rate": 0.0
+    },
+    {
+      "alpha_t": 0.3,
+      "t_schedule": 0.7007007007007007,
+      "d_corrupt_acc_M_minus_U": {
+        "mean": 0.03389041847549379,
+        "lo": -0.011416466208174825,
+        "hi": 0.09825030760839581,
+        "n": 64
+      },
+      "d_corrupt_ce_U_minus_M": {
+        "mean": 0.3248702565324493,
+        "lo": 0.01972622628090903,
+        "hi": 0.7031402179272845,
+        "n": 64
+      },
+      "unif_detect_auroc": {
+        "mean": 0.9967491381854225,
+        "lo": 0.9899361945620169,
+        "hi": 0.9995649429073342,
+        "n": 64
+      },
+      "masked_detect_auroc": null,
+      "unif_clean_acc": {
+        "mean": 0.2331157827284187,
+        "lo": 0.18772441160399467,
+        "hi": 0.27443056635092944,
+        "n": 64
+      },
+      "masked_clean_acc": {
+        "mean": 0.00861833500675857,
+        "lo": 0.0024038462433964014,
+        "hi": 0.01767373294569552,
+        "n": 64
+      },
+      "unif_collision_rate": 0.30078125,
+      "masked_collision_rate": 0.0
+    },
+    {
+      "alpha_t": 0.1,
+      "t_schedule": 0.9009009009009009,
+      "d_corrupt_acc_M_minus_U": {
+        "mean": 0.03786658658646047,
+        "lo": -0.008403166139032692,
+        "hi": 0.07851038104854524,
+        "n": 64
+      },
+      "d_corrupt_ce_U_minus_M": {
+        "mean": 0.31880535557866096,
+        "lo": 0.014552400447428226,
+        "hi": 0.5803047632798553,
+        "n": 64
+      },
+      "unif_detect_auroc": {
+        "mean": 0.9921392002138824,
+        "lo": 0.982720574252422,
+        "hi": 0.9980874316939891,
+        "n": 61
+      },
+      "masked_detect_auroc": null,
+      "unif_clean_acc": {
+        "mean": 0.127244343278838,
+        "lo": 0.07365339774577344,
+        "hi": 0.17501951949518235,
+        "n": 61
+      },
+      "masked_clean_acc": {
+        "mean": 0.033068783226467315,
+        "lo": 0.005291005448689537,
+        "hi": 0.072751322909007,
+        "n": 63
+      },
+      "unif_collision_rate": 0.095703125,
+      "masked_collision_rate": 0.0
+    }
+  ],
+  "noise_level_split_uniform": {
+    "high_alpha": [
+      0.95,
+      0.9
+    ],
+    "low_alpha": [
+      0.3,
+      0.1
+    ],
+    "clean_acc_high_alpha": 0.2731725305202417,
+    "clean_acc_low_alpha": 0.18018006300362835,
+    "detect_auroc_high_alpha": 0.9970726597830446,
+    "detect_auroc_low_alpha": 0.9944441691996524,
+    "pattern": "better_at_low_noise",
+    "note": "worse_at_low_noise \u2192 Unif struggles when most tokens are right (fits no-t); flat_across_alpha \u2192 ignores noise level"
+  }
+}

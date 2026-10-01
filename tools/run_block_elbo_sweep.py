@@ -107,9 +107,12 @@ def main(argv: list[str] | None = None) -> int:
       print(f'Skip block_size={bs}: does not divide seq_len={model.num_tokens}')
       continue
     row = _eval_block_size(model, valid_loader, bs, args.max_batches, device)
+    # BlockGen-aligned: size-1 eval is CE under pure noise (not continuous ELBO).
+    row['meter'] = 'ce_pure_noise' if bs == 1 else 'elbo'
     results.append(row)
     print(
-        f'bs={row["block_size"]:2d}  nll={row["mean_nll"]:.4f}  '
+        f'bs={row["block_size"]:2d}  [{row["meter"]}]  '
+        f'nll={row["mean_nll"]:.4f}  '
         f'bpd={row["bpd"]:.4f}  ppl={row["ppl"]:.2f}  tokens={row["tokens"]}')
 
   payload = {
@@ -117,6 +120,7 @@ def main(argv: list[str] | None = None) -> int:
       'forward_process': getattr(config.algo, 'forward_process_name', None),
       'seq_len': int(model.num_tokens),
       'default_block_size': int(model.block_size),
+      'size1_eval': 'ce_pure_noise (BlockGen-aligned)',
       'results': results,
   }
   out = args.output or str(

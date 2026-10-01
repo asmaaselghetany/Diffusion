@@ -139,12 +139,30 @@ case "${LAUNCH}" in
     run_or_echo sbatch scripts/slurm/block_uniform.sbatch
     ;;
   ar_sft)
-    run_or_echo sbatch scripts/slurm/ar_sft.sbatch
+    # Matched causal AR SFT (paper cell A_ar_sft — Tab-1 AR reference).
+    # Not full-seq diffusion; not C3.
+    export NEMOTRON_SFT_SPLITS="${NEMOTRON_SFT_SPLITS:-chat,safety,science,math,code}"
+    export NEMOTRON_SFT_MAX_PER_SPLIT="${NEMOTRON_SFT_MAX_PER_SPLIT:-math=1000000,code=500000}"
+    export NUM_NODES="${NUM_NODES:-8}"
+    export GPUS_PER_NODE="${GPUS_PER_NODE:-4}"
+    export NUM_GPUS="${NUM_GPUS:-$((NUM_NODES * GPUS_PER_NODE))}"
+    echo "  A_ar_sft scale: nodes=${NUM_NODES} gpus/node=${GPUS_PER_NODE} splits=${NEMOTRON_SFT_SPLITS} caps=${NEMOTRON_SFT_MAX_PER_SPLIT}"
+    run_or_echo sbatch --nodes="${NUM_NODES}" --ntasks-per-node="${GPUS_PER_NODE}" \
+      --gres=gpu:"${GPUS_PER_NODE}" --time=12:00:00 --export=ALL \
+      scripts/slurm/ar_sft.sbatch
+    ;;
+  u0_from_c0)
+    run_or_echo bash scripts/submit_u0_from_c0.sh
     ;;
   lever)
     if [[ -z "${PRESET}" ]]; then
       echo "Cell ${CELL} missing preset" >&2
       exit 1
+    fi
+    # Paper C3 full-seq diffusion: one block = model.length.
+    if [[ "${CELL}" == "C3" || "${PRESET}" == "C3_fullseq" || "${PRESET}" == C3_fullseq_* ]]; then
+      export BLOCK="${BLOCK:-2048}"
+      echo "  C3 full-seq: BLOCK=${BLOCK} (must equal model.length)"
     fi
     args=(--preset "${PRESET}" --arm "${ARM}")
     if [[ "${MICRO}" -eq 1 ]]; then
@@ -155,6 +173,9 @@ case "${LAUNCH}" in
     if [[ "${DRY_RUN}" -eq 1 ]]; then
       args+=(--dry-run)
     fi
+    # Tab-2 / conversion levers: same math mix as canonical C0/C2-math.
+    export NEMOTRON_SFT_SPLITS="${NEMOTRON_SFT_SPLITS:-chat,safety,science,math,code}"
+    export NEMOTRON_SFT_MAX_PER_SPLIT="${NEMOTRON_SFT_MAX_PER_SPLIT:-math=1000000,code=500000}"
     ./scripts/submit_lever.sh "${args[@]}"
     ;;
   eval_checkpoint)
@@ -196,10 +217,13 @@ case "${LAUNCH}" in
     ;;
   nfe_sweep)
     if [[ -z "${CKPT:-}" || ! -f "${CKPT}" ]]; then
-      echo "Set CKPT=/path/to.ckpt for C4 NFE sweep" >&2
+      echo "Set CKPT=/path/to.ckpt for C4 NFE / GenPPL hygiene" >&2
       exit 1
     fi
-    run_or_echo bash scripts/submit_nfe_sweep.sh "${CKPT}"
+    # Default C4 = full hygiene (dual + nfe + panel). Override MODE=nfe if needed.
+    export MODE="${MODE:-all}"
+    export NUM_STEPS_LIST="${NUM_STEPS_LIST:-8 16 32 64}"
+    run_or_echo bash scripts/submit_gen_ppl_hygiene.sh "${CKPT}"
     ;;
   decode_eval)
     if [[ -z "${CKPT:-}" || ! -f "${CKPT}" ]]; then

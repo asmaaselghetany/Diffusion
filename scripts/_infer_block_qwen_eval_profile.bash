@@ -3,14 +3,19 @@
 # to the checkpoint — avoids loading multi‑GB weights).
 #
 # Shared default for fair cross-pipeline compare:
-#   DECODE_PROFILE=baseline → BlockSampler ancestral (steps=32, no ARPC,
-#   no unmask_threshold, no DualCache). Cleared even if the ckpt was trained
-#   with Fast-dLLM/BlockGen paper pins.
+#   DECODE_PROFILE=baseline → hierarchical (BlockGen packing + conf thr=0.9
+#   + greedy remask floor). Mid-α ancestral thr=null is hierarchical_ancestral
+#   (forensic). DualCache / hubmatch / ARPC / UCC are explicit levers.
 #
 # Exactness overlays (recipe-specific):
 #   fastdllm_lm_eval  → dual_cache + thr=1 (paper accuracy) + greedy
 #                       (Hub/speed overlay: FORCE_UNMASK_THRESHOLD=0.9)
 #   blockgen_arpc     → offline ELBO/gen-PPL + ARPC samples
+#                       + generative chat suite (mmlu_generative,gsm8k,ifeval)
+#                       Masked CE loglikelihood MMLU is FORBIDDEN on this stack
+#                       (BlockGen reports generative GSM + ELBO; LLaDA-Instruct
+#                       uses conditional generation for MCQ; Duo uses a real
+#                       USDM bound — not our masked first-token heuristic).
 
 infer_block_qwen_eval_profile() {
   local ckpt="${1:?ckpt}"
@@ -67,6 +72,17 @@ hier = bool(OmegaConf.select(cfg, "sampling.hierarchical_kv") or False)
 dual = bool(OmegaConf.select(cfg, "sampling.use_block_cache") or False)
 single = bool(OmegaConf.select(cfg, "sampling.single_stream_decode") or False)
 line = OmegaConf.select(cfg, "line") or OmegaConf.select(cfg, "experiment.line")
+# Hydra dumps often omit LINE; recover from run directory name.
+if not line:
+    from pathlib import Path
+    # .../<run>/hydra/.hydra/config.yaml → parents[2] == <run>
+    run_name = Path(sys.argv[1]).resolve().parents[2].name
+    if run_name.startswith("ar2block_"):
+        line = "ar2block"
+    elif run_name.startswith("block_"):
+        line = "block"
+    elif run_name.startswith("xfer_"):
+        line = "xfer"
 
 exact = (
     fp == "masked"
@@ -78,11 +94,16 @@ exact = (
     and single
 )
 
-if fp == "uniform" or use_arpc:
+if fp in ("uniform", "hybrid") or use_arpc:
     stack = "blockgen_arpc"
-    family = "native" if (not line or str(line) == "block") else "transfer"
-    decode = "arpc_blockgen"
-    reason = "uniform/ARPC → offline ELBO+gen-PPL + arpc_decode_eval (not chat lm-eval)"
+    family = "native" if (not line or str(line) == "block") else (
+        "conversion" if str(line) == "ar2block" else "transfer")
+    # Must be a real DECODE_PROFILES key. "arpc_blockgen" is not one and
+    # used to poison GenPPL hygiene / offline when FORCE_DECODE_PROFILE unset.
+    decode = "hierarchical"
+    reason = (
+        f"{fp}/ARPC → offline ELBO+gen-PPL + ARPC + generative paper_gen "
+        "(no masked-CE MMLU loglikelihood)")
 elif exact:
     stack = "fastdllm_lm_eval"
     family = "conversion"
@@ -111,7 +132,26 @@ print(f"EVAL_DECODE_PROFILE='{sh(decode)}'")
 print(f"EVAL_UNMASK_THRESHOLD='{sh(thr) if thr is not None else ''}'")
 print(f"EVAL_FORCE_GREEDY='{'1' if greedy else ''}'")
 print(f"EVAL_USE_ARPC='{'1' if use_arpc else '0'}'")
-print(f"EVAL_ARPC_MODE='{sh(arpc_mode) if arpc_mode else 'blockgen'}'")
+# Only inherit arpc_mode from ckpts that actually trained with ARPC; otherwise
+# paper pin is blockgen (ckpt default ``simplified`` is unused noise).
+_arpc_mode_out = arpc_mode if use_arpc and arpc_mode else 'blockgen'
+print(f"EVAL_ARPC_MODE='{sh(_arpc_mode_out)}'")
+# BlockGen ARPC needs size-1 in mixture or mass on weights[0] (size 1).
+mixture = OmegaConf.select(cfg, "algo.block_size_mixture") or []
+weights = OmegaConf.select(cfg, "algo.block_weights")
+has_size1 = False
+try:
+    has_size1 = 1 in [int(x) for x in list(mixture)]
+except (TypeError, ValueError):
+    has_size1 = False
+if not has_size1 and weights is not None:
+    try:
+        w = list(weights) if not isinstance(weights, str) else [
+            float(x) for x in str(weights).split()]
+        has_size1 = len(w) > 0 and float(w[0]) > 0
+    except (TypeError, ValueError):
+        has_size1 = False
+print(f"EVAL_HAS_ARPC_SIZE1='{'1' if has_size1 else '0'}'")
 print(f"EVAL_REASON='{sh(reason)}'")
 print(f"EVAL_HYDRA_CFG='{sh(sys.argv[1])}'")
 PY
@@ -119,5 +159,6 @@ PY
 
   export EVAL_FORWARD EVAL_FAMILY EVAL_STACK EVAL_DECODE_PROFILE
   export EVAL_UNMASK_THRESHOLD EVAL_FORCE_GREEDY EVAL_USE_ARPC EVAL_ARPC_MODE
+  export EVAL_HAS_ARPC_SIZE1
   export EVAL_REASON EVAL_HYDRA_CFG
 }

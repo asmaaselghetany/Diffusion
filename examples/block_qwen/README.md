@@ -6,6 +6,13 @@
 
 See [docs/BLOCK_PATH.md](../../docs/BLOCK_PATH.md).
 
+## Workspace layout note
+
+This tree’s `outputs/` and `.venv` may be **symlinks** into the sibling
+`Diffusion/` checkout. Checkpoints and the interpreter therefore live under
+that sibling path — confirm with `readlink -f outputs .venv` before citing
+job provenance.
+
 ## Train (same style as `examples/bd3lm/owt.sh`)
 
 ```bash

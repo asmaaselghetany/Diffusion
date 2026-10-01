@@ -1,5 +1,7 @@
 """Public training API for discrete diffusion models."""
 
+from __future__ import annotations
+
 import os
 
 import hydra
@@ -9,6 +11,7 @@ import torch
 
 from .data import get_dataloaders, get_tokenizer
 from . import utils
+from .evaluations.checkpoint_utils import trusted_torch_load
 
 
 def register_config_resolvers():
@@ -66,6 +69,43 @@ def _align_strategy_device(config, accel: str) -> None:
   omegaconf.OmegaConf.set_struct(config.strategy, True)
 
 
+def _allow_missing_resume() -> bool:
+  return os.environ.get('ALLOW_MISSING_RESUME', '').strip().lower() in (
+      '1', 'true', 'yes')
+
+
+def resolve_resume_ckpt_path(config) -> str | None:
+  """Resolve Lightning ``ckpt_path`` when ``resume_from_ckpt`` is set.
+
+  Missing / empty paths raise by default (avoids silent fresh runs under the
+  same WandB id). Opt out with ``ALLOW_MISSING_RESUME=1``.
+  """
+  if not getattr(config.checkpointing, 'resume_from_ckpt', False):
+    return None
+  resume_ckpt_path = getattr(config.checkpointing, 'resume_ckpt_path', None)
+  if resume_ckpt_path is None or str(resume_ckpt_path).strip() == '':
+    msg = (
+        'checkpointing.resume_from_ckpt=true but '
+        'checkpointing.resume_ckpt_path is empty')
+    if _allow_missing_resume():
+      utils.get_logger(__name__).warning(
+          '%s. ALLOW_MISSING_RESUME=1 — starting from scratch.', msg)
+      return None
+    raise FileNotFoundError(
+        f'{msg}. Set a path, or ALLOW_MISSING_RESUME=1 to start fresh.')
+  if utils.fsspec_exists(resume_ckpt_path):
+    return resume_ckpt_path
+  msg = (
+      'checkpointing.resume_from_ckpt=true but checkpoint was not found '
+      f'at {resume_ckpt_path} (missing path or fsspec/NFS race)')
+  if _allow_missing_resume():
+    utils.get_logger(__name__).warning(
+        '%s. ALLOW_MISSING_RESUME=1 — starting from scratch.', msg)
+    return None
+  raise FileNotFoundError(
+      f'{msg}. Fix the path, wait for NFS, or set ALLOW_MISSING_RESUME=1.')
+
+
 def train(config):
   """Main training API.
   
@@ -96,7 +136,7 @@ def train(config):
           apply_checkpoint_embed_vocab_size,
           checkpoint_embed_vocab_size,
       )
-      peek = torch.load(ckpt_candidate, map_location='cpu', weights_only=False)
+      peek = trusted_torch_load(ckpt_candidate, map_location='cpu')
       embed_v = checkpoint_embed_vocab_size(peek)
       if embed_v is not None:
         apply_checkpoint_embed_vocab_size(tokenizer, embed_v)
@@ -139,12 +179,10 @@ def train(config):
   else:
     train_logger = False
 
-  # Resume checkpoint path
-  ckpt_path = config.checkpointing.resume_ckpt_path if (
-    config.checkpointing.resume_from_ckpt and 
-    config.checkpointing.resume_ckpt_path is not None and 
-    utils.fsspec_exists(config.checkpointing.resume_ckpt_path)
-  ) else None
+  # Resume checkpoint path — never silently fall back to a fresh run.
+  ckpt_path = resolve_resume_ckpt_path(config)
+  if ckpt_path is not None:
+    logger.info('Resuming training from checkpoint: %s', ckpt_path)
 
   # Lightning callbacks
   callbacks_cfg = config.get('callbacks', None)

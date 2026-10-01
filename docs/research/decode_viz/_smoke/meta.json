@@ -1,0 +1,1 @@
+{"label": "smoke", "checkpoint": "", "decode_profile": "baseline", "unmask_threshold": null, "prefix_len": 2, "mask_id": 4, "forward_process": "masked", "n_events": 3}

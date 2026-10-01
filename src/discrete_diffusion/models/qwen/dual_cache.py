@@ -83,6 +83,7 @@ def dual_stream_prefill(
     active_len: int,
     block_size: int,
     position_ids: torch.Tensor,
+    attention_mask: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, DualCache]:
   """Full truncated dual-stream forward; returns xt-half logits + cache."""
   if input_ids.shape[1] != 2 * active_len:
@@ -92,7 +93,8 @@ def dual_stream_prefill(
   device = input_ids.device
   dtype = next(hf_lm.parameters()).dtype
   full_mask = build_sdpa_mask(
-      active_len, block_size, device=device, dtype=dtype)
+      active_len, block_size, device=device, dtype=dtype,
+      padding_mask=attention_mask)
 
   hidden = inner.embed_tokens(input_ids)
   # rotary_emb expects hidden for dtype/device; returns (cos, sin) over positions
@@ -133,6 +135,7 @@ def dual_stream_replace(
     window: tuple[int, int],
     block_size: int,
     cache: DualCache,
+    attention_mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
   """Recompute window tokens; splice K/V; return full xt-half logits buffer.
 
@@ -157,7 +160,8 @@ def dual_stream_replace(
 
   inner = hf_lm.model
   full_mask = build_sdpa_mask(
-      active_len, block_size, device=device, dtype=dtype)
+      active_len, block_size, device=device, dtype=dtype,
+      padding_mask=attention_mask)
   q_mask = _sdpa_mask_for_queries(full_mask, idx)
 
   hidden = inner.embed_tokens(win_ids)
@@ -214,6 +218,7 @@ def single_stream_prefill(
     *,
     active_len: int,
     block_size: int,
+    attention_mask: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, DualCache]:
   """Hub-shaped DualCache prefill on single-stream ``xt[:A]`` + eval mask."""
   from ..block_mask import build_eval_sdpa_mask
@@ -225,7 +230,8 @@ def single_stream_prefill(
   device = input_ids.device
   dtype = next(hf_lm.parameters()).dtype
   full_mask = build_eval_sdpa_mask(
-      active_len, block_size, device=device, dtype=dtype)
+      active_len, block_size, device=device, dtype=dtype,
+      padding_mask=attention_mask)
 
   hidden = inner.embed_tokens(input_ids)
   position_ids = torch.arange(
@@ -267,6 +273,7 @@ def single_stream_replace(
     window: tuple[int, int],
     block_size: int,
     cache: DualCache,
+    attention_mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
   """Hub ``replace_position`` splice on single-stream DualCache."""
   from ..block_mask import build_eval_sdpa_mask
@@ -288,7 +295,8 @@ def single_stream_replace(
 
   inner = hf_lm.model
   full_mask = build_eval_sdpa_mask(
-      active_len, block_size, device=device, dtype=dtype)
+      active_len, block_size, device=device, dtype=dtype,
+      padding_mask=attention_mask)
   q_mask = _sdpa_mask_for_queries(full_mask, idx)
 
   hidden = inner.embed_tokens(win_ids)

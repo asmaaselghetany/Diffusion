@@ -52,3 +52,58 @@ def test_resume_sbatch_passes_resource_exports():
 def test_resume_supports_dry_run():
   assert 'DRY_RUN' in _RESUME
   assert 'not submitting' in _RESUME
+
+
+def test_resolve_resume_ckpt_missing_fails_hard(monkeypatch):
+  from types import SimpleNamespace
+  from unittest.mock import patch
+
+  import pytest
+
+  from discrete_diffusion.train import resolve_resume_ckpt_path
+
+  monkeypatch.delenv('ALLOW_MISSING_RESUME', raising=False)
+  cfg = SimpleNamespace(
+      checkpointing=SimpleNamespace(
+          resume_from_ckpt=True,
+          resume_ckpt_path='/nonexistent/missing.ckpt',
+      ),
+  )
+  with patch('discrete_diffusion.train.utils.fsspec_exists', return_value=False):
+    with pytest.raises(FileNotFoundError, match='not found'):
+      resolve_resume_ckpt_path(cfg)
+
+
+def test_resolve_resume_ckpt_allow_missing_escape(monkeypatch):
+  from types import SimpleNamespace
+  from unittest.mock import patch
+
+  from discrete_diffusion.train import resolve_resume_ckpt_path
+
+  monkeypatch.setenv('ALLOW_MISSING_RESUME', '1')
+  cfg = SimpleNamespace(
+      checkpointing=SimpleNamespace(
+          resume_from_ckpt=True,
+          resume_ckpt_path='/nonexistent/missing.ckpt',
+      ),
+  )
+  with patch('discrete_diffusion.train.utils.fsspec_exists', return_value=False):
+    assert resolve_resume_ckpt_path(cfg) is None
+
+
+def test_resolve_resume_ckpt_empty_path_fails(monkeypatch):
+  from types import SimpleNamespace
+
+  import pytest
+
+  from discrete_diffusion.train import resolve_resume_ckpt_path
+
+  monkeypatch.delenv('ALLOW_MISSING_RESUME', raising=False)
+  cfg = SimpleNamespace(
+      checkpointing=SimpleNamespace(
+          resume_from_ckpt=True,
+          resume_ckpt_path='',
+      ),
+  )
+  with pytest.raises(FileNotFoundError, match='empty'):
+    resolve_resume_ckpt_path(cfg)

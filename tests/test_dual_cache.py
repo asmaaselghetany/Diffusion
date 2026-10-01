@@ -71,8 +71,11 @@ def test_dual_cache_mutated_window_finite():
   assert isinstance(cache, DualCache)
 
 
-def test_dual_cache_mutated_diverges_from_full_forward():
-  """After window edit, DualCache is an approximation — not bit-identical."""
+def test_dual_cache_window_replace_matches_full_forward():
+  """Single-window DualCache splice must match a full dual-stream forward.
+
+  (Previously asserted ``delta >= 0``, which can never fail.)
+  """
   from discrete_diffusion.models.qwen.attention import block_diff_attention_mask
 
   torch.manual_seed(2)
@@ -98,5 +101,6 @@ def test_dual_cache_mutated_diverges_from_full_forward():
     full = m(input_ids=x_full, position_ids=pos, use_cache=False).logits[:, :a, :]
 
   assert torch.isfinite(dc[:, 4:8]).all()
-  delta = (dc[:, 4:8] - full[:, 4:8]).abs().max().item()
-  assert delta >= 0.0
+  assert torch.allclose(
+      dc[:, 4:8], full[:, 4:8].detach(), rtol=1e-4, atol=1e-4), (
+      'DualCache window replace diverged from full forward')

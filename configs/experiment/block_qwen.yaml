@@ -16,7 +16,9 @@ defaults:
   - override /data: sft_qwen
   - override /model: qwen_block
   - override /noise: log-linear
-  - override /sampling: block
+  # Do NOT override /sampling here — algo pins
+  # override /sampling@_global_.sampling (uniform → block_uniform = hierarchical_ss).
+  # Launch also passes sampling=<arm> as belt-and-suspenders.
   - override /strategy: single-device
   - override /lr_scheduler: block_warmup
   - override /callbacks:
@@ -25,6 +27,7 @@ defaults:
     - learning_rate_monitor
     - seed_checkpoint_resume_step
     - save_last_on_train_end
+    - prune_periodic_checkpoints
 
 block_size: 32
 
@@ -62,7 +65,9 @@ loader:
   batch_size: 1
   global_batch_size: 256
   eval_global_batch_size: 1  # symmetric for masked/uniform fair compare (uniform OOMs at 8)
-  num_workers: 4
+  # 4 workers × 32 ranks can exhaust node /dev/shm (bus error mid-val). Prefer
+  # 2 + file_system sharing (see loaders._ensure_file_system_tensor_sharing).
+  num_workers: 2
   pin_memory: true
 
 eval:
@@ -86,6 +91,7 @@ eval:
 
 wandb:
   project: block_qwen
+  entity: aselghetany-nu
   name: null
   id: null
   # Reuse run id across Slurm resumes so charts continue on one WandB page.
@@ -93,7 +99,8 @@ wandb:
 
 callbacks:
   # Periodics (0-N.ckpt) are the resume safety net if last.ckpt truncates.
-  # Lightning requires save_top_k=-1 when monitor=None; prune keeps newest 2.
+  # Lightning requires save_top_k=-1 when monitor=None; prune_periodic_checkpoints
+  # keeps newest 2 (+ last + best from other callbacks).
   # every_n must divide max_steps (6000) or the final step never triggers a
   # periodic save; SaveLastOnTrainEnd covers the remainder as a backstop.
   checkpoint_every_n_steps:
@@ -103,6 +110,8 @@ callbacks:
   checkpoint_monitor:
     monitor: val/bpd
     save_top_k: 1
+  prune_periodic_checkpoints:
+    keep_newest: 2
 
 checkpointing:
   resume_from_ckpt: true

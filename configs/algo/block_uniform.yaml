@@ -1,12 +1,16 @@
 defaults:
   - /forward_process: block_uniform
-  - /sampling: block
   - /noise: log-linear
+  # Must use @_global_.sampling + override: bare `/sampling:` nests as algo.sampling
+  # and never replaces root sampling=candi. Uniform floor = hierarchical_ss pins.
+  - override /sampling@_global_.sampling: block_uniform
 
 _target_: discrete_diffusion.algorithms.block_trainer.BlockTrainer
 name: block_uniform
 forward_process_name: uniform
-parameterization: subs
+# BlockGen uniform / Duo use ``mean`` (x0 predictor). ``subs`` is absorbing-only;
+# our ``_uniform_loss`` already skips SUBS — keep the label honest.
+parameterization: mean
 time_conditioning: False
 T: 0
 loss_type: elbo
@@ -16,17 +20,30 @@ ignore_bos: True
 shift_loss_targets: False
 complementary_masks: False
 complementary_batching: fused
+# Explicit (masked yaml sets this; trainer also defaults to elbo).
+loss_weighting: elbo
 mask_schedule: alpha
 block_size_mixture: []
 block_weights: null
 block_size_per_gpu: null
 stratified_gamma: null
 pure_noise_block_sizes: []
+pure_noise_mode: soft
+x0_causal: false
 loss_type_special_cases: []
 # NLD-style joint AR (C5); 0 = off.
 joint_ar_alpha: 0.0
 causal_clean_stream: False
 hub_struct_attn_only: false
+# Dual-stream Fast-dLLM train (default). Use lever single_stream_train /
+# preset U0_ss_pack for Hub-decode packing match.
+single_stream_train: false
+# conversion = Unif(V\E) Instruct-safe (default). blockgen = literal Unif(V)
+# ablation (BlockGen/Duo simplex on a vocab that may still contain MASK).
+uniform_simplex_mode: conversion
 # Hybrid arm only (ignored on masked/uniform).
 hybrid_p_uniform: 0.1
 hybrid_decode: masked
+intra_block_attn_anneal_steps: 0
+kernel_anneal_steps: 0
+shift_on_hybrid: false

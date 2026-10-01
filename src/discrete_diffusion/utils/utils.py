@@ -190,15 +190,28 @@ def short_hash(value: str):
 
 
 def np_to_base64(arr: np.ndarray) -> str:
-  arr_bytes = pickle.dumps(arr)
-  base64_bytes = base64.b64encode(arr_bytes)
-  return base64_bytes.decode('ascii')
+  """Encode an ndarray as base64 of a numpy ``.npy`` payload (no pickle)."""
+  import io
+  buf = io.BytesIO()
+  np.save(buf, np.asarray(arr), allow_pickle=False)
+  return base64.b64encode(buf.getvalue()).decode('ascii')
 
 
 def base64_to_np(b64_str: str) -> np.ndarray:
-  base64_bytes = b64_str.encode('ascii')
-  arr_bytes = base64.b64decode(base64_bytes)
-  return pickle.loads(arr_bytes)
+  """Decode ``np_to_base64`` payloads; optional legacy pickle with env gate."""
+  import io
+  import os
+  raw = base64.b64decode(b64_str.encode('ascii'))
+  if raw[:6] == b'\x93NUMPY':
+    return np.load(io.BytesIO(raw), allow_pickle=False)
+  # Legacy SampleSaver dumps used pickle.dumps — trusted re-reads only.
+  allow = os.environ.get('ALLOW_PICKLE_SAMPLES', '').strip().lower() in (
+      '1', 'true', 'yes')
+  if allow:
+    return pickle.loads(raw)
+  raise ValueError(
+      'np_tokens_b64 is not numpy .npy format; re-export samples or set '
+      'ALLOW_PICKLE_SAMPLES=1 for legacy pickle payloads (trusted only)')
 
 
 def shift_for_next_token(

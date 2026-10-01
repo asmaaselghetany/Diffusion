@@ -2,7 +2,7 @@
 #SBATCH --job-name=qwen-base-ifeval-mmlu
 #SBATCH --output=slurm_logs/%x_%j.out
 #SBATCH --error=slurm_logs/%x_%j.err
-#SBATCH --account=scifi
+#SBATCH --account=profound
 #SBATCH --partition=booster
 #SBATCH --nodes=8
 #SBATCH --ntasks-per-node=1

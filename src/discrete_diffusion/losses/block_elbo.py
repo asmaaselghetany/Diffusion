@@ -43,7 +43,21 @@ def uniform_block_nll_per_token(
     alpha_t: torch.Tensor,
     dalpha_t: torch.Tensor,
     vocab_size: int,
+    mask_id: int | None = None,
+    exclude_ids: tuple[int, ...] | list[int] | None = None,
 ) -> torch.Tensor:
+  """DUO/UDLM per-token uniform ELBO.
+
+  ``vocab_size`` is the **simplex** size ``V_eff`` used in all coefficients
+  (BlockGen/Duo: full tokenizer ``V``; our Qwen conversion: ``V-|E|`` when
+  reserved specials sit inside the embedding table).
+
+  When ``log_x_theta`` still has width ``V > V_eff`` with banned specials
+  (``p≈0`` on those slots), each dead slot of ``x̄_θ = V_eff·α·p+(1-α)``
+  equals ``1-α``. Summing ``log x̄_θ`` over the full width then injects
+  extra ``log(1-α)`` terms Duo/BlockGen never have. Pass ``mask_id`` and/or
+  ``exclude_ids`` to subtract those dead slots from the sum.
+  """
   assert alpha_t.ndim == 2
   x_reconst = log_x_theta.exp()
   alpha = alpha_t.unsqueeze(-1)
@@ -64,8 +78,23 @@ def uniform_block_nll_per_token(
   term2_coefs = x_eq_xt * const + x_neq_xt
   term2_offset = (
       (vocab_size - 1) * const * x_eq_xt - (1 / const) * x_neq_xt) * const.log()
+  sum_log_xbar = x_bar_theta.log().sum(-1)
+  dead: list[int] = []
+  if mask_id is not None:
+    dead.append(int(mask_id))
+  if exclude_ids is not None:
+    dead.extend(int(x) for x in exclude_ids)
+  # Unique, in-range dead slots under a padded logit width.
+  seen: set[int] = set()
+  width = x_bar_theta.size(-1)
+  if width > vocab_size:
+    for mid in dead:
+      if mid in seen or not (0 <= mid < width):
+        continue
+      seen.add(mid)
+      sum_log_xbar = sum_log_xbar - x_bar_theta[..., mid].clamp_min(1e-12).log()
   term2_theta = -term2_coefs * (
-      x_bar_theta.log().sum(-1) - vocab_size * xbar_theta_xt.log())
+      sum_log_xbar - vocab_size * xbar_theta_xt.log())
   term2_theta = term2_theta - vocab_size * alpha.squeeze(-1) / (
       1 - alpha.squeeze(-1)) * (
           xbar_theta_x.log() - xbar_theta_xt.log()) * x_neq_xt

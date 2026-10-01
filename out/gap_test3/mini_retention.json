@@ -1,0 +1,1183 @@
+{
+  "protocol": "GAP_DIAGNOSIS_M_U_2026-10-01 Test 3",
+  "note": "Shared sequences. Corrupted := (xt!=x0)&block. Masked detect_auroc/clean=N/A. Gaps: paired bootstrap CIs. Cause 6: no time conditioning. Soft clean stats + retention + model-prefix for decode-time readout.",
+  "time_conditioning_received": false,
+  "time_conditioning_note": "BlockTrainer passes sigma=None; Qwen forward deletes sigma. t is used only for corruption + ELBO weights.",
+  "train_alpha_range": {
+    "sampling_eps": 0.001,
+    "noise_eps": 0.001,
+    "train_alpha_max_at_t_eps": 0.999001,
+    "train_alpha_min_at_t_1": 0.0010000000000000009,
+    "note": "Train samples t\u2208[sampling_eps,1]; \u03b1=1.0 is slightly above train \u03b1_max\u22480.999001. Prefer 0.999/0.99 for in-range."
+  },
+  "alpha_match": {
+    "eps": 0.001,
+    "schedule": "LogLinear",
+    "map_t_from_alpha": {
+      "1.0": 0.0,
+      "0.999": 0.0010010010010010019,
+      "0.99": 0.010010010010010019,
+      "0.98": 0.020020020020020037,
+      "0.95": 0.050050050050050095,
+      "0.9": 0.10010010010010008,
+      "0.7": 0.30030030030030036,
+      "0.5": 0.5005005005005005,
+      "0.3": 0.7007007007007007,
+      "0.1": 0.9009009009009009
+    },
+    "matched": true
+  },
+  "masked": {
+    "checkpoint": "outputs/block_qwen/ar2block_masked_2020048/checkpoints/last.ckpt",
+    "simplex": {
+      "forward_process_name": "masked",
+      "uniform_simplex_mode": "conversion",
+      "v_eff": null,
+      "vocab_size": 151936,
+      "n_exclude": 0,
+      "exclude_ids_head": [],
+      "mask_id": 151665,
+      "block_size": 32,
+      "noise_schedule": "LogLinear",
+      "eps": 0.001,
+      "shift_loss_targets": false,
+      "time_conditioning": false,
+      "alpha_map": {
+        "1.0": 0.0,
+        "0.999": 0.0010010010010010019,
+        "0.99": 0.010010010010010019,
+        "0.98": 0.020020020020020037,
+        "0.95": 0.050050050050050095,
+        "0.9": 0.10010010010010008,
+        "0.7": 0.30030030030030036,
+        "0.5": 0.5005005005005005,
+        "0.3": 0.7007007007007007,
+        "0.1": 0.9009009009009009
+      }
+    },
+    "n_sequences": 8,
+    "levels": [
+      {
+        "alpha_t": 1.0,
+        "t_schedule": 0.0,
+        "n_problems": 8,
+        "corrupt_acc": {
+          "mean": null,
+          "lo": null,
+          "hi": null,
+          "n": 0
+        },
+        "corrupt_ce": {
+          "mean": null,
+          "lo": null,
+          "hi": null,
+          "n": 0
+        },
+        "clean_acc": {
+          "mean": null,
+          "lo": null,
+          "hi": null,
+          "n": 0,
+          "note": "N/A"
+        },
+        "clean_ce": {
+          "mean": null,
+          "lo": null,
+          "hi": null,
+          "n": 0,
+          "note": "N/A"
+        },
+        "clean_copy_xt_acc": null,
+        "clean_mean_p_x0": null,
+        "clean_mean_p_xt": null,
+        "clean_median_rank_x0": null,
+        "clean_mean_rank_x0": null,
+        "clean_acc_note": "N/A \u2014 absorbing/SUBS does not train unmasked sites",
+        "detect_auroc": null,
+        "detect_auroc_note": "N/A \u2014 MASK is visible by construction",
+        "n_attempted_moves_total": 0,
+        "n_collision_xt_eq_x0_total": 0,
+        "n_kept_no_move_total": 256,
+        "n_xt_ne_x0_total": 0,
+        "collision_rate_among_moves": null,
+        "fraction_dropped_as_not_corrupt": 0.0,
+        "mean_n_corrupted": 0.0,
+        "retention_soft_keep_xt_T1": null,
+        "retention_hard_keep_xt_T1": null,
+        "retention_still_x0_T1": null,
+        "retention_soft_keep_xt_T0p1": null,
+        "retention_hard_keep_xt_T0p1": null,
+        "retention_still_x0_T0p1": null
+      },
+      {
+        "alpha_t": 0.999,
+        "t_schedule": 0.0010010010010010019,
+        "n_problems": 8,
+        "corrupt_acc": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "corrupt_ce": {
+          "mean": 8.702239938429557e-06,
+          "lo": 8.702239938429557e-06,
+          "hi": 8.702239938429557e-06,
+          "n": 1
+        },
+        "clean_acc": {
+          "mean": null,
+          "lo": null,
+          "hi": null,
+          "n": 0,
+          "note": "N/A"
+        },
+        "clean_ce": {
+          "mean": null,
+          "lo": null,
+          "hi": null,
+          "n": 0,
+          "note": "N/A"
+        },
+        "clean_copy_xt_acc": null,
+        "clean_mean_p_x0": null,
+        "clean_mean_p_xt": null,
+        "clean_median_rank_x0": null,
+        "clean_mean_rank_x0": null,
+        "clean_acc_note": "N/A \u2014 absorbing/SUBS does not train unmasked sites",
+        "detect_auroc": null,
+        "detect_auroc_note": "N/A \u2014 MASK is visible by construction",
+        "n_attempted_moves_total": 1,
+        "n_collision_xt_eq_x0_total": 0,
+        "n_kept_no_move_total": 255,
+        "n_xt_ne_x0_total": 1,
+        "collision_rate_among_moves": 0.0,
+        "fraction_dropped_as_not_corrupt": 0.0,
+        "mean_n_corrupted": 0.125,
+        "retention_soft_keep_xt_T1": null,
+        "retention_hard_keep_xt_T1": null,
+        "retention_still_x0_T1": null,
+        "retention_soft_keep_xt_T0p1": null,
+        "retention_hard_keep_xt_T0p1": null,
+        "retention_still_x0_T0p1": null
+      },
+      {
+        "alpha_t": 0.99,
+        "t_schedule": 0.010010010010010019,
+        "n_problems": 8,
+        "corrupt_acc": {
+          "mean": 0.0,
+          "lo": 0.0,
+          "hi": 0.0,
+          "n": 1
+        },
+        "corrupt_ce": {
+          "mean": 9.408233642578125,
+          "lo": 9.408233642578125,
+          "hi": 9.408233642578125,
+          "n": 1
+        },
+        "clean_acc": {
+          "mean": null,
+          "lo": null,
+          "hi": null,
+          "n": 0,
+          "note": "N/A"
+        },
+        "clean_ce": {
+          "mean": null,
+          "lo": null,
+          "hi": null,
+          "n": 0,
+          "note": "N/A"
+        },
+        "clean_copy_xt_acc": null,
+        "clean_mean_p_x0": null,
+        "clean_mean_p_xt": null,
+        "clean_median_rank_x0": null,
+        "clean_mean_rank_x0": null,
+        "clean_acc_note": "N/A \u2014 absorbing/SUBS does not train unmasked sites",
+        "detect_auroc": null,
+        "detect_auroc_note": "N/A \u2014 MASK is visible by construction",
+        "n_attempted_moves_total": 1,
+        "n_collision_xt_eq_x0_total": 0,
+        "n_kept_no_move_total": 255,
+        "n_xt_ne_x0_total": 1,
+        "collision_rate_among_moves": 0.0,
+        "fraction_dropped_as_not_corrupt": 0.0,
+        "mean_n_corrupted": 0.125,
+        "retention_soft_keep_xt_T1": null,
+        "retention_hard_keep_xt_T1": null,
+        "retention_still_x0_T1": null,
+        "retention_soft_keep_xt_T0p1": null,
+        "retention_hard_keep_xt_T0p1": null,
+        "retention_still_x0_T0p1": null
+      },
+      {
+        "alpha_t": 0.95,
+        "t_schedule": 0.050050050050050095,
+        "n_problems": 8,
+        "corrupt_acc": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 5
+        },
+        "corrupt_ce": {
+          "mean": 0.11112975713331252,
+          "lo": 0.0027850088197737934,
+          "hi": 0.24762239465489982,
+          "n": 5
+        },
+        "clean_acc": {
+          "mean": null,
+          "lo": null,
+          "hi": null,
+          "n": 0,
+          "note": "N/A"
+        },
+        "clean_ce": {
+          "mean": null,
+          "lo": null,
+          "hi": null,
+          "n": 0,
+          "note": "N/A"
+        },
+        "clean_copy_xt_acc": null,
+        "clean_mean_p_x0": null,
+        "clean_mean_p_xt": null,
+        "clean_median_rank_x0": null,
+        "clean_mean_rank_x0": null,
+        "clean_acc_note": "N/A \u2014 absorbing/SUBS does not train unmasked sites",
+        "detect_auroc": null,
+        "detect_auroc_note": "N/A \u2014 MASK is visible by construction",
+        "n_attempted_moves_total": 12,
+        "n_collision_xt_eq_x0_total": 0,
+        "n_kept_no_move_total": 244,
+        "n_xt_ne_x0_total": 12,
+        "collision_rate_among_moves": 0.0,
+        "fraction_dropped_as_not_corrupt": 0.0,
+        "mean_n_corrupted": 1.5,
+        "retention_soft_keep_xt_T1": null,
+        "retention_hard_keep_xt_T1": null,
+        "retention_still_x0_T1": null,
+        "retention_soft_keep_xt_T0p1": null,
+        "retention_hard_keep_xt_T0p1": null,
+        "retention_still_x0_T0p1": null
+      }
+    ]
+  },
+  "uniform": {
+    "checkpoint": "outputs/block_qwen/ar2block_uniform_2020049/checkpoints/last.ckpt",
+    "simplex": {
+      "forward_process_name": "uniform",
+      "uniform_simplex_mode": "conversion",
+      "v_eff": 151663,
+      "vocab_size": 151936,
+      "n_exclude": 273,
+      "exclude_ids_head": [
+        151665,
+        151643,
+        151644,
+        151666,
+        151667,
+        151668,
+        151669,
+        151670
+      ],
+      "mask_id": 151665,
+      "block_size": 32,
+      "noise_schedule": "LogLinear",
+      "eps": 0.001,
+      "shift_loss_targets": false,
+      "time_conditioning": false,
+      "alpha_map": {
+        "1.0": 0.0,
+        "0.999": 0.0010010010010010019,
+        "0.99": 0.010010010010010019,
+        "0.98": 0.020020020020020037,
+        "0.95": 0.050050050050050095,
+        "0.9": 0.10010010010010008,
+        "0.7": 0.30030030030030036,
+        "0.5": 0.5005005005005005,
+        "0.3": 0.7007007007007007,
+        "0.1": 0.9009009009009009
+      }
+    },
+    "n_sequences": 8,
+    "levels": [
+      {
+        "alpha_t": 1.0,
+        "t_schedule": 0.0,
+        "n_problems": 8,
+        "corrupt_acc": {
+          "mean": null,
+          "lo": null,
+          "hi": null,
+          "n": 0
+        },
+        "corrupt_ce": {
+          "mean": null,
+          "lo": null,
+          "hi": null,
+          "n": 0
+        },
+        "clean_acc": {
+          "mean": 0.125,
+          "lo": 0.0546875,
+          "hi": 0.1953125,
+          "n": 8
+        },
+        "clean_ce": {
+          "mean": 3909.5499641001225,
+          "lo": 2.5314889550209045,
+          "hi": 11722.87054681778,
+          "n": 8
+        },
+        "clean_copy_xt_acc": {
+          "mean": 0.125,
+          "lo": 0.0546875,
+          "hi": 0.1953125,
+          "n": 8
+        },
+        "clean_mean_p_x0": {
+          "mean": 0.11313344235531986,
+          "lo": 0.0670296202879399,
+          "hi": 0.16952588316053152,
+          "n": 8
+        },
+        "clean_mean_p_xt": {
+          "mean": 0.11313344235531986,
+          "lo": 0.0670296202879399,
+          "hi": 0.16952588316053152,
+          "n": 8
+        },
+        "clean_median_rank_x0": {
+          "mean": 3.25,
+          "lo": 2.125,
+          "hi": 4.375,
+          "n": 8
+        },
+        "clean_mean_rank_x0": {
+          "mean": 755.1875,
+          "lo": 4.71875,
+          "hi": 2254.1015625,
+          "n": 8
+        },
+        "clean_acc_note": "top-1 == x0 on sites with xt==x0 (after dropping collisions)",
+        "detect_auroc": {
+          "mean": null,
+          "lo": null,
+          "hi": null,
+          "n": 0
+        },
+        "detect_auroc_note": "score=1-p(xt) on active block",
+        "n_attempted_moves_total": 0,
+        "n_collision_xt_eq_x0_total": 0,
+        "n_kept_no_move_total": 256,
+        "n_xt_ne_x0_total": 0,
+        "collision_rate_among_moves": null,
+        "fraction_dropped_as_not_corrupt": 0.0,
+        "mean_n_corrupted": 0.0,
+        "retention_soft_keep_xt_T1": {
+          "mean": 0.99609375,
+          "lo": 0.984375,
+          "hi": 1.0,
+          "n": 8
+        },
+        "retention_hard_keep_xt_T1": {
+          "mean": 0.99609375,
+          "lo": 0.984375,
+          "hi": 1.0,
+          "n": 8
+        },
+        "retention_still_x0_T1": {
+          "mean": 0.99609375,
+          "lo": 0.984375,
+          "hi": 1.0,
+          "n": 8
+        },
+        "retention_soft_keep_xt_T0p1": {
+          "mean": 0.8470054417848587,
+          "lo": 0.7227531522512436,
+          "hi": 0.9400357827544212,
+          "n": 8
+        },
+        "retention_hard_keep_xt_T0p1": {
+          "mean": 0.8515625,
+          "lo": 0.7265625,
+          "hi": 0.9453125,
+          "n": 8
+        },
+        "retention_still_x0_T0p1": {
+          "mean": 0.8515625,
+          "lo": 0.7265625,
+          "hi": 0.9453125,
+          "n": 8
+        }
+      },
+      {
+        "alpha_t": 0.999,
+        "t_schedule": 0.0010010010010010019,
+        "n_problems": 8,
+        "corrupt_acc": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "corrupt_ce": {
+          "mean": 0.0023631523363292217,
+          "lo": 0.0023631523363292217,
+          "hi": 0.0023631523363292217,
+          "n": 1
+        },
+        "clean_acc": {
+          "mean": 0.12563003972172737,
+          "lo": 0.0546875,
+          "hi": 0.1953125,
+          "n": 8
+        },
+        "clean_ce": {
+          "mean": 4035.4847785532475,
+          "lo": 2.5314889550209045,
+          "hi": 12100.674990177155,
+          "n": 8
+        },
+        "clean_copy_xt_acc": {
+          "mean": 0.12563003972172737,
+          "lo": 0.0546875,
+          "hi": 0.1953125,
+          "n": 8
+        },
+        "clean_mean_p_x0": {
+          "mean": 0.11731258849613369,
+          "lo": 0.07120876642875373,
+          "hi": 0.16952588316053152,
+          "n": 8
+        },
+        "clean_mean_p_xt": {
+          "mean": 0.11731258849613369,
+          "lo": 0.07120876642875373,
+          "hi": 0.16952588316053152,
+          "n": 8
+        },
+        "clean_median_rank_x0": {
+          "mean": 3.25,
+          "lo": 2.125,
+          "hi": 4.375,
+          "n": 8
+        },
+        "clean_mean_rank_x0": {
+          "mean": 782.4639282226562,
+          "lo": 4.71875,
+          "hi": 2335.9308471679688,
+          "n": 8
+        },
+        "clean_acc_note": "top-1 == x0 on sites with xt==x0 (after dropping collisions)",
+        "detect_auroc": {
+          "mean": 0.967741935483871,
+          "lo": 0.967741935483871,
+          "hi": 0.967741935483871,
+          "n": 1
+        },
+        "detect_auroc_note": "score=1-p(xt) on active block",
+        "n_attempted_moves_total": 1,
+        "n_collision_xt_eq_x0_total": 0,
+        "n_kept_no_move_total": 255,
+        "n_xt_ne_x0_total": 1,
+        "collision_rate_among_moves": 0.0,
+        "fraction_dropped_as_not_corrupt": 0.0,
+        "mean_n_corrupted": 0.125,
+        "retention_soft_keep_xt_T1": {
+          "mean": 0.9949830770492554,
+          "lo": 0.9799824580550194,
+          "hi": 0.9999996647238731,
+          "n": 8
+        },
+        "retention_hard_keep_xt_T1": {
+          "mean": 0.9959677383303642,
+          "lo": 0.9838709533214569,
+          "hi": 1.0,
+          "n": 8
+        },
+        "retention_still_x0_T1": {
+          "mean": 0.9959677383303642,
+          "lo": 0.9838709533214569,
+          "hi": 1.0,
+          "n": 8
+        },
+        "retention_soft_keep_xt_T0p1": {
+          "mean": 0.46324437856674194,
+          "lo": 0.3400920443236828,
+          "hi": 0.5608556345105171,
+          "n": 8
+        },
+        "retention_hard_keep_xt_T0p1": {
+          "mean": 0.4590473771095276,
+          "lo": 0.3359375,
+          "hi": 0.5567036271095276,
+          "n": 8
+        },
+        "retention_still_x0_T0p1": {
+          "mean": 0.4590473771095276,
+          "lo": 0.3359375,
+          "hi": 0.5567036271095276,
+          "n": 8
+        }
+      },
+      {
+        "alpha_t": 0.99,
+        "t_schedule": 0.010010010010010019,
+        "n_problems": 8,
+        "corrupt_acc": {
+          "mean": 0.0,
+          "lo": 0.0,
+          "hi": 0.0,
+          "n": 1
+        },
+        "corrupt_ce": {
+          "mean": 1.6682854890823364,
+          "lo": 1.6682854890823364,
+          "hi": 1.6682854890823364,
+          "n": 1
+        },
+        "clean_acc": {
+          "mean": 0.1215977817773819,
+          "lo": 0.0546875,
+          "hi": 0.19140625,
+          "n": 8
+        },
+        "clean_ce": {
+          "mean": 4035.5397101938725,
+          "lo": 2.5314889550209045,
+          "hi": 12100.83978509903,
+          "n": 8
+        },
+        "clean_copy_xt_acc": {
+          "mean": 0.1215977817773819,
+          "lo": 0.0546875,
+          "hi": 0.19140625,
+          "n": 8
+        },
+        "clean_mean_p_x0": {
+          "mean": 0.11551304231397808,
+          "lo": 0.06940922024659812,
+          "hi": 0.16952588316053152,
+          "n": 8
+        },
+        "clean_mean_p_xt": {
+          "mean": 0.11551304231397808,
+          "lo": 0.06940922024659812,
+          "hi": 0.16952588316053152,
+          "n": 8
+        },
+        "clean_median_rank_x0": {
+          "mean": 3.25,
+          "lo": 2.125,
+          "hi": 4.375,
+          "n": 8
+        },
+        "clean_mean_rank_x0": {
+          "mean": 789.9558715820312,
+          "lo": 4.71875,
+          "hi": 2358.4066772460938,
+          "n": 8
+        },
+        "clean_acc_note": "top-1 == x0 on sites with xt==x0 (after dropping collisions)",
+        "detect_auroc": {
+          "mean": 0.967741935483871,
+          "lo": 0.967741935483871,
+          "hi": 0.967741935483871,
+          "n": 1
+        },
+        "detect_auroc_note": "score=1-p(xt) on active block",
+        "n_attempted_moves_total": 1,
+        "n_collision_xt_eq_x0_total": 0,
+        "n_kept_no_move_total": 255,
+        "n_xt_ne_x0_total": 1,
+        "collision_rate_among_moves": 0.0,
+        "fraction_dropped_as_not_corrupt": 0.0,
+        "mean_n_corrupted": 0.125,
+        "retention_soft_keep_xt_T1": {
+          "mean": 0.9926343187689781,
+          "lo": 0.9710383042693138,
+          "hi": 0.9999966025352478,
+          "n": 8
+        },
+        "retention_hard_keep_xt_T1": {
+          "mean": 0.9959677383303642,
+          "lo": 0.9838709533214569,
+          "hi": 1.0,
+          "n": 8
+        },
+        "retention_still_x0_T1": {
+          "mean": 0.9959677383303642,
+          "lo": 0.9838709533214569,
+          "hi": 1.0,
+          "n": 8
+        },
+        "retention_soft_keep_xt_T0p1": {
+          "mean": 0.4016281720250845,
+          "lo": 0.2921840399503708,
+          "hi": 0.4933575429022312,
+          "n": 8
+        },
+        "retention_hard_keep_xt_T0p1": {
+          "mean": 0.38785282149910927,
+          "lo": 0.28125,
+          "hi": 0.47379032149910927,
+          "n": 8
+        },
+        "retention_still_x0_T0p1": {
+          "mean": 0.38785282149910927,
+          "lo": 0.28125,
+          "hi": 0.47379032149910927,
+          "n": 8
+        }
+      },
+      {
+        "alpha_t": 0.95,
+        "t_schedule": 0.050050050050050095,
+        "n_problems": 8,
+        "corrupt_acc": {
+          "mean": 0.7619047633239201,
+          "lo": 0.4285714328289032,
+          "hi": 1.0,
+          "n": 7
+        },
+        "corrupt_ce": {
+          "mean": 0.4838786723058937,
+          "lo": 0.03578434862928199,
+          "hi": 1.061935480550996,
+          "n": 7
+        },
+        "clean_acc": {
+          "mean": 0.24494663625955582,
+          "lo": 0.17820581421256065,
+          "hi": 0.3166930191218853,
+          "n": 8
+        },
+        "clean_ce": {
+          "mean": 4034.7770037055016,
+          "lo": 1.9614425301551819,
+          "hi": 12099.913799881935,
+          "n": 8
+        },
+        "clean_copy_xt_acc": {
+          "mean": 0.24494663625955582,
+          "lo": 0.17820581421256065,
+          "hi": 0.3166930191218853,
+          "n": 8
+        },
+        "clean_mean_p_x0": {
+          "mean": 0.17775858379900455,
+          "lo": 0.11869613640010357,
+          "hi": 0.23773770220577717,
+          "n": 8
+        },
+        "clean_mean_p_xt": {
+          "mean": 0.17775858379900455,
+          "lo": 0.11869613640010357,
+          "hi": 0.23773770220577717,
+          "n": 8
+        },
+        "clean_median_rank_x0": {
+          "mean": 2.375,
+          "lo": 2.0,
+          "hi": 2.625,
+          "n": 8
+        },
+        "clean_mean_rank_x0": {
+          "mean": 781.2968019545078,
+          "lo": 3.5924638211727142,
+          "hi": 2335.4560605585575,
+          "n": 8
+        },
+        "clean_acc_note": "top-1 == x0 on sites with xt==x0 (after dropping collisions)",
+        "detect_auroc": {
+          "mean": 0.9953917050691244,
+          "lo": 0.9861751152073733,
+          "hi": 1.0,
+          "n": 7
+        },
+        "detect_auroc_note": "score=1-p(xt) on active block",
+        "n_attempted_moves_total": 11,
+        "n_collision_xt_eq_x0_total": 0,
+        "n_kept_no_move_total": 245,
+        "n_xt_ne_x0_total": 11,
+        "collision_rate_among_moves": 0.0,
+        "fraction_dropped_as_not_corrupt": 0.0,
+        "mean_n_corrupted": 1.375,
+        "retention_soft_keep_xt_T1": {
+          "mean": 0.9921298921108246,
+          "lo": 0.9686634540557861,
+          "hi": 0.9999897330999374,
+          "n": 8
+        },
+        "retention_hard_keep_xt_T1": {
+          "mean": 0.9919354766607285,
+          "lo": 0.9677419066429138,
+          "hi": 1.0,
+          "n": 8
+        },
+        "retention_still_x0_T1": {
+          "mean": 0.9919354766607285,
+          "lo": 0.9677419066429138,
+          "hi": 1.0,
+          "n": 8
+        },
+        "retention_soft_keep_xt_T0p1": {
+          "mean": 0.5770234614610672,
+          "lo": 0.4382464736700058,
+          "hi": 0.6808751970529556,
+          "n": 8
+        },
+        "retention_hard_keep_xt_T0p1": {
+          "mean": 0.5677706003189087,
+          "lo": 0.4325639493763447,
+          "hi": 0.6786707304418087,
+          "n": 8
+        },
+        "retention_still_x0_T0p1": {
+          "mean": 0.5677706003189087,
+          "lo": 0.4325639493763447,
+          "hi": 0.6786707304418087,
+          "n": 8
+        }
+      }
+    ]
+  },
+  "deltas_M_vs_U": [
+    {
+      "alpha_t": 1.0,
+      "t_schedule": 0.0,
+      "d_corrupt_acc_M_minus_U": {
+        "mean": null,
+        "lo": null,
+        "hi": null,
+        "n": 0
+      },
+      "d_corrupt_ce_U_minus_M": {
+        "mean": null,
+        "lo": null,
+        "hi": null,
+        "n": 0
+      },
+      "unif_detect_auroc": {
+        "mean": null,
+        "lo": null,
+        "hi": null,
+        "n": 0
+      },
+      "masked_detect_auroc": null,
+      "unif_clean_acc": {
+        "mean": 0.125,
+        "lo": 0.0546875,
+        "hi": 0.1953125,
+        "n": 8
+      },
+      "masked_clean_acc": null,
+      "unif_collision_rate_among_moves": null,
+      "unif_n_collision_dropped": 0,
+      "unif_n_xt_ne_x0": 0
+    },
+    {
+      "alpha_t": 0.999,
+      "t_schedule": 0.0010010010010010019,
+      "d_corrupt_acc_M_minus_U": {
+        "mean": null,
+        "lo": null,
+        "hi": null,
+        "n": 0
+      },
+      "d_corrupt_ce_U_minus_M": {
+        "mean": null,
+        "lo": null,
+        "hi": null,
+        "n": 0
+      },
+      "unif_detect_auroc": {
+        "mean": 0.967741935483871,
+        "lo": 0.967741935483871,
+        "hi": 0.967741935483871,
+        "n": 1
+      },
+      "masked_detect_auroc": null,
+      "unif_clean_acc": {
+        "mean": 0.12563003972172737,
+        "lo": 0.0546875,
+        "hi": 0.1953125,
+        "n": 8
+      },
+      "masked_clean_acc": null,
+      "unif_collision_rate_among_moves": 0.0,
+      "unif_n_collision_dropped": 0,
+      "unif_n_xt_ne_x0": 1
+    },
+    {
+      "alpha_t": 0.99,
+      "t_schedule": 0.010010010010010019,
+      "d_corrupt_acc_M_minus_U": {
+        "mean": null,
+        "lo": null,
+        "hi": null,
+        "n": 0
+      },
+      "d_corrupt_ce_U_minus_M": {
+        "mean": null,
+        "lo": null,
+        "hi": null,
+        "n": 0
+      },
+      "unif_detect_auroc": {
+        "mean": 0.967741935483871,
+        "lo": 0.967741935483871,
+        "hi": 0.967741935483871,
+        "n": 1
+      },
+      "masked_detect_auroc": null,
+      "unif_clean_acc": {
+        "mean": 0.1215977817773819,
+        "lo": 0.0546875,
+        "hi": 0.19140625,
+        "n": 8
+      },
+      "masked_clean_acc": null,
+      "unif_collision_rate_among_moves": 0.0,
+      "unif_n_collision_dropped": 0,
+      "unif_n_xt_ne_x0": 1
+    },
+    {
+      "alpha_t": 0.95,
+      "t_schedule": 0.050050050050050095,
+      "d_corrupt_acc_M_minus_U": {
+        "mean": 0.0,
+        "lo": 0.0,
+        "hi": 0.0,
+        "n": 5
+      },
+      "d_corrupt_ce_U_minus_M": {
+        "mean": -0.06350887627340854,
+        "lo": -0.20119284412357957,
+        "hi": 0.009605773026123643,
+        "n": 5
+      },
+      "unif_detect_auroc": {
+        "mean": 0.9953917050691244,
+        "lo": 0.9861751152073733,
+        "hi": 1.0,
+        "n": 7
+      },
+      "masked_detect_auroc": null,
+      "unif_clean_acc": {
+        "mean": 0.24494663625955582,
+        "lo": 0.17820581421256065,
+        "hi": 0.3166930191218853,
+        "n": 8
+      },
+      "masked_clean_acc": null,
+      "unif_collision_rate_among_moves": 0.0,
+      "unif_n_collision_dropped": 0,
+      "unif_n_xt_ne_x0": 11
+    }
+  ],
+  "noise_level_split_uniform": {
+    "high_alpha": [
+      1.0,
+      0.999,
+      0.99,
+      0.95
+    ],
+    "low_alpha": [],
+    "clean_acc_high_alpha": 0.15429361443966627,
+    "clean_acc_low_alpha": null,
+    "detect_auroc_high_alpha": 0.9769585253456222,
+    "detect_auroc_low_alpha": null,
+    "pattern": "insufficient",
+    "note": "worse_at_low_noise \u2192 Unif struggles when most tokens are right (fits no-t); flat_across_alpha \u2192 ignores noise level"
+  },
+  "train_nll_buckets_uniform": [
+    {
+      "alpha_t": 1.0,
+      "ce_clean_sites": {
+        "mean": 3909.550452411175,
+        "lo": 2.531489074230194,
+        "hi": 11722.872011572123,
+        "n": 8
+      },
+      "ce_corrupt_sites": {
+        "mean": null,
+        "lo": null,
+        "hi": null,
+        "n": 0
+      },
+      "ce_all_block": {
+        "mean": 3909.550452411175,
+        "lo": 2.531489074230194,
+        "hi": 11722.872011572123,
+        "n": 8
+      },
+      "note": "token CE -log p_\u03b8(x0); same forward as probe"
+    },
+    {
+      "alpha_t": 0.999,
+      "ce_clean_sites": {
+        "mean": 3909.550452411175,
+        "lo": 2.531489074230194,
+        "hi": 11722.872011572123,
+        "n": 8
+      },
+      "ce_corrupt_sites": {
+        "mean": null,
+        "lo": null,
+        "hi": null,
+        "n": 0
+      },
+      "ce_all_block": {
+        "mean": 3909.550452411175,
+        "lo": 2.531489074230194,
+        "hi": 11722.872011572123,
+        "n": 8
+      },
+      "note": "token CE -log p_\u03b8(x0); same forward as probe"
+    },
+    {
+      "alpha_t": 0.99,
+      "ce_clean_sites": {
+        "mean": 4035.3106758594513,
+        "lo": 2.3541964888572693,
+        "hi": 12100.6920812428,
+        "n": 8
+      },
+      "ce_corrupt_sites": {
+        "mean": 0.0013046482054051012,
+        "lo": 7.795983401592821e-05,
+        "hi": 0.0037284637801349163,
+        "n": 3
+      },
+      "ce_all_block": {
+        "mean": 3909.270417138934,
+        "lo": 2.3333091735839844,
+        "hi": 11722.612521231174,
+        "n": 8
+      },
+      "note": "token CE -log p_\u03b8(x0); same forward as probe"
+    },
+    {
+      "alpha_t": 0.95,
+      "ce_clean_sites": {
+        "mean": 4034.984654530883,
+        "lo": 2.066046863794327,
+        "hi": 12100.188835337758,
+        "n": 8
+      },
+      "ce_corrupt_sites": {
+        "mean": 0.544900157422262,
+        "lo": 0.020792197070120113,
+        "hi": 1.1684669229268496,
+        "n": 7
+      },
+      "ce_all_block": {
+        "mean": 3908.911789432168,
+        "lo": 2.036263272166252,
+        "hi": 11722.067805334926,
+        "n": 8
+      },
+      "note": "token CE -log p_\u03b8(x0); same forward as probe"
+    }
+  ],
+  "one_step_retention_uniform": [
+    {
+      "alpha_t": 1.0,
+      "retention_soft_keep_xt_T1": {
+        "mean": 0.99609375,
+        "lo": 0.984375,
+        "hi": 1.0,
+        "n": 8
+      },
+      "retention_hard_keep_xt_T1": {
+        "mean": 0.99609375,
+        "lo": 0.984375,
+        "hi": 1.0,
+        "n": 8
+      },
+      "retention_still_x0_T1": {
+        "mean": 0.99609375,
+        "lo": 0.984375,
+        "hi": 1.0,
+        "n": 8
+      },
+      "retention_soft_keep_xt_T0p1": {
+        "mean": 0.8470054417848587,
+        "lo": 0.7227531522512436,
+        "hi": 0.9400357827544212,
+        "n": 8
+      },
+      "retention_hard_keep_xt_T0p1": {
+        "mean": 0.8515625,
+        "lo": 0.7265625,
+        "hi": 0.9453125,
+        "n": 8
+      },
+      "retention_still_x0_T0p1": {
+        "mean": 0.8515625,
+        "lo": 0.7265625,
+        "hi": 0.9453125,
+        "n": 8
+      }
+    },
+    {
+      "alpha_t": 0.999,
+      "retention_soft_keep_xt_T1": {
+        "mean": 0.9949830770492554,
+        "lo": 0.9799824580550194,
+        "hi": 0.9999996647238731,
+        "n": 8
+      },
+      "retention_hard_keep_xt_T1": {
+        "mean": 0.9959677383303642,
+        "lo": 0.9838709533214569,
+        "hi": 1.0,
+        "n": 8
+      },
+      "retention_still_x0_T1": {
+        "mean": 0.9959677383303642,
+        "lo": 0.9838709533214569,
+        "hi": 1.0,
+        "n": 8
+      },
+      "retention_soft_keep_xt_T0p1": {
+        "mean": 0.46324437856674194,
+        "lo": 0.3400920443236828,
+        "hi": 0.5608556345105171,
+        "n": 8
+      },
+      "retention_hard_keep_xt_T0p1": {
+        "mean": 0.4590473771095276,
+        "lo": 0.3359375,
+        "hi": 0.5567036271095276,
+        "n": 8
+      },
+      "retention_still_x0_T0p1": {
+        "mean": 0.4590473771095276,
+        "lo": 0.3359375,
+        "hi": 0.5567036271095276,
+        "n": 8
+      }
+    },
+    {
+      "alpha_t": 0.99,
+      "retention_soft_keep_xt_T1": {
+        "mean": 0.9926343187689781,
+        "lo": 0.9710383042693138,
+        "hi": 0.9999966025352478,
+        "n": 8
+      },
+      "retention_hard_keep_xt_T1": {
+        "mean": 0.9959677383303642,
+        "lo": 0.9838709533214569,
+        "hi": 1.0,
+        "n": 8
+      },
+      "retention_still_x0_T1": {
+        "mean": 0.9959677383303642,
+        "lo": 0.9838709533214569,
+        "hi": 1.0,
+        "n": 8
+      },
+      "retention_soft_keep_xt_T0p1": {
+        "mean": 0.4016281720250845,
+        "lo": 0.2921840399503708,
+        "hi": 0.4933575429022312,
+        "n": 8
+      },
+      "retention_hard_keep_xt_T0p1": {
+        "mean": 0.38785282149910927,
+        "lo": 0.28125,
+        "hi": 0.47379032149910927,
+        "n": 8
+      },
+      "retention_still_x0_T0p1": {
+        "mean": 0.38785282149910927,
+        "lo": 0.28125,
+        "hi": 0.47379032149910927,
+        "n": 8
+      }
+    },
+    {
+      "alpha_t": 0.95,
+      "retention_soft_keep_xt_T1": {
+        "mean": 0.9921298921108246,
+        "lo": 0.9686634540557861,
+        "hi": 0.9999897330999374,
+        "n": 8
+      },
+      "retention_hard_keep_xt_T1": {
+        "mean": 0.9919354766607285,
+        "lo": 0.9677419066429138,
+        "hi": 1.0,
+        "n": 8
+      },
+      "retention_still_x0_T1": {
+        "mean": 0.9919354766607285,
+        "lo": 0.9677419066429138,
+        "hi": 1.0,
+        "n": 8
+      },
+      "retention_soft_keep_xt_T0p1": {
+        "mean": 0.5770234614610672,
+        "lo": 0.4382464736700058,
+        "hi": 0.6808751970529556,
+        "n": 8
+      },
+      "retention_hard_keep_xt_T0p1": {
+        "mean": 0.5677706003189087,
+        "lo": 0.4325639493763447,
+        "hi": 0.6786707304418087,
+        "n": 8
+      },
+      "retention_still_x0_T0p1": {
+        "mean": 0.5677706003189087,
+        "lo": 0.4325639493763447,
+        "hi": 0.6786707304418087,
+        "n": 8
+      }
+    }
+  ],
+  "model_generated_prefix_uniform": {
+    "alpha_t": 0.95,
+    "n": 4,
+    "corrupt_acc": {
+      "mean": 0.625,
+      "lo": 0.25,
+      "hi": 1.0,
+      "n": 4
+    },
+    "clean_acc": {
+      "mean": 0.30215053632855415,
+      "lo": 0.15645161643624306,
+      "hi": 0.44354837387800217,
+      "n": 4
+    },
+    "detect_auroc": {
+      "mean": 0.9958333333333333,
+      "lo": 0.9875,
+      "hi": 1.0,
+      "n": 4
+    },
+    "clean_mean_p_x0": {
+      "mean": 0.14330394379794598,
+      "lo": 0.09641104005277157,
+      "hi": 0.1719479188323021,
+      "n": 4
+    },
+    "prev_block_match_gt": {
+      "mean": 0.046875,
+      "lo": 0.015625,
+      "hi": 0.078125,
+      "n": 4
+    },
+    "note": "Prev block = argmax denoise from pure noise (light proxy for ancestral fill). Active targets=GT; AUROC under own prefix."
+  }
+}

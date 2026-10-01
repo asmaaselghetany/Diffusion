@@ -110,6 +110,7 @@ def export(
     *,
     use_ema: bool,
     allow_embed_pad: bool = False,
+    overwrite: bool = False,
 ) -> None:
   if not ckpt_path.is_file():
     raise FileNotFoundError(ckpt_path)
@@ -122,6 +123,9 @@ def export(
       ckpt, use_ema=use_ema, allow_embed_pad=allow_embed_pad)
 
   if out_dir.exists():
+    if not overwrite:
+      raise FileExistsError(
+          f'{out_dir} already exists; pass --overwrite to replace it')
     shutil.rmtree(out_dir)
   out_dir.mkdir(parents=True, exist_ok=False)
 
@@ -201,11 +205,15 @@ def main() -> int:
   ap.add_argument(
       '--allow-embed-pad', action='store_true',
       help='Allow zero-padding embed 151666→151936 (probe only)')
+  ap.add_argument(
+      '--overwrite', action='store_true',
+      help='Replace --out if it already exists (rmtree)')
   args = ap.parse_args()
   export(
       args.ckpt, args.out, args.template,
       use_ema=not args.no_ema,
       allow_embed_pad=args.allow_embed_pad,
+      overwrite=args.overwrite,
   )
   return 0
 

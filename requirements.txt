@@ -17,6 +17,9 @@ einops==0.8.1
 fancy-einsum==0.0.3
 numpy==1.26.4
 mauve-text==0.4.0
+# Cluster / eval extras (also mirrored as pyproject optional-deps:
+#   pip install -e ".[dev,liger,lm-eval,mamba]")
+# Core pins live in pyproject.toml — prefer that for CI.
 git+https://github.com/EleutherAI/lm-evaluation-harness
 sentencepiece==0.2.0
 lightning==2.5.1
