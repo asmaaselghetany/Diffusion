@@ -26,7 +26,7 @@ fi
 cd "${REPO_ROOT}"
 
 if command -v jutil >/dev/null 2>&1; then
-  jutil env activate -p "${JUWELS_PROJECT:-scifi}" 2>/dev/null || true
+  jutil env activate -p "${JUWELS_PROJECT:-profound}" 2>/dev/null || true
 fi
 
 # shellcheck disable=SC1091
@@ -52,6 +52,11 @@ export MKL_NUM_THREADS="${OMP_NUM_THREADS}"
 export TOKENIZERS_PARALLELISM=false
 export HYDRA_FULL_ERROR=1
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+
+# Refuse stub / drifted Unif helpers (clean clones still ship the 45-line stub).
+# shellcheck disable=SC1091
+source "${REPO_ROOT}/scripts/_assert_utils_hash.bash"
+assert_forward_process_utils_hash || exit $?
 
 export HF_HOME="${HF_HOME:-${SCRATCH}/hf_cache}"
 export HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-${HF_HOME}/datasets}"
@@ -92,7 +97,7 @@ sbatch_with_account() {
   if [[ -n "${JUWELS_ACCOUNT:-}" ]]; then
     account_arg=(--account="${JUWELS_ACCOUNT}")
   else
-    account_arg=(--account=scifi)
+    account_arg=(--account=profound)
   fi
   sbatch "${account_arg[@]}" "$@"
 }

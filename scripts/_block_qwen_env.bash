@@ -19,8 +19,17 @@ activate_jupiter_modules
 if ! command -v nvcc >/dev/null 2>&1 && [[ -z "${CUDA_HOME:-}${CUDA_ROOT:-}" ]]; then
   module load CUDA 2>/dev/null || true
 fi
-# shellcheck disable=SC1091
-source .venv/bin/activate
+# Prefer activate; fall back to PATH-only if bin/activate was wiped (venv restore).
+if [[ -f .venv/bin/activate ]]; then
+  # shellcheck disable=SC1091
+  source .venv/bin/activate
+elif [[ -x .venv/bin/python ]]; then
+  export PATH="${REPO_ROOT}/.venv/bin:${PATH}"
+  export PYTHONNOUSERSITE=1
+else
+  echo "FATAL: missing ${REPO_ROOT}/.venv/bin/python (and no activate)" >&2
+  exit 1
+fi
 
 # CRITICAL: Slurm propagates the submitter's env. A polluted PYTHONPATH that
 # prefixes projects/depbench/.deps-fastdllm (transformers 4.53) breaks the
@@ -29,23 +38,59 @@ source .venv/bin/activate
 # 4.45. Always reset to uni-d2 src only after activate.
 export PYTHONPATH="${REPO_ROOT}/src"
 
+# Refuse stub / drifted Unif helpers before any train or eval work.
+# shellcheck disable=SC1091
+source "${REPO_ROOT}/scripts/_assert_utils_hash.bash"
+assert_forward_process_utils_hash || exit $?
+
+# Booster compute has no route to huggingface.co. Prefer local HF_HOME cache
+# (env.sh → ${SCRATCH}/hf_cache). Without these, transformers≥4.4x issues
+# HEAD requests even when snapshots exist and hangs/fails the train start.
+if [[ -n "${SLURM_JOB_ID:-}" ]]; then
+  export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
+  export HF_DATASETS_OFFLINE="${HF_DATASETS_OFFLINE:-1}"
+  export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
+fi
+
 export TOKENIZERS_PARALLELISM=false
 export HYDRA_FULL_ERROR=1
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
-# WandB: always load key from workspace secrets if missing, then force online.
-# Do NOT honor a stale WANDB_MODE=offline inherited from the submit shell
-# (Slurm propagates the submitter env — that bit us after offline rebuilds).
-_WANDB_KEY_FILE="${ASMAA_WORKSPACE}/.secrets/wandb_api_key"
-if [[ -z "${WANDB_API_KEY:-}" && -f "${_WANDB_KEY_FILE}" ]]; then
-  export WANDB_API_KEY="$(<"${_WANDB_KEY_FILE}")"
+# WandB: load key from env / WANDB_API_KEY_FILE / ~/.config, then workspace
+# secrets (cluster). Compute nodes on Jupiter have no route to api.wandb.ai —
+# default OFFLINE under Slurm (sync later with upload_wandb_panels). Online
+# only when WANDB_FORCE_ONLINE=1 (login-node smoke) or non-Slurm + key set.
+# Soft xfer 2012251/2012253 failed: online wandb.init hung → DDP NCCL timeout.
+# Hygiene afterok used --export=CKPT,... without HOME; set -u then crashed here.
+: "${HOME:=${ASMAA_HOME:-/e/home/jusers/elsayed3/jupiter}}"
+export HOME
+_WANDB_KEY_FILE_HOME="${HOME}/.config/wandb/api_key"
+_WANDB_KEY_FILE_WS="${ASMAA_WORKSPACE}/.secrets/wandb_api_key"
+if [[ -z "${WANDB_API_KEY:-}" && -n "${WANDB_API_KEY_FILE:-}" && -f "${WANDB_API_KEY_FILE}" ]]; then
+  export WANDB_API_KEY="$(<"${WANDB_API_KEY_FILE}")"
+elif [[ -z "${WANDB_API_KEY:-}" && -f "${_WANDB_KEY_FILE_HOME}" ]]; then
+  export WANDB_API_KEY="$(<"${_WANDB_KEY_FILE_HOME}")"
+elif [[ -z "${WANDB_API_KEY:-}" && -f "${_WANDB_KEY_FILE_WS}" ]]; then
+  export WANDB_API_KEY="$(<"${_WANDB_KEY_FILE_WS}")"
 fi
-if [[ -n "${WANDB_API_KEY:-}" ]]; then
+# Team entity hosting block_qwen* projects (username aselghetany → entity aselghetany-nu).
+export WANDB_ENTITY="${WANDB_ENTITY:-aselghetany-nu}"
+if [[ "${WANDB_FORCE_OFFLINE:-0}" == "1" ]]; then
+  export WANDB_MODE=offline
+elif [[ "${WANDB_FORCE_ONLINE:-0}" == "1" && -n "${WANDB_API_KEY:-}" ]]; then
+  export WANDB_MODE=online
+elif [[ -n "${SLURM_JOB_ID:-}" ]]; then
+  # Booster compute: no egress to wandb. Online desyncs rank0 vs NCCL.
+  export WANDB_MODE=offline
+  export WANDB_FORCE_OFFLINE=1
+elif [[ -n "${WANDB_API_KEY:-}" ]]; then
   export WANDB_MODE=online
 else
   echo "WARNING: WANDB_API_KEY unset; logging offline" >&2
   export WANDB_MODE=offline
 fi
-# Prevent tqdm/progress-bar spam from flooding WandB filestream (causes 429, no charts).
+# Console off during DDP train: tqdm spam caused WandB 429s / missing charts.
+# Slurm stdout is mirrored into the run Logs tab post-hoc by
+# scripts/upload_wandb_panels.py (LOGS_ONLY=1 / eval attach).
 export WANDB_CONSOLE="${WANDB_CONSOLE:-off}"
 # Don't let wandb.init hang forever and desync DDP ranks.
 export WANDB_INIT_TIMEOUT="${WANDB_INIT_TIMEOUT:-120}"

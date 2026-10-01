@@ -239,13 +239,30 @@ the worktree file was truncated to that stub; restored ~13:46 from `stash@{0}`
 instantiated `BlockUniformForwardProcess` (imports `normalize_uniform_simplex_mode`).
 Wandb saved **no** code artifact; current file mtime is the restore, not train
 start; train logs do **not** print `V_eff`. So: train **had** the helper API;
-byte-identity with today's stash is **not** proven. See
-`out/gap_test3/UTILS_RESTORE_CHECK.md`.
+byte-identity with today's stash is **not** proven. A different `V_eff` /
+exclude set / `normalize_uniform_*` would still import. Closing test:
+reproduce logged `val/nll` with today's code (`tools/reproduce_val_nll.py`).
+
+> Forward-process code at train time is not recoverable byte-for-byte; the
+> full API was present (checkpoint loads the dependent class), and validation
+> NLL is **not reproduced** yet with the committed version (pending login-GPU
+> run after n=1000). Do not imply functional equivalence until that lands.
+
+See `out/gap_test3/UTILS_RESTORE_CHECK.md`. n=1000 JSON has no fingerprint
+field — use sidecar `out/gap_test3/full_login_n1000.CODE_VERSION.md`.
+
+**Masked arm vs `utils.py`:** masked training/eval imports only
+`_mask_token_id` / `_effective_vocab_size` from the same file (via
+`block_masked.py`). It does **not** call `normalize_uniform_*` / `V_eff`. The
+45-line stub still provides those two helpers, so a stub checkout can train
+**masked** and only break on **Unif**. Hash guard + fingerprint cover both
+arms' shared file.
 
 **Mitigations now:** full `utils.py` committed + baseline tag; every eval JSON
 gets `code_fingerprint.forward_process_utils.sha256` (startup assert refuses the
-stub). Check booster / clean-clone copies before submit — `Diffusion-codex-fixes`
-still has the stub.
+stub); submit scripts (`_block_qwen_env`, `_common`, `submit_lever`,
+`submit_family_eval`, openloop matrix) refuse a hash mismatch before sbatch.
+Check booster / clean-clone copies — `Diffusion-codex-fixes` still has the stub.
 
 
 ## Test 2 — prefix-oracle curve
