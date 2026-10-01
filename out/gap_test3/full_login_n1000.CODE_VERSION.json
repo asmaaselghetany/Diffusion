@@ -1,0 +1,15 @@
+{
+  "protocol": "full_login_n1000_code_version_sidecar",
+  "result_json": "out/gap_test3/full_login_n1000.json",
+  "note": "Result JSON started before code_fingerprint wiring; use this sidecar.",
+  "pid": 3898104,
+  "wrapper_pid": 3898078,
+  "start_time_cest": "2026-10-01T13:46:55+02:00",
+  "utils_restore_approx_cest": "2026-10-01T13:46:00+02:00",
+  "utils_mtime_cest": "2026-10-01T13:47:01+02:00",
+  "truncation_approx_cest": "2026-10-01T13:44:00+02:00",
+  "forward_process_utils_sha256": "1a3f6c494ed8bee8ea63fb66d7ff2b3e3f00cb3bf13555a3cb877749d1202f9e",
+  "commit_recording_blob": "29e3ca6c8f3643a46399ee2e05636648dde8c11a",
+  "tag": "baseline-ar2block-utils-full-2026-10-01",
+  "ordering": "start after restore; discarded stub restart earlier"
+}
