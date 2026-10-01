@@ -39,6 +39,12 @@
 | `Diffusion/.../utils.py` | missing (venv only; package resolves to Diffusion-new) |
 
 ## Action
-- Commit full `utils.py` + tag baseline; record SHA in table/docs headers.
-- Startup assert + SHA in every eval JSON via `code_fingerprint.py`.
-- Before booster submit: confirm cluster worktree/`PYTHONPATH` utils is the full blob (not a fresh clone of stub HEAD).
+- Commit full `utils.py` + tag baseline; record SHA in table/docs headers. **Done** (`29e3ca6`, tag `baseline-ar2block-utils-full-2026-10-01`).
+- Startup assert + SHA in every eval JSON via `code_fingerprint.py`. **Done**.
+- Submit-time hash guard (`scripts/_assert_utils_hash.bash`) in env/common/submitters. **Done** (refuses `Diffusion-codex-fixes` stub).
+- n=1000 sidecar: `full_login_n1000.CODE_VERSION.{md,json}`. **Done**.
+- Functional close: `tools/reproduce_val_nll.py` vs logged `val/nll` (U≈1.376 / M≈1.346). **Queued** after n=1000 frees the login GPU — wording until then: **not reproduced**.
+- Push tag to GitHub: **blocked** this session (no credentials / SSH host key). Booster uses this shared worktree via `PYTHONPATH` (not a fresh pull); still push when auth works so clean clones get `29e3ca6`.
+
+## Masked arm
+Same `utils.py`, but only `_mask_token_id` / `_effective_vocab_size`. Unif helpers unused. The stub still defines those two → masked-only can run on a stub tree; Unif breaks. Hash guard covers both.
