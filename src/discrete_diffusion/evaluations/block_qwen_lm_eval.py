@@ -15,6 +15,10 @@ optional HumanEval for code accuracy.
 Also tracks decode **tok/s** during ``generate_until`` (our BlockSampler;
 not Fast-dLLM hierarchical KV).
 
+``--confirm_run_unsafe_code`` is required for HumanEval/MBPP: it both
+satisfies lm-eval's harness gate and enables ``HF_ALLOW_CODE_EVAL`` /
+``HF_DATASETS_TRUST_REMOTE_CODE`` in this entrypoint.
+
 Example::
 
   PYTHONPATH=src python -m discrete_diffusion.evaluations.block_qwen_lm_eval \\
@@ -45,11 +49,13 @@ from tqdm import tqdm
 
 from discrete_diffusion.data import get_tokenizer
 from discrete_diffusion.evaluations.block_qwen_eval_utils import (
+    cap_max_new_for_task,
     encode_context_continuation,
     generation_request_args,
     humaneval_until_for_chat,
     prepare_code_completion,
     require_masked_likelihood,
+    temporary_model_seq_len,
     truncate_at_stops,
 )
 from discrete_diffusion.evaluations.code_eval_patches import (
@@ -132,6 +138,13 @@ class BlockQwenEvalHarness(LM):
     del kwargs
     if not checkpoint_path:
       raise ValueError('model_args must include checkpoint_path=...')
+    # Refuse the 45-line utils.py stub before loading weights (Unif helpers).
+    from discrete_diffusion.evaluations.code_fingerprint import (
+        assert_forward_process_utils_ok,
+        code_fingerprint_header,
+    )
+    self._code_fingerprint = code_fingerprint_header()
+    assert_forward_process_utils_ok(require_expected_sha=False)
     # lm-eval may pass batch_size via CLI *and* model_args; prefer explicit.
     set_seed(int(seed))
     # Fast-dLLM eval.py: Accelerate shards requests across GPUs/nodes.
@@ -174,12 +187,30 @@ class BlockQwenEvalHarness(LM):
     self.speed_metrics_path = speed_metrics_path
     self.checkpoint_path = str(checkpoint_path)
 
-    profile = str(decode_profile or 'baseline').strip().lower()
+    from discrete_diffusion.evaluations.decode_profiles import (
+        allow_full_seq_decode_requested,
+        coerce_profile_for_forward,
+    )
+    requested_profile = str(decode_profile or 'baseline').strip().lower()
+    fp_name = str(
+        getattr(self.model, 'forward_process_name', '') or '').lower()
+    allow_fs = allow_full_seq_decode_requested()
+    profile = coerce_profile_for_forward(
+        requested_profile, fp_name, allow_full_seq=allow_fs)
+    if profile != requested_profile and self._rank == 0:
+      print(
+          f'[block_qwen_lm_eval] coerce decode_profile '
+          f'{requested_profile!r}→{profile!r} for forward={fp_name!r} '
+          f'(refuse full-seq Unif attention)',
+          flush=True)
     if profile not in _LM_EVAL_DECODE_PROFILES:
       raise ValueError(
           f'decode_profile={decode_profile!r} not in '
           f'{sorted(_LM_EVAL_DECODE_PROFILES)}')
     prof = dict(_LM_EVAL_DECODE_PROFILES[profile])
+    # Uniform: never take profile greedy=true (illegal reverse).
+    if (fp_name in ('uniform', 'hybrid') and prof.get('greedy') is True):
+      prof['greedy'] = False
 
     # Profile defaults, then explicit model_args win.
     if hierarchical_kv is None and 'hierarchical_kv' in prof:
@@ -192,9 +223,15 @@ class BlockQwenEvalHarness(LM):
       greedy = prof['greedy']
 
     # Fast-dLLM eval.py uses model_args threshold=… (confidence unmask).
+    # Explicit model_args threshold (including null/none) overrides profile pins.
+    # Absent threshold → fall through to profile / clear_unmask_threshold.
+    thr_arg_set = (unmask_threshold is not None) or (threshold is not None)
     thr = unmask_threshold if unmask_threshold is not None else threshold
     clear_thr = bool(prof.get('clear_unmask_threshold', False))
-    if not _is_none_token(thr):
+    if thr_arg_set and _is_none_token(thr):
+      self._force_unmask_threshold = None
+      clear_thr = True
+    elif not _is_none_token(thr):
       self._force_unmask_threshold = float(thr)
       clear_thr = False
     elif clear_thr or profile == 'baseline':
@@ -204,57 +241,167 @@ class BlockQwenEvalHarness(LM):
       self._force_unmask_threshold = None
     self._force_greedy = None if greedy is None else _as_bool(greedy)
     self.mask_id = int(self.model.mask_id)
-    self.block_size = int(self.model.block_size)
+    # ArSftTrainer has no block geometry; config.block_size is symmetry-only.
+    bs = getattr(self.model, 'block_size', None)
+    if bs is None:
+      bs = getattr(self.config, 'block_size', None)
+    self.block_size = int(bs) if bs not in (None, '', 'null') else 1
     self.train_seq_len = int(self.model.num_tokens)
     self.seq_len = self.train_seq_len
     self._eval_max_seq_len = eval_max_seq_len()
     self._speed_tokens = 0
     self._speed_elapsed = 0.0
-    self._sampler = self.model._create_sampler()
-    self._decode_pins = {
-        'hierarchical_kv': None if hierarchical_kv is None else _as_bool(
-            hierarchical_kv),
-        'use_block_cache': None if use_block_cache is None else _as_bool(
-            use_block_cache),
-        'single_stream_decode': (
-            None if single_stream_decode is None
-            else _as_bool(single_stream_decode)),
-    }
-    if self._sampler is not None:
-      # Strip / apply paper overlays from the active profile.
-      if 'use_arpc' in prof and hasattr(self._sampler, 'use_arpc'):
-        self._sampler.use_arpc = bool(prof['use_arpc'])
-      if 'sub_block_size' in prof and hasattr(self._sampler, 'sub_block_size'):
-        self._sampler.sub_block_size = prof['sub_block_size']
-      if 'ban_mask_pad_logits' in prof and hasattr(
-          self._sampler, 'ban_mask_pad_logits'):
-        self._sampler.ban_mask_pad_logits = bool(prof['ban_mask_pad_logits'])
-      if clear_thr:
-        self._sampler.unmask_threshold = None
-      elif self._force_unmask_threshold is not None:
-        self._sampler.unmask_threshold = self._force_unmask_threshold
-      for attr, val in self._decode_pins.items():
-        if val is not None:
-          setattr(self._sampler, attr, val)
-      # DualCache path needs hierarchical progressive windows.
-      if (bool(getattr(self._sampler, 'use_block_cache', False))
-          and not bool(getattr(self._sampler, 'hierarchical_kv', False))):
-        self._sampler.hierarchical_kv = True
-      if self._rank == 0:
-        print(
-            f'[decode_profile={profile}] '
-            f'unmask_threshold={getattr(self._sampler, "unmask_threshold", None)} '
-            f'hierarchical_kv={getattr(self._sampler, "hierarchical_kv", None)} '
-            f'use_block_cache={getattr(self._sampler, "use_block_cache", None)} '
-            f'single_stream={getattr(self._sampler, "single_stream_decode", None)} '
-            f'use_arpc={getattr(self._sampler, "use_arpc", None)}',
-            flush=True)
-    self._is_causal_ar = self._sampler is None
+    self._nfe_per_sample: list[dict] = []
+    # C3 / ar_sft still hydrates AbsorbingSampler from sampling.sampler in
+    # the shared config tree — do NOT treat "sampler is not None" as block
+    # diffusion. Detect causal AR by trainer type / algo name.
+    from discrete_diffusion.algorithms.ar_sft import ArSftTrainer
+    algo_name = str(getattr(self.config.algo, 'name', '') or '')
+    self._is_causal_ar = (
+        isinstance(self.model, ArSftTrainer) or algo_name == 'ar_sft')
     if self._is_causal_ar:
       mode = getattr(self.model.backbone, 'forward_mode', None)
       if mode != 'causal':
         raise RuntimeError(
-            'Checkpoint has no BlockSampler and is not causal AR (C3).')
+            f'C3/ar_sft requires model.forward_mode=causal, got {mode!r}')
+      self._sampler = None
+      self.block_size = 1
+      self._decode_pins = {
+          'hierarchical_kv': None,
+          'use_block_cache': None,
+          'single_stream_decode': None,
+      }
+      if self._rank == 0:
+        print(
+            f'[decode_profile={profile}] causal_ar=True '
+            f'(HF generate; ignoring block sampler overlays)',
+            flush=True)
+    else:
+      self._sampler = self.model._create_sampler()
+      self._decode_pins = {
+          'hierarchical_kv': None if hierarchical_kv is None else _as_bool(
+              hierarchical_kv),
+          'use_block_cache': None if use_block_cache is None else _as_bool(
+              use_block_cache),
+          'single_stream_decode': (
+              None if single_stream_decode is None
+              else _as_bool(single_stream_decode)),
+      }
+      if self._sampler is not None:
+        # Strip / apply paper overlays from the active profile.
+        if 'use_arpc' in prof and hasattr(self._sampler, 'use_arpc'):
+          self._sampler.use_arpc = bool(prof['use_arpc'])
+        for _arpc_key in (
+            'arpc_mode', 'arpc_corruption_mode', 'arpc_ar_metric',
+            'arpc_temperature', 'x0_temperature'):
+          if _arpc_key in prof and hasattr(self._sampler, _arpc_key):
+            setattr(self._sampler, _arpc_key, prof[_arpc_key])
+        if 'arpc_use_prefix_fill' in prof and hasattr(
+            self._sampler, 'arpc_use_prefix_fill'):
+          self._sampler.arpc_use_prefix_fill = bool(
+              prof['arpc_use_prefix_fill'])
+        if 'sub_block_size' in prof and hasattr(self._sampler, 'sub_block_size'):
+          self._sampler.sub_block_size = prof['sub_block_size']
+        if 'ban_mask_pad_logits' in prof and hasattr(
+            self._sampler, 'ban_mask_pad_logits'):
+          self._sampler.ban_mask_pad_logits = bool(prof['ban_mask_pad_logits'])
+        if 'posterior_sampler' in prof and hasattr(
+            self._sampler, 'posterior_sampler'):
+          self._sampler.posterior_sampler = str(prof['posterior_sampler'])
+        if 'uniform_confidence_sticky' in prof and hasattr(
+            self._sampler, 'uniform_confidence_sticky'):
+          self._sampler.uniform_confidence_sticky = bool(
+              prof['uniform_confidence_sticky'])
+        if 'sticky_min_conf' in prof and hasattr(
+            self._sampler, 'sticky_min_conf'):
+          self._sampler.sticky_min_conf = float(prof['sticky_min_conf'])
+        if 'uniform_commit_revise' in prof and hasattr(
+            self._sampler, 'uniform_commit_revise'):
+          self._sampler.uniform_commit_revise = bool(
+              prof['uniform_commit_revise'])
+        if 'uniform_commit_random' in prof and hasattr(
+            self._sampler, 'uniform_commit_random'):
+          self._sampler.uniform_commit_random = bool(
+              prof['uniform_commit_random'])
+          if self._sampler.uniform_commit_random:
+            self._sampler.uniform_commit_order = 'random'
+        if 'uniform_commit_order' in prof and hasattr(
+            self._sampler, 'uniform_commit_order'):
+          self._sampler.uniform_commit_order = str(
+              prof['uniform_commit_order'] or 'confidence')
+        if 'uniform_commit_revise_tau' in prof and hasattr(
+            self._sampler, 'uniform_commit_revise_tau'):
+          self._sampler.uniform_commit_revise_tau = float(
+              prof['uniform_commit_revise_tau'])
+        if 'allow_full_seq_decode' in prof and hasattr(
+            self._sampler, 'allow_full_seq_decode'):
+          self._sampler.allow_full_seq_decode = bool(
+              prof['allow_full_seq_decode'])
+        if clear_thr:
+          self._sampler.unmask_threshold = None
+        elif self._force_unmask_threshold is not None:
+          self._sampler.unmask_threshold = self._force_unmask_threshold
+        elif 'unmask_threshold' in prof and prof['unmask_threshold'] is not None:
+          self._sampler.unmask_threshold = float(prof['unmask_threshold'])
+        for attr, val in self._decode_pins.items():
+          if val is not None:
+            setattr(self._sampler, attr, val)
+        # DualCache path needs hierarchical progressive windows.
+        if (bool(getattr(self._sampler, 'use_block_cache', False))
+            and not bool(getattr(self._sampler, 'hierarchical_kv', False))):
+          self._sampler.hierarchical_kv = True
+        # Refuse full-seq dual open-loop (attend future noise). Truncation
+        # only — do not force Hub single_stream onto BlockGen dual decode.
+        fp_name = str(
+            getattr(self.model, 'forward_process_name', '') or '').lower()
+        _allow_fs = bool(getattr(
+            self._sampler, 'allow_full_seq_decode', False)) or allow_fs
+        _open_loop = (
+            not _allow_fs
+            and not bool(getattr(self._sampler, 'use_block_cache', False))
+            and getattr(self._sampler, 'unmask_threshold', None) is None
+            and not bool(getattr(
+                self._sampler, 'uniform_confidence_sticky', False)))
+        if (fp_name in ('masked', 'uniform', 'hybrid')
+            and _open_loop
+            and not bool(getattr(self._sampler, 'hierarchical_kv', False))):
+          print(
+              f'[block_qwen_lm_eval] {fp_name}: forcing hierarchical_kv '
+              '(refuse full-seq dual open-loop; C0 ancestral was 2.27% GSM).',
+              flush=True)
+          self._sampler.hierarchical_kv = True
+        # Hard fail: never enter generate_until with full-seq open-loop.
+        if (fp_name in ('masked', 'uniform', 'hybrid')
+            and self._sampler is not None
+            and _open_loop
+            and not bool(getattr(self._sampler, 'hierarchical_kv', False))):
+          raise RuntimeError(
+              f'REFUSED: {fp_name} open-loop without hierarchical_kv '
+              '(full-seq dual packing). Pass decode_profile=baseline '
+              '(→ hierarchical) or hierarchical. '
+              'C0 ancestral GSM was 2.27% on the refused path.')
+        if (fp_name in ('uniform', 'hybrid')
+            and self._force_greedy is True):
+          print(
+              '[block_qwen_lm_eval] uniform: forcing greedy=false '
+              '(argmax q_xs locks prior)',
+              flush=True)
+          self._force_greedy = False
+        if self._rank == 0:
+          print(
+              f'[decode_profile={profile}] '
+              f'unmask_threshold={getattr(self._sampler, "unmask_threshold", None)} '
+              f'hierarchical_kv={getattr(self._sampler, "hierarchical_kv", None)} '
+              f'use_block_cache={getattr(self._sampler, "use_block_cache", None)} '
+              f'single_stream={getattr(self._sampler, "single_stream_decode", None)} '
+              f'use_arpc={getattr(self._sampler, "use_arpc", None)} '
+              f'x0_temperature={getattr(self._sampler, "x0_temperature", None)} '
+              f'posterior_sampler={getattr(self._sampler, "posterior_sampler", None)} '
+              f'sticky={getattr(self._sampler, "uniform_confidence_sticky", None)} '
+              f'sticky_min_conf={getattr(self._sampler, "sticky_min_conf", None)} '
+              f'revise={getattr(self._sampler, "uniform_commit_revise", None)} '
+              f'allow_full_seq={getattr(self._sampler, "allow_full_seq_decode", None)}',
+              flush=True)
 
   @property
   def device(self):
@@ -287,6 +434,24 @@ class BlockQwenEvalHarness(LM):
     return encode_context_continuation(self.tokenizer, context, continuation)
 
   @torch.no_grad()
+  def _causal_ar_loglikelihood(self, prefix, target) -> float:
+    """Teacher-forced causal NLL for matched AR SFT (C3 / paper_acc MMLU)."""
+    if not target:
+      return 0.0
+    if not prefix:
+      raise ValueError('causal AR loglikelihood needs a non-empty prefix')
+    seq = torch.tensor(prefix + target, dtype=torch.long, device=self._device)
+    if seq.numel() > self.seq_len:
+      return -1e8
+    logits = self.model.backbone(seq.unsqueeze(0), sigma=None)
+    # Position i predicts token i+1; score target under prefix context.
+    plen = len(prefix)
+    shift = logits[0, plen - 1:plen - 1 + len(target), :]
+    log_probs = F.log_softmax(shift.float(), dim=-1)
+    tgt = torch.tensor(target, dtype=torch.long, device=self._device)
+    return float(log_probs.gather(-1, tgt.unsqueeze(-1)).squeeze(-1).sum().item())
+
+  @torch.no_grad()
   def get_loglikelihood(self, prefix, target) -> float:
     """Hub ``eval.py`` one-token masked CE on the single-stream eval path.
 
@@ -300,8 +465,13 @@ class BlockQwenEvalHarness(LM):
 
     Pad-to-2048 dual-stream LL was an OOD meter (MASK ocean + clean answer
     stream) and is not comparable to Hub MMLU.
+
+    C3 / ``ar_sft`` uses standard causal teacher-forced NLL instead.
     """
-    require_masked_likelihood(self.model.forward_process_name)
+    if self._is_causal_ar:
+      return self._causal_ar_loglikelihood(prefix, target)
+    fp = getattr(self.model, 'forward_process_name', None)
+    require_masked_likelihood(fp if fp is not None else 'none')
     if not target:
       return 0.0
     seq = torch.tensor(prefix + target, dtype=torch.long, device=self._device)
@@ -413,47 +583,38 @@ class BlockQwenEvalHarness(LM):
     needed = longest + max_new
     needed = ((needed + bs - 1) // bs) * bs
     seq_len = max(int(self.train_seq_len), min(needed, eval_cap))
-    prev_num_tokens = int(self.model.num_tokens)
-    backbone = getattr(self.model, 'backbone', None)
-    prev_n_tokens = (
-        int(getattr(backbone, 'n_tokens', prev_num_tokens))
-        if backbone is not None else prev_num_tokens)
-    extended = seq_len != prev_num_tokens
-    if extended:
-      print(
-          f'[block_qwen_lm_eval] extend seq_len '
-          f'{prev_num_tokens}→{seq_len} '
-          f'(train={self.train_seq_len}, eval_cap={eval_cap}, '
-          f'longest_prefix={longest}, max_new={max_new})',
-          flush=True,
-      )
-      self.model.num_tokens = seq_len
-      self.seq_len = seq_len
-      if backbone is not None and hasattr(backbone, 'n_tokens'):
-        backbone.n_tokens = seq_len
-    room = max(1, seq_len - longest)
-    if max_new > room:
-      print(
-          f'[block_qwen_lm_eval] clamp max_new_tokens {max_new}→{room} '
-          f'(seq_len={seq_len}, longest_prefix={longest}, '
-          f'eval_cap={eval_cap})',
-          flush=True,
-      )
-      max_new = room
-    max_len = max(int(ids.numel()) for ids in encoded)
-    padded = []
-    lengths = []
-    for ids in encoded:
-      lengths.append(int(ids.numel()))
-      if ids.numel() < max_len:
-        pad = torch.full(
-            (max_len - ids.numel(),), self.mask_id, dtype=torch.long)
-        ids = torch.cat([ids, pad], dim=0)
-      padded.append(ids)
-    prefix_batch = torch.stack(padded, dim=0).to(self._device)
-    answers = []
-    n_tokens = 0
-    try:
+    with temporary_model_seq_len(
+        self.model, seq_len, seq_len_holder=self) as seq_ctx:
+      if seq_ctx.extended:
+        print(
+            f'[block_qwen_lm_eval] extend seq_len '
+            f'{seq_ctx.prev_num_tokens}→{seq_len} '
+            f'(train={self.train_seq_len}, eval_cap={eval_cap}, '
+            f'longest_prefix={longest}, max_new={max_new})',
+            flush=True,
+        )
+      room = max(1, seq_len - longest)
+      if max_new > room:
+        print(
+            f'[block_qwen_lm_eval] clamp max_new_tokens {max_new}→{room} '
+            f'(seq_len={seq_len}, longest_prefix={longest}, '
+            f'eval_cap={eval_cap})',
+            flush=True,
+        )
+        max_new = room
+      max_len = max(int(ids.numel()) for ids in encoded)
+      padded = []
+      lengths = []
+      for ids in encoded:
+        lengths.append(int(ids.numel()))
+        if ids.numel() < max_len:
+          pad = torch.full(
+              (max_len - ids.numel(),), self.mask_id, dtype=torch.long)
+          ids = torch.cat([ids, pad], dim=0)
+        padded.append(ids)
+      prefix_batch = torch.stack(padded, dim=0).to(self._device)
+      answers = []
+      n_tokens = 0
       if self._device.type == 'cuda' and torch.cuda.is_available():
         torch.cuda.synchronize(self._device)
       t0 = time.perf_counter()
@@ -481,6 +642,9 @@ class BlockQwenEvalHarness(LM):
               greedy=greedy,
           )
           cont = samples[0, plen:plen + max_new]
+          stats = getattr(self._sampler, 'last_nfe_stats', None)
+          if isinstance(stats, dict):
+            self._nfe_per_sample.append(dict(stats))
         eos = self.tokenizer.eos_token_id
         if eos is not None:
           eos_hits = (cont == eos).nonzero(as_tuple=False)
@@ -498,12 +662,6 @@ class BlockQwenEvalHarness(LM):
         torch.cuda.synchronize(self._device)
       elapsed = time.perf_counter() - t0
       return answers, n_tokens, elapsed
-    finally:
-      if extended:
-        self.model.num_tokens = prev_num_tokens
-        self.seq_len = prev_num_tokens
-        if backbone is not None and hasattr(backbone, 'n_tokens'):
-          backbone.n_tokens = prev_n_tokens
 
   def _write_speed_metrics(self) -> None:
     if self._rank != 0:
@@ -516,6 +674,7 @@ class BlockQwenEvalHarness(LM):
         'checkpoint_path': self.checkpoint_path,
         'device': str(self._device),
         'source': 'lm_eval.generate_until',
+        'code_fingerprint': getattr(self, '_code_fingerprint', None),
         'tokens_generated': int(self._speed_tokens),
         'elapsed_s': float(self._speed_elapsed),
         'tok_s': float(tok_s),
@@ -544,6 +703,58 @@ class BlockQwenEvalHarness(LM):
       path.parent.mkdir(parents=True, exist_ok=True)
       path.write_text(json.dumps(metrics, indent=2) + '\n', encoding='utf-8')
       print(f'Wrote speed metrics: {path}', flush=True)
+      # NFE / commit accounting (sampler counters). Written beside tok_s.
+      if self._nfe_per_sample:
+        import statistics as _stats
+        forwards = [int(s.get('n_forwards', 0)) for s in self._nfe_per_sample]
+        thr_c = [int(s.get('n_thr_commits', 0)) for s in self._nfe_per_sample]
+        force_c = [
+            int(s.get('n_force_max_commits', 0)) for s in self._nfe_per_sample]
+        commits = [int(s.get('n_commits', 0)) for s in self._nfe_per_sample]
+
+        def _pct(xs: list[int], q: float) -> float:
+          if not xs:
+            return float('nan')
+          ys = sorted(xs)
+          i = min(len(ys) - 1, max(0, int(round(q * (len(ys) - 1)))))
+          return float(ys[i])
+
+        tot_thr = sum(thr_c)
+        tot_force = sum(force_c)
+        tot_commit = max(tot_thr + tot_force, 1)
+        nfe_doc = {
+            'checkpoint_path': self.checkpoint_path,
+            'source': 'lm_eval.generate_until.sampler_counters',
+            'code_fingerprint': getattr(self, '_code_fingerprint', None),
+            'n_problems': len(forwards),
+            'n_forwards_mean': float(_stats.fmean(forwards)) if forwards else None,
+            'n_forwards_p10': _pct(forwards, 0.10),
+            'n_forwards_p50': _pct(forwards, 0.50),
+            'n_forwards_p90': _pct(forwards, 0.90),
+            'n_commits_mean': float(_stats.fmean(commits)) if commits else None,
+            'tokens_per_forward_mean': (
+                float(self._speed_tokens) / max(sum(forwards), 1)),
+            'thr_commit_share': tot_thr / tot_commit,
+            'force_max_commit_share': tot_force / tot_commit,
+            'n_thr_commits_total': tot_thr,
+            'n_force_max_commits_total': tot_force,
+            'uniform_commit_order': getattr(
+                self._sampler, 'uniform_commit_order', None),
+            'unmask_threshold': getattr(
+                self._sampler, 'unmask_threshold', None),
+            'per_problem': self._nfe_per_sample,
+            'note': (
+                'n_forwards counts BlockSampler._logits calls. '
+                'thr vs force-max shares are UCC sticky commits only.'),
+        }
+        nfe_path = path.with_name('nfe_metrics.json')
+        nfe_path.write_text(
+            json.dumps(nfe_doc, indent=2) + '\n', encoding='utf-8')
+        print(
+            f'Wrote NFE metrics: {nfe_path} '
+            f"mean_nfe={nfe_doc['n_forwards_mean']:.1f} "
+            f"force_share={nfe_doc['force_max_commit_share']:.3f}",
+            flush=True)
 
   def generate_until(self, requests):
     output = [None] * len(requests)
@@ -556,8 +767,14 @@ class BlockQwenEvalHarness(LM):
       # Chat-templated HumanEval must not use mid-function completion stops.
       if task.startswith('humaneval'):
         until = humaneval_until_for_chat(until)
+      # Generation budget = adapter MAX_NEW_TOKENS (Hub PROTOCOL default 2048),
+      # then per-task ceilings in ``cap_max_new_for_task`` (mmlu→64, …).
+      # Do NOT min() with lm-eval's task ``max_gen_toks``: gsm8k defaults to
+      # 256/512 and silently defeated MAX_NEW_TOKENS=2048 (U0 hier canary
+      # logged max_new=512 while PROTOCOL said 2048).
+      max_gen = cap_max_new_for_task(task, int(self.max_new_tokens))
       key = (
-          int(gen_kwargs.get('max_gen_toks', self.max_new_tokens)),
+          max_gen,
           tuple(until),
           bool(gen_kwargs.get('do_sample', False)),
           task.split('_')[0],  # keep humaneval vs mbpp buckets separate
@@ -566,9 +783,16 @@ class BlockQwenEvalHarness(LM):
 
     self._speed_tokens = 0
     self._speed_elapsed = 0.0
+    self._nfe_per_sample = []
     for key, batch in buckets.items():
       max_gen, until_tuple, do_sample, _task_prefix = key
       until = list(until_tuple)
+      task_name = str(getattr(batch[0][1], 'task_name', '') or '')
+      print(
+          f'[block_qwen_lm_eval] generate_until task={task_name!r} '
+          f'n={len(batch)} max_new={max_gen}',
+          flush=True,
+      )
       greedy = (
           self._force_greedy if self._force_greedy is not None
           else (not do_sample))
@@ -613,9 +837,12 @@ class BlockQwenEvalHarness(LM):
 
 
 if __name__ == '__main__':
-  # Allow code-eval datasets (HumanEval) when users pass confirm flags.
-  os.environ.setdefault('HF_ALLOW_CODE_EVAL', '1')
-  os.environ.setdefault('HF_DATASETS_TRUST_REMOTE_CODE', 'true')
+  import sys
+  # Gate code-exec / remote-dataset trust on lm-eval's confirm flag. Unconditional
+  # setdefault gave a false safety gate (flag documented but never checked here).
+  if '--confirm_run_unsafe_code' in sys.argv:
+    os.environ.setdefault('HF_ALLOW_CODE_EVAL', '1')
+    os.environ.setdefault('HF_DATASETS_TRUST_REMOTE_CODE', 'true')
   # Must run before lm_eval imports humaneval/mbpp utils (load code_eval).
   patch_code_eval_metric_cache()
   patch_humaneval_chat_predictions()
